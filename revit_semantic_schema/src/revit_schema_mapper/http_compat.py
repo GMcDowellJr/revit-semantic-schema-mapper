@@ -7,6 +7,20 @@ from PyPI needs approval. Behavior (headers, timeout, raising on non-2xx)
 is kept equivalent across both backends; callers (``crawl.py``) don't need
 to know which one is active.
 
+GZIP: unlike ``requests`` (via urllib3) and real browsers, plain
+``urllib.request`` does not transparently decompress a
+``Content-Encoding: gzip``/``deflate`` response -- some CDN-hosted static
+assets (e.g. a prebuilt, precompressed ``*_min.json``) are served this way
+regardless of the client's ``Accept-Encoding``. Decoding those raw
+compressed bytes as UTF-8 doesn't raise cleanly; it silently produces
+mostly-garbage text (the gzip magic byte ``0x8b`` isn't valid UTF-8 and
+becomes a replacement character), which then fails downstream with a
+confusing error -- e.g. ``json.loads`` raising
+``JSONDecodeError('Expecting value: line 1 column 1 (char 0)')``, which
+looks like "the response was empty" but actually means "the response was
+compressed and never decompressed." The urllib fallback path below checks
+``Content-Encoding`` explicitly and decompresses before decoding as text.
+
 TLS ON CORPORATE NETWORKS: environments with SSL-inspecting proxies
 (Zscaler, Netskope, Palo Alto, etc.) re-sign HTTPS traffic with an internal
 root CA. Windows/browsers often trust that CA fine, but OpenSSL 3.2+ (used
@@ -26,10 +40,12 @@ exactly this error and understand it's a workaround, not a fix.
 
 from __future__ import annotations
 
+import gzip
 import os
 import ssl
 import urllib.error
 import urllib.request
+import zlib
 from dataclasses import dataclass
 
 try:
@@ -85,10 +101,27 @@ class HttpClient:
         request = urllib.request.Request(url, headers=self._headers)
         try:
             with urllib.request.urlopen(request, timeout=timeout, context=_make_ssl_context()) as response:  # noqa: S310 - fixed http(s) scheme, scoped by caller
+                raw = response.read()
+                raw = _decompress(raw, response.headers.get("Content-Encoding", ""))
                 charset = response.headers.get_content_charset() or "utf-8"
-                body = response.read().decode(charset, errors="replace")
+                body = raw.decode(charset, errors="replace")
                 return FetchResult(text=body, status_code=response.status)
         except urllib.error.HTTPError as exc:
             raise HttpError(f"HTTP {exc.code} for {url}") from exc
         except urllib.error.URLError as exc:
             raise HttpError(f"Failed to reach {url}: {exc.reason}") from exc
+
+
+def _decompress(raw: bytes, content_encoding: str) -> bytes:
+    encoding = content_encoding.strip().lower()
+    if encoding == "gzip":
+        return gzip.decompress(raw)
+    if encoding == "deflate":
+        try:
+            return zlib.decompress(raw)
+        except zlib.error:
+            # Some servers send a raw deflate stream without the zlib
+            # header/checksum; -15 (negative window bits) tells zlib to
+            # skip expecting that wrapper.
+            return zlib.decompress(raw, -zlib.MAX_WBITS)
+    return raw

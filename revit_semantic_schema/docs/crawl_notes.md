@@ -83,7 +83,18 @@ several of the original guesses in `parse.py`:
    authoritative) strategy in `discover_index()`, with the old HTML-scraping strategies kept
    as a defensive fallback. `tests/test_crawl.py` covers this against a synthetic tree modeled
    on the real excerpt (namespace filtering, sub-namespace inclusion, overloaded-method
-   flattening) -- not yet re-validated against a full real crawl.
+   flattening).
+
+   **First real run of this hit a second bug**: `namespace_json parse failed:
+   JSONDecodeError('Expecting value: line 1 column 1 (char 0)')`. That specific message is the
+   signature of decoding *raw gzip bytes* as UTF-8 (the gzip magic byte isn't valid UTF-8, so it
+   becomes a replacement character at position 0) -- not an empty response. This CDN-hosted
+   `*_min.json` asset is served with `Content-Encoding: gzip`; `requests`/browsers decompress
+   that transparently, but the plain-`urllib.request` fallback path did not. Fixed in
+   `http_compat.py`: the urllib path now checks `Content-Encoding` and decompresses
+   gzip/deflate (including raw/headerless deflate) before decoding as text.
+   `tests/test_http_compat.py` reproduces this against a real local HTTP server serving
+   gzip/deflate-encoded responses (not just a unit-level assumption).
 2. **A class/struct/interface page does not embed its members table inline.** It links out to
    a separate "`<Type> Members`" page via a shared sub-nav (`table#bottomTable`, e.g. "Members
    | Example | See Also" on a class page, "`<Type>` Class | Methods | Properties | See Also" on
