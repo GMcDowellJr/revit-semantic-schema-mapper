@@ -21,6 +21,15 @@ treated as a validation pass: if ``discover_index`` finds zero or
 suspiciously few links, that is a signal the selectors need adjusting, not
 that Revit.DB has few types.
 
+CONFIRMED AGAINST LIVE DATA (see docs/crawl_notes.md): the version root
+page's ``<a href>`` anchors are *not* the page index -- the real site loads
+its type tree client-side from a JSON file on a CDN
+(``NAMESPACE_JSON_HOST``), which ``discover_via_namespace_json`` fetches and
+flattens directly. This is the primary/authoritative discovery strategy;
+the HTML-scraping strategies below (root page anchors, TOC files, sitemap)
+are kept as a defensive fallback in case that JSON is ever unavailable, but
+were confirmed to find almost nothing useful on their own.
+
 DEPENDENCY FALLBACK: ``requests`` and ``beautifulsoup4`` are used when
 installed (they're faster and more robust), but neither is required --
 ``http_compat``/``html_compat`` provide equivalent behavior on top of
@@ -57,6 +66,9 @@ USER_AGENT = (
 
 DEFAULT_THROTTLE_SECONDS = 1.5
 ALLOWED_HOST = "www.revitapidocs.com"
+# CDN host serving the client-side namespace/TOC JSON (see discover_via_namespace_json).
+NAMESPACE_JSON_HOST = "d24b2zsrnzhmgb.cloudfront.net"
+ALLOWED_HOSTS = {ALLOWED_HOST, NAMESPACE_JSON_HOST}
 
 
 @dataclass
@@ -105,7 +117,7 @@ class Crawler:
         bug in link discovery cannot accidentally crawl the wider internet.
         """
         host = urlparse(url).netloc
-        if host != ALLOWED_HOST:
+        if host not in ALLOWED_HOSTS:
             raise OutOfScopeURLError(f"Refusing to fetch out-of-scope host: {host!r} ({url})")
 
         cache_path = self._cache_path(url)
@@ -139,6 +151,83 @@ class Crawler:
     def version_root_url(self) -> str:
         return f"{self.config.base_url}/{self.config.version}/"
 
+    def namespace_json_url(self) -> str:
+        return f"https://{NAMESPACE_JSON_HOST}/static/json/namespace_{self.config.version}_min.json"
+
+    def discover_via_namespace_json(self) -> tuple[list[dict], list[str]]:
+        """Fetch and flatten the site's client-side namespace/TOC JSON.
+
+        Confirmed shape: a single root node ``{"title": "Namespaces", ...,
+        "children": [...]}`` whose children are namespace nodes (``tag":
+        "Namespace"``), each containing a tree of Class/Struct/Enum/
+        Interface nodes, each of those containing Members/Methods/
+        Properties nodes, down to individual Method/Property/Constructor
+        pages (an overloaded method is its own node with both an ``href``
+        -- an overview page -- and ``children`` for each overload).
+
+        Returns (entries, parser_notes). Every node with an ``href`` is
+        included (tagged via ``discovered_via``) except the top-level
+        Namespace nodes themselves, which are just overview pages, not
+        something ``parse.py`` extracts anything from. Only the namespace
+        subtree(s) whose name matches ``config.namespace_prefix`` (exactly,
+        or as a dotted sub-namespace, e.g. ``Autodesk.Revit.DB.Architecture``
+        under prefix ``Autodesk.Revit.DB``) are walked.
+        """
+        notes: list[str] = []
+        url = self.namespace_json_url()
+        try:
+            text = self.fetch(url)
+        except Exception as exc:  # noqa: BLE001 - see discover_index's philosophy
+            msg = f"namespace_json fetch failed: {exc!r} (url={url})"
+            notes.append(msg)
+            logger.warning("discover_via_namespace_json: %s", msg)
+            return [], notes
+
+        try:
+            tree = json.loads(text)
+        except Exception as exc:  # noqa: BLE001
+            msg = f"namespace_json parse failed: {exc!r}"
+            notes.append(msg)
+            logger.warning("discover_via_namespace_json: %s", msg)
+            return [], notes
+
+        roots = tree if isinstance(tree, list) else [tree]
+        namespace_nodes = []
+        for root in roots:
+            for child in root.get("children", []) or []:
+                title = child.get("title", "")
+                ns_name = title[: -len(" Namespace")] if title.endswith(" Namespace") else title
+                if ns_name == self.config.namespace_prefix or ns_name.startswith(f"{self.config.namespace_prefix}."):
+                    namespace_nodes.append(child)
+
+        if not namespace_nodes:
+            notes.append(
+                f"no namespace node in {url!r} matched prefix {self.config.namespace_prefix!r} "
+                "(site's namespace naming may have changed, or the JSON's shape did)"
+            )
+            return [], notes
+
+        version_root = self.version_root_url()
+        entries: dict[str, dict] = {}
+        for ns_node in namespace_nodes:
+            for child in ns_node.get("children", []) or []:
+                self._flatten_namespace_node(child, version_root, entries)
+        if not entries:
+            notes.append(f"matched namespace node(s) but found no page hrefs under them: {[n.get('title') for n in namespace_nodes]}")
+        return list(entries.values()), notes
+
+    def _flatten_namespace_node(self, node: dict, version_root: str, out: dict[str, dict]) -> None:
+        href = node.get("href")
+        tag = node.get("tag", "")
+        if href:
+            absolute = urljoin(version_root, href)
+            out.setdefault(
+                absolute,
+                {"url": absolute, "link_text": node.get("title", ""), "discovered_via": f"namespace_json:{tag}"},
+            )
+        for child in node.get("children", []) or []:
+            self._flatten_namespace_node(child, version_root, out)
+
     def discover_index(self) -> list[dict]:
         """Discover candidate page URLs for the configured namespace.
 
@@ -148,12 +237,15 @@ class Crawler:
         URL.
 
         Strategy (tried in order, all results merged):
-        1. Parse every ``<a href>`` on the version root page.
-        2. Look for a Sandcastle-style TOC data file (``toc.js``,
+        1. Fetch and flatten the client-side namespace/TOC JSON
+           (``discover_via_namespace_json``) -- the authoritative page index
+           on the live site; see that method's docstring.
+        2. Parse every ``<a href>`` on the version root page.
+        3. Look for a Sandcastle-style TOC data file (``toc.js``,
            ``webtoc.xml``, ``toc.json`` — the exact name varies by
            Sandcastle presentation theme) linked from the root page, fetch
            it, and pull hrefs/ids out of it if it looks like HTML/XML/JSON.
-        3. If a same-host sitemap.xml exists, pull any URLs under the
+        4. If a same-host sitemap.xml exists, pull any URLs under the
            version path.
 
         Every strategy is defensive: a failure in one does not abort the
@@ -165,6 +257,10 @@ class Crawler:
         root_url = self.version_root_url()
         found: dict[str, dict] = {}
         errors: list[str] = []
+
+        json_entries, json_errors = self.discover_via_namespace_json()
+        found.update({e["url"]: e for e in json_entries})
+        errors.extend(json_errors)
 
         try:
             html = self.fetch(root_url)

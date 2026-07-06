@@ -64,21 +64,26 @@ compatibility issue -- see `REVIT_SCHEMA_MAPPER_RELAX_TLS_STRICT` in `http_compa
 user pasted real page source (Revit 2024, `Wall` class) and screenshots, which corrected
 several of the original guesses in `parse.py`:
 
-1. **The version root page's `<a href>` anchors are not the type index.** The left-hand
-   TOC/search is populated client-side from a static JSON file
+1. **The version root page's `<a href>` anchors are not the type index; a client-side JSON
+   file is.** The left-hand TOC/search is populated from a static JSON file
    (`https://d24b2zsrnzhmgb.cloudfront.net/static/json/namespace_<version>_min.json`,
    referenced via `var namespaceJson = ...` in every page's script block) via AJAX, not
-   server-rendered links. `discover_index()`'s `root_page_anchor` strategy is therefore
+   server-rendered links. `discover_index()`'s original `root_page_anchor` strategy was
    structurally incapable of finding more than a handful of junk links (confirmed: it found
-   only `/2024/`, `/2024/#`, `/2024/news` on a real run). **This namespace JSON is very likely
-   the correct, complete page index and should replace HTML-scraping as the primary discovery
-   strategy** -- it was not fetchable from the sandbox that made this fix (different host,
-   blocked by that session's own egress policy), so its exact schema is not yet confirmed. Next
-   step: fetch it from an environment that can reach `d24b2zsrnzhmgb.cloudfront.net` and adapt
-   `discover_index()` accordingly. Each page's own script block also embeds one record from
-   that same JSON (as `var templateData = { entry: {...} }`) with fields
-   `href`/`title`/`short_title`/`tag`/`namespace`/`member_of`/`member_of_href`/`years` -- a
-   reliable schema sample even before the full file is fetched.
+   only `/2024/`, `/2024/#`, `/2024/news` on a real run, with `Pages parsed: 0` as a
+   consequence -- not a parser bug, a discovery bug). **Confirmed and fixed**: the user shared
+   a real excerpt of this JSON. Shape: a single root node `{"title": "Namespaces", "children":
+   [...]}` whose children are namespace nodes (`"tag": "Namespace"`), each holding a tree of
+   Class/Struct/Enum/Interface nodes, each holding Members/Methods/Properties nodes, down to
+   individual Method/Property/Constructor pages (an overloaded method is its own node with
+   both an `href` -- an overview page -- and `children` for each overload). `crawl.py` now
+   fetches and flattens this via `Crawler.discover_via_namespace_json`, filtering to namespace
+   nodes whose name equals or dot-extends `config.namespace_prefix` (so `Autodesk.Revit.DB`
+   and `Autodesk.Revit.DB.Architecture` both qualify), and this runs as the *first* (most
+   authoritative) strategy in `discover_index()`, with the old HTML-scraping strategies kept
+   as a defensive fallback. `tests/test_crawl.py` covers this against a synthetic tree modeled
+   on the real excerpt (namespace filtering, sub-namespace inclusion, overloaded-method
+   flattening) -- not yet re-validated against a full real crawl.
 2. **A class/struct/interface page does not embed its members table inline.** It links out to
    a separate "`<Type> Members`" page via a shared sub-nav (`table#bottomTable`, e.g. "Members
    | Example | See Also" on a class page, "`<Type>` Class | Methods | Properties | See Also" on
