@@ -50,6 +50,14 @@ def _namespace_tree() -> list[dict]:
                                         },
                                     ],
                                 },
+                                {
+                                    "title": "Wall Properties",
+                                    "href": "wall-properties.htm",
+                                    "tag": "Properties",
+                                    "children": [
+                                        {"title": "Width Property", "href": "width-property.htm", "tag": "Property"},
+                                    ],
+                                },
                             ],
                         },
                     ],
@@ -94,6 +102,18 @@ def test_discover_via_namespace_json_filters_by_namespace_and_flattens(tmp_path)
     wall_class_entry = next(e for e in entries if e["url"].endswith("wall-class.htm"))
     assert wall_class_entry["discovered_via"] == "namespace_json:Class"
     assert wall_class_entry["link_text"] == "Wall Class"
+
+    # The bug this covers: a Property/Method page discovered directly via the
+    # namespace JSON (never reached by following a class's Members-page link)
+    # must still carry its declaring type, computed at flatten time.
+    by_url = {e["url"]: e for e in entries}
+    assert by_url["https://www.revitapidocs.com/2024/width-property.htm"]["declaring_type_hint"] == "Autodesk.Revit.DB.Wall"
+    assert by_url["https://www.revitapidocs.com/2024/create-1.htm"]["declaring_type_hint"] == "Autodesk.Revit.DB.Wall"
+    assert by_url["https://www.revitapidocs.com/2024/create-2.htm"]["declaring_type_hint"] == "Autodesk.Revit.DB.Wall"
+    assert by_url["https://www.revitapidocs.com/2024/create-overview.htm"]["declaring_type_hint"] == "Autodesk.Revit.DB.Wall"
+    # Sub-namespace types get their own (correct) declaring type, not the
+    # enclosing prefix's.
+    assert by_url["https://www.revitapidocs.com/2024/room-class.htm"].get("declaring_type_hint") == "Autodesk.Revit.DB.Architecture.Room"
 
 
 def test_discover_via_namespace_json_no_matching_namespace(tmp_path):

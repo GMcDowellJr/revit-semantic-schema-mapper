@@ -51,6 +51,13 @@ _TITLE_KIND_SUFFIXES = {
     "Method": Kind.METHOD,
     "Constructor": Kind.CONSTRUCTOR,
     "Members": Kind.MEMBERS_INDEX,
+    # Standalone "<Type> Methods"/"<Type> Properties" pages exist alongside
+    # the combined "<Type> Members" page (same data, pre-filtered); route
+    # them through the same parser -- parse_members_index_page's section-
+    # heading tracking degrades gracefully (member_kind stays None) if such a
+    # page has no "Methods"/"Properties" h1.heading of its own.
+    "Methods": Kind.MEMBERS_INDEX,
+    "Properties": Kind.MEMBERS_INDEX,
 }
 
 # Selector candidates, most-specific-and-likely first. Confirmed against

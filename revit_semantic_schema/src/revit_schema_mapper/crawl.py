@@ -54,6 +54,7 @@ except ImportError:
     from .html_compat import MiniSoup as BeautifulSoup
 
 from .http_compat import HttpClient
+from .parse import _strip_kind_suffix
 
 logger = logging.getLogger(__name__)
 
@@ -210,23 +211,47 @@ class Crawler:
         version_root = self.version_root_url()
         entries: dict[str, dict] = {}
         for ns_node in namespace_nodes:
+            ns_title = ns_node.get("title", "")
+            ns_name = ns_title[: -len(" Namespace")] if ns_title.endswith(" Namespace") else ns_title
             for child in ns_node.get("children", []) or []:
-                self._flatten_namespace_node(child, version_root, entries)
+                self._flatten_namespace_node(child, version_root, entries, ns_name, None)
         if not entries:
             notes.append(f"matched namespace node(s) but found no page hrefs under them: {[n.get('title') for n in namespace_nodes]}")
         return list(entries.values()), notes
 
-    def _flatten_namespace_node(self, node: dict, version_root: str, out: dict[str, dict]) -> None:
+    # Tags whose own node represents a type (as opposed to a Members/Methods/
+    # Properties grouping node or an individual Method/Property/Constructor
+    # page) -- these establish a new declaring_type_hint for their descendants.
+    _TYPE_LEVEL_TAGS = {"Class", "Struct", "Structure", "Interface", "Enumeration", "Enum"}
+
+    def _flatten_namespace_node(
+        self,
+        node: dict,
+        version_root: str,
+        out: dict[str, dict],
+        namespace: str,
+        declaring_type_hint: str | None,
+    ) -> None:
         href = node.get("href")
         tag = node.get("tag", "")
+        title = node.get("title", "")
+
+        # A type-level node's own children (Members/Methods/Properties/Method/
+        # Property groups) belong to *this* type -- not whatever type_hint was
+        # passed in from further up (relevant for nested namespaces/types).
+        if tag in self._TYPE_LEVEL_TAGS:
+            short_name = _strip_kind_suffix(title)
+            declaring_type_hint = f"{namespace}.{short_name}" if namespace else short_name
+
         if href:
             absolute = urljoin(version_root, href)
-            out.setdefault(
-                absolute,
-                {"url": absolute, "link_text": node.get("title", ""), "discovered_via": f"namespace_json:{tag}"},
-            )
+            entry = {"url": absolute, "link_text": title, "discovered_via": f"namespace_json:{tag}"}
+            if declaring_type_hint is not None:
+                entry["declaring_type_hint"] = declaring_type_hint
+            out.setdefault(absolute, entry)
+
         for child in node.get("children", []) or []:
-            self._flatten_namespace_node(child, version_root, out)
+            self._flatten_namespace_node(child, version_root, out, namespace, declaring_type_hint)
 
     def discover_index(self) -> list[dict]:
         """Discover candidate page URLs for the configured namespace.

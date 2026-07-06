@@ -95,6 +95,35 @@ several of the original guesses in `parse.py`:
    gzip/deflate (including raw/headerless deflate) before decoding as text.
    `tests/test_http_compat.py` reproduces this against a real local HTTP server serving
    gzip/deflate-encoded responses (not just a unit-level assumption).
+
+   **After that fix, a real run reached 72 discovered / 6 parsed pages** (real class/enum data
+   extracted correctly -- `ACADVersion`, `ACAObjectPreference`), but 41 pages still failed. Two
+   more real bugs, both a direct consequence of the namespace JSON finding pages a lot more
+   directly than the old "follow links from a class page" model assumed:
+   - **Standalone "`<Type>` Methods"/"`<Type>` Properties" pages** (tags `"Methods"`/
+     `"Properties"`, distinct from the combined `"Members"` page -- the real site has both) were
+     not recognized by `sniff_kind()` at all (`_TITLE_KIND_SUFFIXES` only had singular
+     `"Method"`/`"Property"` and `"Members"`). Fixed: added plural `"Methods"`/`"Properties"` ->
+     `Kind.MEMBERS_INDEX` too; `parse_members_index_page`'s section-heading tracking degrades
+     gracefully (member_kind stays `None`) if such a page has no heading of its own.
+   - **Individual Property/Method pages discovered directly via the namespace JSON never got a
+     `declaring_type`.** The only mechanism that threaded a declaring type through was "reached
+     by following a class's Members-page link" (`member_queue` in `pipeline.py`); pages found
+     directly by JSON flattening bypass that path entirely and were being skipped with "no known
+     declaring type" -- silently inflating the failed-page count, not a parser problem on those
+     specific pages. Fixed: `Crawler._flatten_namespace_node` now threads the enclosing type's
+     fully-qualified name through as `declaring_type_hint` on every leaf entry (computed once,
+     at the type-level node, from its own title + the enclosing namespace); `pipeline.py` falls
+     back to `by_url[url]["declaring_type_hint"]` when `member_queue` doesn't have an entry.
+     `tests/test_pipeline.py` has an end-to-end regression test for exactly this scenario
+     (verified it fails with the old "has no known declaring type; skipping" warning before the
+     fix, passes after).
+   - Also noticed: some inherited `Object` members (`Equals`, `GetHashCode`, `ToString`) link out
+     to `msdn2.microsoft.com` on some real pages (rather than rendering as an unlinked
+     `<span class=nolink>` like the `Wall` fixture) -- correctly out-of-scope per
+     `ALLOWED_HOST`, but were inflating the failed-page count for what's actually correct
+     behavior. `enqueue_member_links` in `pipeline.py` now filters these out before enqueueing
+     rather than letting them fail downstream.
 2. **A class/struct/interface page does not embed its members table inline.** It links out to
    a separate "`<Type> Members`" page via a shared sub-nav (`table#bottomTable`, e.g. "Members
    | Example | See Also" on a class page, "`<Type>` Class | Methods | Properties | See Also" on

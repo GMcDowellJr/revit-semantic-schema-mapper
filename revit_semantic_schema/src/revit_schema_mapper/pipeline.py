@@ -9,9 +9,10 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 from pathlib import Path
+from urllib.parse import urlparse
 
 from . import classify, export
-from .crawl import CrawlConfig, Crawler
+from .crawl import ALLOWED_HOST, CrawlConfig, Crawler
 from .models import ApiPage, Kind
 from .parse import (
     extract_member_links,
@@ -52,14 +53,20 @@ def run_pipeline(config: CrawlConfig, output_dir: Path, fallback_reason: str | N
 
     def enqueue_member_links(links: list[dict], declaring_full_type_name: str, discovered_via_prefix: str) -> None:
         for link in links:
-            if link["url"] not in visited and link["url"] not in by_url:
-                by_url[link["url"]] = {
-                    "url": link["url"],
+            url = link["url"]
+            if urlparse(url).netloc != ALLOWED_HOST:
+                # Some pages link inherited Object members (Equals, GetHashCode,
+                # ToString) out to MSDN instead of rendering them as plain text;
+                # out of scope by design, not a fetch failure.
+                continue
+            if url not in visited and url not in by_url:
+                by_url[url] = {
+                    "url": url,
                     "link_text": link["name"],
                     "discovered_via": f"{discovered_via_prefix}:{declaring_full_type_name}",
                 }
-                member_queue.append((link["url"], declaring_full_type_name))
-                queue.append(link["url"])
+                member_queue.append((url, declaring_full_type_name))
+                queue.append(url)
 
     queue = list(by_url.keys())
     while queue:
@@ -71,6 +78,12 @@ def run_pipeline(config: CrawlConfig, output_dir: Path, fallback_reason: str | N
             break
 
         declaring_type_hint = next((dt for u, dt in member_queue if u == url), None)
+        if declaring_type_hint is None:
+            # Not reached by following a class's Members-page link -- e.g.
+            # discovered directly via the namespace JSON, which carries its
+            # own declaring_type_hint computed at flatten time (see
+            # Crawler._flatten_namespace_node).
+            declaring_type_hint = by_url.get(url, {}).get("declaring_type_hint")
 
         try:
             html = crawler.fetch(url)
