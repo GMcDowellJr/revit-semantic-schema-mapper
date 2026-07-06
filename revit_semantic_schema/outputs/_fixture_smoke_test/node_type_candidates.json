@@ -1,0 +1,64 @@
+[
+  {
+    "full_type_name": "Autodesk.Revit.DB.FamilyInstance",
+    "short_name": "FamilyInstance",
+    "kind": "class",
+    "namespace": "Autodesk.Revit.DB",
+    "base_type": "Element",
+    "inheritance_chain": [
+      "Element"
+    ],
+    "is_element_candidate": "true",
+    "evidence": [
+      "declared kind: class",
+      "syntax block base list: Element",
+      "resolved inheritance chain: Element"
+    ],
+    "source_url": "https://www.revitapidocs.com/2027/class_familyinstance.htm"
+  },
+  {
+    "full_type_name": "Autodesk.Revit.DB.Architecture.Room",
+    "short_name": "Room",
+    "kind": "class",
+    "namespace": "Autodesk.Revit.DB.Architecture",
+    "base_type": "SpatialElement",
+    "inheritance_chain": [
+      "SpatialElement"
+    ],
+    "is_element_candidate": "unknown",
+    "evidence": [
+      "declared kind: class",
+      "syntax block base list: SpatialElement",
+      "resolved inheritance chain: SpatialElement"
+    ],
+    "source_url": "https://www.revitapidocs.com/2027/class_room.htm"
+  },
+  {
+    "full_type_name": "Autodesk.Revit.DB.BuiltInParameter",
+    "short_name": "BuiltInParameter",
+    "kind": "enum",
+    "namespace": "Autodesk.Revit.DB",
+    "base_type": null,
+    "inheritance_chain": [],
+    "is_element_candidate": "false",
+    "evidence": [
+      "declared kind: enum",
+      "enums are never element candidates"
+    ],
+    "source_url": "https://www.revitapidocs.com/2027/enum_builtinparameter.htm"
+  },
+  {
+    "full_type_name": "Autodesk.Revit.DB.BuiltInCategory",
+    "short_name": "BuiltInCategory",
+    "kind": "enum",
+    "namespace": "Autodesk.Revit.DB",
+    "base_type": null,
+    "inheritance_chain": [],
+    "is_element_candidate": "false",
+    "evidence": [
+      "declared kind: enum",
+      "enums are never element candidates"
+    ],
+    "source_url": "https://www.revitapidocs.com/2027/enum_builtincategory.htm"
+  }
+]

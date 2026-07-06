@@ -1,0 +1,310 @@
+[
+  {
+    "revit_version": "2027",
+    "namespace": "Autodesk.Revit.DB",
+    "type_name": "FamilyInstance",
+    "full_type_name": "Autodesk.Revit.DB.FamilyInstance",
+    "kind": "class",
+    "declaring_type": null,
+    "base_type": "Element",
+    "inheritance_chain": [
+      "Element"
+    ],
+    "implemented_interfaces": [
+      "IDisposable"
+    ],
+    "members": [
+      {
+        "name": "Symbol",
+        "kind": "property",
+        "declaring_type": "Autodesk.Revit.DB.FamilyInstance",
+        "raw_signature": "Symbol",
+        "return_type": null,
+        "parameters": [],
+        "summary": "Gets the FamilySymbol object that represents the type of this family instance.",
+        "remarks": "",
+        "examples": [],
+        "see_also": [],
+        "source_url": "https://www.revitapidocs.com/2027/class_familyinstance.htm"
+      },
+      {
+        "name": "Host",
+        "kind": "property",
+        "declaring_type": "Autodesk.Revit.DB.FamilyInstance",
+        "raw_signature": "Host",
+        "return_type": null,
+        "parameters": [],
+        "summary": "Gets the element that hosts this family instance.",
+        "remarks": "",
+        "examples": [],
+        "see_also": [],
+        "source_url": "https://www.revitapidocs.com/2027/class_familyinstance.htm"
+      }
+    ],
+    "enum_members": [],
+    "summary": "An instance of a family within the Revit project, such as a piece of furniture or a door.",
+    "remarks": "FamilyInstance objects are always placed based on a FamilySymbol.",
+    "examples": [],
+    "see_also": [
+      "Autodesk.Revit.DB Namespace"
+    ],
+    "source_url": "https://www.revitapidocs.com/2027/class_familyinstance.htm",
+    "parser_notes": []
+  },
+  {
+    "revit_version": "2027",
+    "namespace": "Autodesk.Revit.DB",
+    "type_name": "Symbol",
+    "full_type_name": "Autodesk.Revit.DB.FamilyInstance.Symbol",
+    "kind": "property",
+    "declaring_type": "Autodesk.Revit.DB.FamilyInstance",
+    "base_type": null,
+    "inheritance_chain": [],
+    "implemented_interfaces": [],
+    "members": [
+      {
+        "name": "Symbol",
+        "kind": "property",
+        "declaring_type": "Autodesk.Revit.DB.FamilyInstance",
+        "raw_signature": "public FamilySymbol Symbol { get; }",
+        "return_type": "FamilySymbol",
+        "parameters": [],
+        "summary": "Gets the FamilySymbol object that represents the type of this family instance.",
+        "remarks": "Every FamilyInstance is an instance of exactly one FamilySymbol.",
+        "examples": [],
+        "see_also": [],
+        "source_url": "https://www.revitapidocs.com/2027/property_familyinstance_symbol.htm"
+      }
+    ],
+    "enum_members": [],
+    "summary": "Gets the FamilySymbol object that represents the type of this family instance.",
+    "remarks": "Every FamilyInstance is an instance of exactly one FamilySymbol.",
+    "examples": [],
+    "see_also": [],
+    "source_url": "https://www.revitapidocs.com/2027/property_familyinstance_symbol.htm",
+    "parser_notes": []
+  },
+  {
+    "revit_version": "2027",
+    "namespace": "Autodesk.Revit.DB.Architecture",
+    "type_name": "Room",
+    "full_type_name": "Autodesk.Revit.DB.Architecture.Room",
+    "kind": "class",
+    "declaring_type": null,
+    "base_type": "SpatialElement",
+    "inheritance_chain": [
+      "SpatialElement"
+    ],
+    "implemented_interfaces": [],
+    "members": [
+      {
+        "name": "Number",
+        "kind": "property",
+        "declaring_type": "Autodesk.Revit.DB.Architecture.Room",
+        "raw_signature": "Number",
+        "return_type": null,
+        "parameters": [],
+        "summary": "Gets or sets the room number.",
+        "remarks": "",
+        "examples": [],
+        "see_also": [],
+        "source_url": "https://www.revitapidocs.com/2027/class_room.htm"
+      }
+    ],
+    "enum_members": [],
+    "summary": "Represents a room element in the Autodesk Revit model.",
+    "remarks": "Room name is exposed through the inherited Element.Name property and is not re-declared here.",
+    "examples": [],
+    "see_also": [],
+    "source_url": "https://www.revitapidocs.com/2027/class_room.htm",
+    "parser_notes": []
+  },
+  {
+    "revit_version": "2027",
+    "namespace": "Autodesk.Revit.DB.Architecture",
+    "type_name": "Number",
+    "full_type_name": "Autodesk.Revit.DB.Architecture.Room.Number",
+    "kind": "property",
+    "declaring_type": "Autodesk.Revit.DB.Architecture.Room",
+    "base_type": null,
+    "inheritance_chain": [],
+    "implemented_interfaces": [],
+    "members": [
+      {
+        "name": "Number",
+        "kind": "property",
+        "declaring_type": "Autodesk.Revit.DB.Architecture.Room",
+        "raw_signature": "public string Number { get; set; }",
+        "return_type": "string",
+        "parameters": [],
+        "summary": "Gets or sets the room number, backed by BuiltInParameter.ROOM_NUMBER. This is distinct from\nthe room's Name, which is backed by BuiltInParameter.ROOM_NAME via the inherited Element.Name\nproperty.",
+        "remarks": "",
+        "examples": [],
+        "see_also": [],
+        "source_url": "https://www.revitapidocs.com/2027/property_room_number.htm"
+      }
+    ],
+    "enum_members": [],
+    "summary": "Gets or sets the room number, backed by BuiltInParameter.ROOM_NUMBER. This is distinct from\nthe room's Name, which is backed by BuiltInParameter.ROOM_NAME via the inherited Element.Name\nproperty.",
+    "remarks": "",
+    "examples": [],
+    "see_also": [],
+    "source_url": "https://www.revitapidocs.com/2027/property_room_number.htm",
+    "parser_notes": []
+  },
+  {
+    "revit_version": "2027",
+    "namespace": "Autodesk.Revit.DB",
+    "type_name": "ViewTemplateId",
+    "full_type_name": "Autodesk.Revit.DB.View.ViewTemplateId",
+    "kind": "property",
+    "declaring_type": "Autodesk.Revit.DB.View",
+    "base_type": null,
+    "inheritance_chain": [],
+    "implemented_interfaces": [],
+    "members": [
+      {
+        "name": "ViewTemplateId",
+        "kind": "property",
+        "declaring_type": "Autodesk.Revit.DB.View",
+        "raw_signature": "public ElementId ViewTemplateId { get; set; }",
+        "return_type": "ElementId",
+        "parameters": [],
+        "summary": "Gets or sets the id of the view template applied to this view. The view template controls\nmany of this view's display and filter settings.",
+        "remarks": "If no template is assigned, this returns ElementId.InvalidElementId.",
+        "examples": [],
+        "see_also": [],
+        "source_url": "https://www.revitapidocs.com/2027/property_view_viewtemplateid.htm"
+      }
+    ],
+    "enum_members": [],
+    "summary": "Gets or sets the id of the view template applied to this view. The view template controls\nmany of this view's display and filter settings.",
+    "remarks": "If no template is assigned, this returns ElementId.InvalidElementId.",
+    "examples": [],
+    "see_also": [],
+    "source_url": "https://www.revitapidocs.com/2027/property_view_viewtemplateid.htm",
+    "parser_notes": []
+  },
+  {
+    "revit_version": "2027",
+    "namespace": "Autodesk.Revit.DB",
+    "type_name": "Id",
+    "full_type_name": "Autodesk.Revit.DB.Element.Id",
+    "kind": "property",
+    "declaring_type": "Autodesk.Revit.DB.Element",
+    "base_type": null,
+    "inheritance_chain": [],
+    "implemented_interfaces": [],
+    "members": [
+      {
+        "name": "Id",
+        "kind": "property",
+        "declaring_type": "Autodesk.Revit.DB.Element",
+        "raw_signature": "public ElementId Id { get; }",
+        "return_type": "ElementId",
+        "parameters": [],
+        "summary": "Gets the unique identifier of this element within the model.",
+        "remarks": "",
+        "examples": [],
+        "see_also": [],
+        "source_url": "https://www.revitapidocs.com/2027/property_element_id.htm"
+      }
+    ],
+    "enum_members": [],
+    "summary": "Gets the unique identifier of this element within the model.",
+    "remarks": "",
+    "examples": [],
+    "see_also": [],
+    "source_url": "https://www.revitapidocs.com/2027/property_element_id.htm",
+    "parser_notes": []
+  },
+  {
+    "revit_version": "2027",
+    "namespace": "Autodesk.Revit.DB",
+    "type_name": "BuiltInParameter",
+    "full_type_name": "Autodesk.Revit.DB.BuiltInParameter",
+    "kind": "enum",
+    "declaring_type": null,
+    "base_type": null,
+    "inheritance_chain": [],
+    "implemented_interfaces": [],
+    "members": [],
+    "enum_members": [
+      {
+        "enum_name": "BuiltInParameter",
+        "member_name": "ROOM_NAME",
+        "numeric_value": null,
+        "description": "The name of the room. Backs Element.Name for Room elements.",
+        "source_url": "https://www.revitapidocs.com/2027/enum_builtinparameter.htm"
+      },
+      {
+        "enum_name": "BuiltInParameter",
+        "member_name": "ROOM_NUMBER",
+        "numeric_value": null,
+        "description": "The number of the room. Backs Room.Number.",
+        "source_url": "https://www.revitapidocs.com/2027/enum_builtinparameter.htm"
+      },
+      {
+        "enum_name": "BuiltInParameter",
+        "member_name": "ROOM_AREA",
+        "numeric_value": null,
+        "description": "The computed area of the room.",
+        "source_url": "https://www.revitapidocs.com/2027/enum_builtinparameter.htm"
+      },
+      {
+        "enum_name": "BuiltInParameter",
+        "member_name": "VIEW_NAME",
+        "numeric_value": null,
+        "description": "The name of the view.",
+        "source_url": "https://www.revitapidocs.com/2027/enum_builtinparameter.htm"
+      }
+    ],
+    "summary": "Identifies built-in, non-user-editable parameters available in the Revit model.",
+    "remarks": "",
+    "examples": [],
+    "see_also": [],
+    "source_url": "https://www.revitapidocs.com/2027/enum_builtinparameter.htm",
+    "parser_notes": []
+  },
+  {
+    "revit_version": "2027",
+    "namespace": "Autodesk.Revit.DB",
+    "type_name": "BuiltInCategory",
+    "full_type_name": "Autodesk.Revit.DB.BuiltInCategory",
+    "kind": "enum",
+    "declaring_type": null,
+    "base_type": null,
+    "inheritance_chain": [],
+    "implemented_interfaces": [],
+    "members": [],
+    "enum_members": [
+      {
+        "enum_name": "BuiltInCategory",
+        "member_name": "OST_Rooms",
+        "numeric_value": "-2000160",
+        "description": "Category of Room elements.",
+        "source_url": "https://www.revitapidocs.com/2027/enum_builtincategory.htm"
+      },
+      {
+        "enum_name": "BuiltInCategory",
+        "member_name": "OST_Walls",
+        "numeric_value": "-2000011",
+        "description": "Category of Wall elements.",
+        "source_url": "https://www.revitapidocs.com/2027/enum_builtincategory.htm"
+      },
+      {
+        "enum_name": "BuiltInCategory",
+        "member_name": "OST_Doors",
+        "numeric_value": "-2000023",
+        "description": "Category of Door elements.",
+        "source_url": "https://www.revitapidocs.com/2027/enum_builtincategory.htm"
+      }
+    ],
+    "summary": "Identifies built-in categories available in the Revit model.",
+    "remarks": "",
+    "examples": [],
+    "see_also": [],
+    "source_url": "https://www.revitapidocs.com/2027/enum_builtincategory.htm",
+    "parser_notes": []
+  }
+]

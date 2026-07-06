@@ -1,0 +1,55 @@
+{
+  "BuiltInParameter": [
+    {
+      "enum_name": "BuiltInParameter",
+      "member_name": "ROOM_NAME",
+      "numeric_value": null,
+      "description": "The name of the room. Backs Element.Name for Room elements.",
+      "source_url": "https://www.revitapidocs.com/2027/enum_builtinparameter.htm"
+    },
+    {
+      "enum_name": "BuiltInParameter",
+      "member_name": "ROOM_NUMBER",
+      "numeric_value": null,
+      "description": "The number of the room. Backs Room.Number.",
+      "source_url": "https://www.revitapidocs.com/2027/enum_builtinparameter.htm"
+    },
+    {
+      "enum_name": "BuiltInParameter",
+      "member_name": "ROOM_AREA",
+      "numeric_value": null,
+      "description": "The computed area of the room.",
+      "source_url": "https://www.revitapidocs.com/2027/enum_builtinparameter.htm"
+    },
+    {
+      "enum_name": "BuiltInParameter",
+      "member_name": "VIEW_NAME",
+      "numeric_value": null,
+      "description": "The name of the view.",
+      "source_url": "https://www.revitapidocs.com/2027/enum_builtinparameter.htm"
+    }
+  ],
+  "BuiltInCategory": [
+    {
+      "enum_name": "BuiltInCategory",
+      "member_name": "OST_Rooms",
+      "numeric_value": "-2000160",
+      "description": "Category of Room elements.",
+      "source_url": "https://www.revitapidocs.com/2027/enum_builtincategory.htm"
+    },
+    {
+      "enum_name": "BuiltInCategory",
+      "member_name": "OST_Walls",
+      "numeric_value": "-2000011",
+      "description": "Category of Wall elements.",
+      "source_url": "https://www.revitapidocs.com/2027/enum_builtincategory.htm"
+    },
+    {
+      "enum_name": "BuiltInCategory",
+      "member_name": "OST_Doors",
+      "numeric_value": "-2000023",
+      "description": "Category of Door elements.",
+      "source_url": "https://www.revitapidocs.com/2027/enum_builtincategory.htm"
+    }
+  ]
+}

@@ -1,0 +1,42 @@
+[
+  {
+    "url": "https://www.revitapidocs.com/2027/class_familyinstance.htm",
+    "link_text": "FamilyInstance",
+    "discovered_via": "smoke_test_fixture"
+  },
+  {
+    "url": "https://www.revitapidocs.com/2027/property_familyinstance_symbol.htm",
+    "link_text": "Symbol",
+    "discovered_via": "smoke_test_fixture"
+  },
+  {
+    "url": "https://www.revitapidocs.com/2027/class_room.htm",
+    "link_text": "Room",
+    "discovered_via": "smoke_test_fixture"
+  },
+  {
+    "url": "https://www.revitapidocs.com/2027/property_room_number.htm",
+    "link_text": "Number",
+    "discovered_via": "smoke_test_fixture"
+  },
+  {
+    "url": "https://www.revitapidocs.com/2027/property_view_viewtemplateid.htm",
+    "link_text": "ViewTemplateId",
+    "discovered_via": "smoke_test_fixture"
+  },
+  {
+    "url": "https://www.revitapidocs.com/2027/property_element_id.htm",
+    "link_text": "Id",
+    "discovered_via": "smoke_test_fixture"
+  },
+  {
+    "url": "https://www.revitapidocs.com/2027/enum_builtinparameter.htm",
+    "link_text": "BuiltInParameter",
+    "discovered_via": "smoke_test_fixture"
+  },
+  {
+    "url": "https://www.revitapidocs.com/2027/enum_builtincategory.htm",
+    "link_text": "BuiltInCategory",
+    "discovered_via": "smoke_test_fixture"
+  }
+]
