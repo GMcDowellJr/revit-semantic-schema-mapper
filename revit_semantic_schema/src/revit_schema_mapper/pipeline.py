@@ -114,6 +114,19 @@ def run_pipeline(config: CrawlConfig, output_dir: Path, fallback_reason: str | N
     ]
     if failed_urls:
         limitations.append(f"{len(failed_urls)} page(s) failed to fetch or parse: {failed_urls[:10]}{' ...' if len(failed_urls) > 10 else ''}")
+    if crawler.last_discovery_errors:
+        limitations.append(
+            f"discover_index encountered {len(crawler.last_discovery_errors)} error(s) while "
+            f"finding pages to crawl (see logs for full detail): {crawler.last_discovery_errors[:5]}"
+            f"{' ...' if len(crawler.last_discovery_errors) > 5 else ''}"
+        )
+    if not raw_index_entries and crawler.last_discovery_errors:
+        limitations.append(
+            "0 pages were discovered this run. This is not 'the site has nothing under this "
+            "namespace' -- discover_index's fetch attempts all failed (see the error(s) above), "
+            "which most commonly means a network/proxy/TLS/reachability problem, not a parser "
+            "bug."
+        )
 
     next_steps = [
         "Run against a live revitapidocs.com session and diff parser_notes across all pages to "

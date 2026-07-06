@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import re
 import time
 from dataclasses import dataclass, field
@@ -44,6 +45,8 @@ except ImportError:
     from .html_compat import MiniSoup as BeautifulSoup
 
 from .http_compat import HttpClient
+
+logger = logging.getLogger(__name__)
 
 USER_AGENT = (
     "RevitSemanticSchemaMapper/0.1 "
@@ -77,6 +80,7 @@ class Crawler:
         self.config.cache_dir.mkdir(parents=True, exist_ok=True)
         self.client = HttpClient({"User-Agent": USER_AGENT})
         self._last_request_time: float = 0.0
+        self.last_discovery_errors: list[str] = []
 
     # -- low-level fetch -------------------------------------------------
 
@@ -166,7 +170,9 @@ class Crawler:
             html = self.fetch(root_url)
             found.update(self._links_from_html(html, root_url, "root_page_anchor"))
         except Exception as exc:  # noqa: BLE001 - deliberately broad, see docstring
-            errors.append(f"root_page fetch/parse failed: {exc!r}")
+            msg = f"root_page fetch/parse failed: {exc!r}"
+            errors.append(msg)
+            logger.warning("discover_index: %s (root_url=%s)", msg, root_url)
 
         for toc_name in ("toc.js", "webtoc.xml", "toc.json", "toc.html"):
             toc_url = urljoin(root_url, toc_name)
@@ -177,7 +183,9 @@ class Crawler:
             try:
                 found.update(self._links_from_html(toc_text, toc_url, f"toc_file:{toc_name}"))
             except Exception as exc:  # noqa: BLE001
-                errors.append(f"{toc_name} parse failed: {exc!r}")
+                msg = f"{toc_name} parse failed: {exc!r}"
+                errors.append(msg)
+                logger.warning("discover_index: %s", msg)
 
         sitemap_url = urljoin(self.config.base_url, "/sitemap.xml")
         try:
@@ -186,9 +194,17 @@ class Crawler:
         except Exception:  # noqa: BLE001 - optional source
             pass
 
+        self.last_discovery_errors = errors
         entries = list(found.values())
         for entry in entries:
             entry["discovery_errors"] = errors
+        if not entries and errors:
+            logger.warning(
+                "discover_index found 0 pages and encountered %d error(s) above -- "
+                "this almost always means fetching failed (network/proxy/TLS/site "
+                "reachability), not that the site has no content.",
+                len(errors),
+            )
         if self.config.max_pages is not None:
             entries = entries[: self.config.max_pages]
         return entries
