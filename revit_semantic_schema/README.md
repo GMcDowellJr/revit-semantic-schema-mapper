@@ -34,6 +34,13 @@ python -m revit_schema_mapper --version 2027 --max-pages 25 --verbose   # small 
 python -m revit_schema_mapper --version 2027                            # full run
 ```
 
+`requests` and `beautifulsoup4` are optional (`pip install -e ".[fast]"` to add them) — if
+they're not installed, the crawler/parser automatically fall back to stdlib-only
+equivalents (`urllib.request`, `html.parser`), so the whole pipeline runs on a bare Python
+install. Useful if your environment restricts installing packages from PyPI. Run with
+`--verbose` to see which backend (fast or fallback) is active. See
+`docs/crawl_notes.md` → "No-install-required fallback" for how this is implemented.
+
 Outputs land in `outputs/revit_<version>/`: `raw_index.json`, `api_pages.json`,
 `node_type_candidates.json`, `property_relationship_candidates.json`,
 `method_relationship_candidates.json`, `enum_catalogs.json`, `candidate_edges.json`, and a

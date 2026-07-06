@@ -20,6 +20,12 @@ access limitation"). The first real run against the live site should be
 treated as a validation pass: if ``discover_index`` finds zero or
 suspiciously few links, that is a signal the selectors need adjusting, not
 that Revit.DB has few types.
+
+DEPENDENCY FALLBACK: ``requests`` and ``beautifulsoup4`` are used when
+installed (they're faster and more robust), but neither is required --
+``http_compat``/``html_compat`` provide equivalent behavior on top of
+``urllib.request``/``html.parser`` alone, so this runs on a bare Python
+install with no third-party packages. See those modules for scope/limits.
 """
 
 from __future__ import annotations
@@ -32,8 +38,12 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from urllib.parse import urljoin, urlparse
 
-import requests
-from bs4 import BeautifulSoup
+try:
+    from bs4 import BeautifulSoup
+except ImportError:
+    from .html_compat import MiniSoup as BeautifulSoup
+
+from .http_compat import HttpClient
 
 USER_AGENT = (
     "RevitSemanticSchemaMapper/0.1 "
@@ -65,8 +75,7 @@ class Crawler:
     def __init__(self, config: CrawlConfig):
         self.config = config
         self.config.cache_dir.mkdir(parents=True, exist_ok=True)
-        self.session = requests.Session()
-        self.session.headers.update({"User-Agent": USER_AGENT})
+        self.client = HttpClient({"User-Agent": USER_AGENT})
         self._last_request_time: float = 0.0
 
     # -- low-level fetch -------------------------------------------------
@@ -100,24 +109,23 @@ class Crawler:
             return cache_path.read_text(encoding="utf-8", errors="replace")
 
         self._throttle()
-        response = self.session.get(url, timeout=30)
+        result = self.client.get(url, timeout=30)
         self._last_request_time = time.monotonic()
-        response.raise_for_status()
 
-        cache_path.write_text(response.text, encoding="utf-8")
+        cache_path.write_text(result.text, encoding="utf-8")
         self._cache_meta_path(url).write_text(
             json.dumps(
                 {
                     "url": url,
-                    "status_code": response.status_code,
+                    "status_code": result.status_code,
                     "fetched_at": time.time(),
-                    "content_length": len(response.text),
+                    "content_length": len(result.text),
                 },
                 indent=2,
             ),
             encoding="utf-8",
         )
-        return response.text
+        return result.text
 
     def is_cached(self, url: str) -> bool:
         return self._cache_path(url).exists()

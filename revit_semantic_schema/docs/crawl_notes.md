@@ -70,6 +70,28 @@ Then:
   it is not currently checkpointed mid-page-list, so an interrupted run should simply be
   re-run rather than resumed from a saved cursor.
 
+## No-install-required fallback (`http_compat.py` / `html_compat.py`)
+
+`requests` and `beautifulsoup4` are optional (`pip install -e ".[fast]"`), not required. When
+either is missing, `crawl.py`/`parse.py` transparently fall back to stdlib-only equivalents:
+
+- `http_compat.HttpClient` uses `requests.Session` when installed, otherwise
+  `urllib.request` with the same headers/timeout/error semantics.
+- `html_compat.MiniSoup`/`MiniTag` is a small dependency-free HTML tree built on
+  `html.parser.HTMLParser`, with a CSS-selector engine scoped to exactly the selector shapes
+  used elsewhere in this codebase (tag/`#id`/`.class`/`:first-of-type`, descendant and child
+  combinators) — not a general CSS implementation. See that module's docstring before adding
+  a selector shape it doesn't already support.
+
+`python -m revit_schema_mapper ... --verbose` logs which backend (requests vs. urllib,
+beautifulsoup4 vs. html_compat) is active for a given run. The full test suite passes
+identically under both configurations — verified by running `pytest` with neither package
+installed, then again with both installed via `pip install -e ".[fast]"`.
+
+This matters for restricted corporate environments where installing packages from PyPI needs
+IT approval: a bare `pip install -e ".[dev]"` (pytest only) is enough to run the whole
+pipeline against the live site, no approval needed for `requests`/`beautifulsoup4`.
+
 ## Why member pages are discovered from class pages, not just the index/TOC
 
 Sandcastle-style sites list a type's members with links to their own property/method pages

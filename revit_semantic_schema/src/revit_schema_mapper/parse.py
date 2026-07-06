@@ -13,13 +13,21 @@ the whole crawl.
 Anyone validating this against the live site should grep for
 ``parser_notes`` in the output to find every page where a selector
 assumption didn't hold.
+
+DEPENDENCY FALLBACK: uses ``beautifulsoup4`` when installed, otherwise
+falls back to the dependency-free ``html_compat`` shim (a small CSS-selector
+engine scoped to exactly the selectors this module uses -- see
+``html_compat.py`` for what it does and does not support).
 """
 
 from __future__ import annotations
 
 import re
 
-from bs4 import BeautifulSoup, Tag
+try:
+    from bs4 import BeautifulSoup, Tag
+except ImportError:
+    from .html_compat import MiniSoup as BeautifulSoup, MiniTag as Tag
 
 from .models import ApiPage, EnumMemberInfo, Kind, MemberInfo, MemberKind, ParameterInfo
 
