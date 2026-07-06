@@ -19,6 +19,7 @@ class Kind(str, Enum):
     PROPERTY = "property"
     METHOD = "method"
     CONSTRUCTOR = "constructor"
+    MEMBERS_INDEX = "members_index"
     UNKNOWN = "unknown"
 
 

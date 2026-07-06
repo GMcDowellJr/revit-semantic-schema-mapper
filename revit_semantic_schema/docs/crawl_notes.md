@@ -56,6 +56,67 @@ Then:
    of a few thousand types plus tens of thousands of members. A count in the low hundreds or
    fewer is a strong signal that discovery stopped early.
 
+## Confirmed findings from a real run (2026-07, user-provided page source)
+
+The network limitation above was resolved in a follow-up session with a real Windows/corporate
+machine that could reach the live site (after working around a TLS-inspection-proxy
+compatibility issue -- see `REVIT_SCHEMA_MAPPER_RELAX_TLS_STRICT` in `http_compat.py`). The
+user pasted real page source (Revit 2024, `Wall` class) and screenshots, which corrected
+several of the original guesses in `parse.py`:
+
+1. **The version root page's `<a href>` anchors are not the type index.** The left-hand
+   TOC/search is populated client-side from a static JSON file
+   (`https://d24b2zsrnzhmgb.cloudfront.net/static/json/namespace_<version>_min.json`,
+   referenced via `var namespaceJson = ...` in every page's script block) via AJAX, not
+   server-rendered links. `discover_index()`'s `root_page_anchor` strategy is therefore
+   structurally incapable of finding more than a handful of junk links (confirmed: it found
+   only `/2024/`, `/2024/#`, `/2024/news` on a real run). **This namespace JSON is very likely
+   the correct, complete page index and should replace HTML-scraping as the primary discovery
+   strategy** -- it was not fetchable from the sandbox that made this fix (different host,
+   blocked by that session's own egress policy), so its exact schema is not yet confirmed. Next
+   step: fetch it from an environment that can reach `d24b2zsrnzhmgb.cloudfront.net` and adapt
+   `discover_index()` accordingly. Each page's own script block also embeds one record from
+   that same JSON (as `var templateData = { entry: {...} }`) with fields
+   `href`/`title`/`short_title`/`tag`/`namespace`/`member_of`/`member_of_href`/`years` -- a
+   reliable schema sample even before the full file is fetched.
+2. **A class/struct/interface page does not embed its members table inline.** It links out to
+   a separate "`<Type> Members`" page via a shared sub-nav (`table#bottomTable`, e.g. "Members
+   | Example | See Also" on a class page, "`<Type>` Class | Methods | Properties | See Also" on
+   its Members page). The Members page holds two `table.members`/`table#memberList` tables
+   (Methods, then Properties, in that order) under `h1.heading` section headers, each row
+   `[icon `<td>`, name+link `<td>`, description `<td>`]`. Fixed in `parse.py`:
+   `find_members_page_link` finds the class page's "Members" link; `parse_members_index_page`
+   parses the Members page into typed (Methods/Properties) member links; both are wired into
+   `pipeline.py` right after a class/struct/interface page is parsed. `tests/fixtures/real_wall_members.htm`
+   is the actual fetched HTML (trimmed), used to lock this in with real assertions rather than
+   guesses.
+3. **The page title lives in `<h4 id="api-title">`, not `<h1>` or `#PageHeader`.** Those two
+   never appear in real markup; `_parse_title` now checks `#api-title` first and keeps the old
+   selectors as fallbacks in case older cached years render differently.
+4. **The namespace breadcrumb is also client-side-rendered** (`<ul class="breadcrumb">` is an
+   empty placeholder filled by JS), so the original `_NAMESPACE_SELECTORS` never matched
+   real pages. The same embedded `templateData` JS object has a reliable
+   `"namespace": "Autodesk.Revit.DB"` field; `_parse_namespace` now regex-extracts it first and
+   falls back to the breadcrumb/text scan for older cached years.
+5. **A member row's name/link is in the *second* `<td>` (`[icon, name, description]`), not the
+   first** -- the first cell is an icon `<img>` with no text. This silently broke
+   `extract_member_links` (always returned `[]`) and `parse_type_page`'s inline-table branch
+   (every row skipped, no name found). Fixed via a shared `_member_name_cell` helper.
+6. **Real markup is not well-formed**: attribute values are frequently unquoted
+   (`<a href=foo.htm>`), and at least one `<div>` (`div.saveHistory`) is never explicitly
+   closed, so everything downstream nests inside it rather than being a sibling. Confirmed the
+   stdlib-`html.parser`-based fallback (`html_compat.py`) handles unquoted attributes
+   correctly; the unclosed-div case is why `parse_members_index_page` walks `.descendants`
+   (full document-order traversal) rather than direct children only.
+7. Some inherited members (e.g. `Object.Equals`, `GetHashCode`, `GetType`, `ToString`) render
+   as `<span class=nolink>Name</span>` with no link -- they have no page of their own.
+   `parse_members_index_page` correctly omits these rather than trying to crawl a URL that
+   doesn't exist.
+
+None of this has been re-validated against a full real crawl yet (only against pasted single-page
+source) -- treat the next full `--version 2024`/`2027` run as the next validation checkpoint,
+per "What to check on the first real run" above.
+
 ## Politeness / resumability design
 
 - Custom `User-Agent` (see `crawl.USER_AGENT`) identifies the bot and its purpose.

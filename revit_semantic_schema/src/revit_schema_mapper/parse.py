@@ -18,6 +18,15 @@ DEPENDENCY FALLBACK: uses ``beautifulsoup4`` when installed, otherwise
 falls back to the dependency-free ``html_compat`` shim (a small CSS-selector
 engine scoped to exactly the selectors this module uses -- see
 ``html_compat.py`` for what it does and does not support).
+
+CONFIRMED AGAINST LIVE MARKUP (2024, see docs/crawl_notes.md): a class page
+does *not* embed its members table inline -- it links out to a separate
+"<Type> Members" page (``find_members_page_link``/``parse_members_index_page``
+below), which itself holds two ``table.members``/``table#memberList`` tables
+(Methods, then Properties) under ``h1.heading`` section headers. The page
+title lives in ``h4#api-title``, not ``h1``/``#PageHeader`` (those are kept
+as fallbacks in case older cached years use classic Sandcastle markup). See
+``pipeline.py`` for how the class-page -> members-page link is followed.
 """
 
 from __future__ import annotations
@@ -41,10 +50,12 @@ _TITLE_KIND_SUFFIXES = {
     "Property": Kind.PROPERTY,
     "Method": Kind.METHOD,
     "Constructor": Kind.CONSTRUCTOR,
+    "Members": Kind.MEMBERS_INDEX,
 }
 
-# Selector candidates, most-specific-and-likely first. These are hypotheses,
-# not verified facts -- see module docstring.
+# Selector candidates, most-specific-and-likely first. Confirmed against
+# live markup: div.summary, div#mainBody, div.seeAlsoStyle, table.members,
+# table#memberList all appear as-is on the real site (see module docstring).
 _SUMMARY_SELECTORS = ["div.summary", "#mainSection > p:first-of-type", "div#mainBody > p:first-of-type"]
 _REMARKS_SELECTORS = ["div.remarks", "#remarksSection", "div#remarks"]
 _SYNTAX_SELECTORS = ["div.syntax pre", "pre.typeSignature", "div#syntaxSection pre", "pre.code"]
@@ -70,10 +81,12 @@ def _text_or_empty(tag: Tag | None) -> str:
 def _parse_title(soup: BeautifulSoup) -> tuple[str, Kind, list[str]]:
     """Returns (raw_title, kind, parser_notes)."""
     notes: list[str] = []
-    h1 = soup.find("h1") or soup.find(id="PageHeader") or soup.title
+    # id="api-title" is what the live site actually uses (an <h4>, not <h1>);
+    # h1/#PageHeader/<title> are kept as fallbacks for older cached years.
+    h1 = soup.find(id="api-title") or soup.find("h1") or soup.find(id="PageHeader") or soup.title
     raw_title = _text_or_empty(h1) if h1 else ""
     if not raw_title:
-        notes.append("could not locate a page title element (tried h1, #PageHeader, <title>)")
+        notes.append("could not locate a page title element (tried #api-title, h1, #PageHeader, <title>)")
         return "", Kind.UNKNOWN, notes
 
     kind = Kind.UNKNOWN
@@ -93,8 +106,28 @@ def _strip_kind_suffix(raw_title: str) -> str:
     return raw_title.strip()
 
 
-def _parse_namespace(soup: BeautifulSoup) -> tuple[str, list[str]]:
+_NAMESPACE_JSON_RE = re.compile(r'"namespace"\s*:\s*"([^"]+)"')
+
+
+def _parse_namespace(soup: BeautifulSoup, html: str = "") -> tuple[str, list[str]]:
+    """Returns (namespace, parser_notes).
+
+    Confirmed live layout: the breadcrumb (``<ul class="breadcrumb">``) is
+    populated by client-side JS at runtime, not present as static text in
+    the server-rendered HTML -- ``_NAMESPACE_SELECTORS`` and the
+    "Namespace:" text search below will not match it. The namespace *is*
+    reliably present in a ``<script>``-embedded ``templateData`` JS object
+    literal (``"namespace": "Autodesk.Revit.DB"``), which this tries first.
+    The breadcrumb/text strategies are kept as fallbacks for older cached
+    years that may render it statically.
+    """
     notes: list[str] = []
+
+    if html:
+        match = _NAMESPACE_JSON_RE.search(html)
+        if match:
+            return match.group(1), notes
+
     crumbs = None
     for selector in _NAMESPACE_SELECTORS:
         found = soup.select(selector)
@@ -111,7 +144,7 @@ def _parse_namespace(soup: BeautifulSoup) -> tuple[str, list[str]]:
     if match:
         return match.group(1), notes
 
-    notes.append("could not locate namespace via breadcrumb or 'Namespace:' text")
+    notes.append("could not locate namespace via embedded JSON, breadcrumb, or 'Namespace:' text")
     return "", notes
 
 
@@ -210,6 +243,20 @@ def _split_top_level_commas(text: str) -> list[str]:
     return parts
 
 
+def _member_name_cell(cells: list) -> "Tag | None":
+    """Return the cell holding the member's name/link.
+
+    Confirmed live layout is [icon, name, description] (3 cells) -- cell 0 is
+    an <img> icon with no text, not the name. Falls back to cell 0 for a
+    2-cell row in case some page/year omits the icon column.
+    """
+    if len(cells) >= 3:
+        return cells[1]
+    if cells:
+        return cells[0]
+    return None
+
+
 def _parse_see_also(soup: BeautifulSoup) -> list[str]:
     container = _first_match(soup, _SEE_ALSO_SELECTORS)
     if container is None:
@@ -242,7 +289,7 @@ def parse_type_page(html: str, url: str, version: str) -> ApiPage:
     notes.extend(title_notes)
     type_name = _strip_kind_suffix(raw_title)
 
-    namespace, ns_notes = _parse_namespace(soup)
+    namespace, ns_notes = _parse_namespace(soup, html)
     notes.extend(ns_notes)
 
     full_type_name = f"{namespace}.{type_name}" if namespace else type_name
@@ -262,11 +309,12 @@ def parse_type_page(html: str, url: str, version: str) -> ApiPage:
             cells = row.find_all("td")
             if len(cells) < 2:
                 continue
-            member_name = cells[0].get_text(strip=True)
+            name_cell = _member_name_cell(cells)
+            member_name = name_cell.get_text(strip=True) if name_cell is not None else ""
             description = cells[-1].get_text(" ", strip=True)
             if not member_name:
                 continue
-            member_kind = MemberKind.METHOD if "(" in cells[0].get_text() else MemberKind.PROPERTY
+            member_kind = MemberKind.METHOD if "(" in member_name else MemberKind.PROPERTY
             members.append(
                 MemberInfo(
                     name=member_name,
@@ -317,7 +365,7 @@ def parse_member_page(html: str, url: str, version: str, declaring_type: str) ->
         # Sandcastle sometimes titles member pages "Type.Member Property"
         member_name = member_name.rsplit(".", 1)[-1]
 
-    namespace, ns_notes = _parse_namespace(soup)
+    namespace, ns_notes = _parse_namespace(soup, html)
     notes.extend(ns_notes)
 
     syntax_tag = _first_match(soup, _SYNTAX_SELECTORS)
@@ -372,7 +420,7 @@ def parse_enum_page(html: str, url: str, version: str) -> ApiPage:
     notes.extend(title_notes)
     type_name = _strip_kind_suffix(raw_title)
 
-    namespace, ns_notes = _parse_namespace(soup)
+    namespace, ns_notes = _parse_namespace(soup, html)
     notes.extend(ns_notes)
     full_type_name = f"{namespace}.{type_name}" if namespace else type_name
 
@@ -423,7 +471,10 @@ def extract_member_links(html: str, base_url: str) -> list[dict]:
     """Pull (name, url) pairs for each member listed in a type page's members table.
 
     Used by the pipeline to discover property/method sub-pages that may not
-    be reachable from the version index/TOC directly.
+    be reachable from the version index/TOC directly. On the live site the
+    members table usually isn't on the type page itself (see
+    ``find_members_page_link``/``parse_members_index_page``); this is kept as
+    a defensive fallback for pages/years that do inline it.
     """
     from urllib.parse import urljoin
 
@@ -436,11 +487,118 @@ def extract_member_links(html: str, base_url: str) -> list[dict]:
         cells = row.find_all("td")
         if not cells:
             continue
-        anchor = cells[0].find("a", href=True)
+        name_cell = _member_name_cell(cells)
+        if name_cell is None:
+            continue
+        anchor = name_cell.find("a", href=True)
         if anchor is None:
             continue
         links.append({"name": anchor.get_text(strip=True), "url": urljoin(base_url, anchor["href"])})
     return links
+
+
+def find_members_page_link(html: str, base_url: str) -> str | None:
+    """Find the "Members" sub-nav link on a class/struct/interface page.
+
+    Confirmed live layout: a shared sub-nav (``table#bottomTable``) lists
+    links to sibling pages (e.g. a class page links to "Members | Example |
+    See Also"; a Members page links back to "<Type> Class | Methods |
+    Properties | See Also"). Returns the absolute URL of the link whose text
+    is exactly "Members", or None if not found.
+    """
+    from urllib.parse import urljoin
+
+    soup = BeautifulSoup(html, "html.parser")
+    nav = soup.find(id="bottomTable")
+    if nav is None:
+        return None
+    for anchor in nav.find_all("a", href=True):
+        if anchor.get_text(strip=True) == "Members":
+            return urljoin(base_url, anchor["href"])
+    return None
+
+
+def _is_members_table(tag) -> bool:
+    if tag.name != "table":
+        return False
+    classes = tag.attrs.get("class", [])
+    return "members" in classes or "memberTable" in classes or tag.attrs.get("id") == "memberList"
+
+
+def parse_members_index_page(html: str, base_url: str) -> tuple[list[dict], list[str]]:
+    """Parse a "<Type> Members" page into member link dicts.
+
+    Confirmed live layout: an ``h1.heading`` reading "Methods" or
+    "Properties" precedes a ``table.members``/``table#memberList`` for that
+    section, in document order (the live markup has an unclosed ``<div>``
+    upstream of these, so they end up nested rather than siblings -- a full
+    descendant walk in document order is used rather than direct children,
+    to be robust to that). Returns (links, parser_notes); each link dict has
+    ``name``, ``url``, and ``member_kind`` (a ``MemberKind`` or None if the
+    section heading wasn't recognized). Entries with no link (e.g. inherited
+    `Object` members like ``Equals``/``GetHashCode``, which have no page of
+    their own) are omitted.
+    """
+    from urllib.parse import urljoin
+
+    notes: list[str] = []
+    soup = BeautifulSoup(html, "html.parser")
+    container = soup.find(id="mainBody") or soup.find(id="mainSection") or soup
+
+    links: list[dict] = []
+    current_section: str | None = None
+    seen_tables: set[int] = set()
+    for node in container.descendants:
+        if isinstance(node, str):
+            continue
+        if node.name == "h1" and "heading" in node.attrs.get("class", []):
+            current_section = node.get_text(strip=True)
+            continue
+        if not _is_members_table(node) or id(node) in seen_tables:
+            continue
+        seen_tables.add(id(node))
+
+        member_kind = {
+            "Methods": MemberKind.METHOD,
+            "Properties": MemberKind.PROPERTY,
+        }.get(current_section)
+        if member_kind is None:
+            notes.append(f"members table found under unrecognized section heading {current_section!r}")
+        for row in node.find_all("tr"):
+            cells = row.find_all("td")
+            if len(cells) < 2:
+                continue
+            name_cell = _member_name_cell(cells)
+            if name_cell is None:
+                continue
+            anchor = name_cell.find("a", href=True)
+            if anchor is None:
+                continue  # no page of its own (e.g. inherited Object.Equals)
+            links.append(
+                {
+                    "name": anchor.get_text(strip=True),
+                    "url": urljoin(base_url, anchor["href"]),
+                    "member_kind": member_kind,
+                }
+            )
+    if not links:
+        notes.append("no member rows with links found on members index page")
+    return links, notes
+
+
+def resolve_type_name_from_members_index(html: str) -> str:
+    """Best-effort fully-qualified owning type name from a "<Type> Members" page.
+
+    Used when such a page is reached without already knowing its owner (e.g.
+    discovered independently via generic link discovery, rather than by
+    following the link from its class page -- the common path, see
+    ``find_members_page_link``).
+    """
+    soup = BeautifulSoup(html, "html.parser")
+    raw_title, _, _ = _parse_title(soup)
+    short_name = _strip_kind_suffix(raw_title)
+    namespace, _ = _parse_namespace(soup, html)
+    return f"{namespace}.{short_name}" if namespace else short_name
 
 
 def sniff_kind(html: str) -> Kind:

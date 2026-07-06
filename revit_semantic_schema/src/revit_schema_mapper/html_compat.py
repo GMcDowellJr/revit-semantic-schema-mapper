@@ -108,6 +108,14 @@ class MiniTag:
     def find_all(self, name: str | None = None, **attrs) -> list["MiniTag"]:
         return [node for node in self._iter_tags() if self._matches_find(node, name, attrs)]
 
+    @property
+    def descendants(self):
+        """All descendant nodes (tags and text), document order -- mirrors bs4's ``.descendants``."""
+        for child in self.children:
+            yield child
+            if isinstance(child, MiniTag):
+                yield from child.descendants
+
     # -- select / select_one ----------------------------------------------
 
     def select(self, css: str) -> list["MiniTag"]:
