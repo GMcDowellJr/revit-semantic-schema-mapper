@@ -38,7 +38,14 @@ python -m revit_schema_mapper --version 2027                            # full r
 they're not installed, the crawler/parser automatically fall back to stdlib-only
 equivalents (`urllib.request`, `html.parser`), so the whole pipeline runs on a bare Python
 install. Useful if your environment restricts installing packages from PyPI. Run with
-`--verbose` to see which backend (fast or fallback) is active. See
+`--verbose` to see which backend (fast or fallback) is active.
+
+On a corporate network with an SSL-inspecting proxy, you may see
+`CERTIFICATE_VERIFY_FAILED: ... Missing Authority Key Identifier` — that's the proxy's root
+CA failing a stricter OpenSSL 3.2+ compliance check that browsers don't enforce; ask your
+IT/security team to fix the CA or exempt the target domain. As a stopgap, set
+`REVIT_SCHEMA_MAPPER_RELAX_TLS_STRICT=1` to disable only that newer check (chain-of-trust and
+hostname verification stay on) — see `http_compat.py`'s module docstring for detail. See
 `docs/crawl_notes.md` → "No-install-required fallback" for how this is implemented.
 
 Outputs land in `outputs/revit_<version>/`: `raw_index.json`, `api_pages.json`,
