@@ -31,7 +31,23 @@ def write_raw_index(output_dir: Path, raw_index_entries: list[dict]) -> None:
     _write_json(output_dir / "raw_index.json", raw_index_entries)
 
 
-def write_api_pages(output_dir: Path, pages: list[ApiPage]) -> None:
+def _redact_doc_text(page: ApiPage) -> ApiPage:
+    """A copy of ``page`` with expressive documentation prose (``summary``,
+    ``remarks``, full code ``examples``) blanked out.
+
+    These fields hold copied text from Autodesk's/RevitApiDocs' documentation,
+    not facts this project derives -- ``classify.py`` reads them from the
+    live ``ApiPage`` objects for classification evidence (docs_semantic_hint)
+    before export ever runs, so redacting only the persisted JSON doesn't
+    affect classification. See docs/crawl_notes.md's data-use notes.
+    """
+    redacted_members = [dataclasses.replace(m, summary="", remarks="", examples=[]) for m in page.members]
+    return dataclasses.replace(page, summary="", remarks="", examples=[], members=redacted_members)
+
+
+def write_api_pages(output_dir: Path, pages: list[ApiPage], *, include_doc_text: bool = False) -> None:
+    if not include_doc_text:
+        pages = [_redact_doc_text(p) for p in pages]
     _write_json(output_dir / "api_pages.json", pages)
 
 

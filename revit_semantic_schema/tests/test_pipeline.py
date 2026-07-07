@@ -1,8 +1,39 @@
 import json
 
+import pytest
+
 from revit_schema_mapper.crawl import CrawlConfig, Crawler
 from revit_schema_mapper.models import ApiPage, ClassRole, IsElementCandidate, Kind, MemberInfo, MemberKind, NodeCandidate
-from revit_schema_mapper.pipeline import _build_known_edge_report, run_pipeline, run_targeted_pipeline
+from revit_schema_mapper.pipeline import _build_known_edge_report, _crawl_and_parse, run_discovery, run_pipeline, run_targeted_pipeline
+
+_WIDGET_NAMESPACE_TREE = [
+    {
+        "title": "Namespaces",
+        "children": [
+            {
+                "title": "Autodesk.Revit.DB Namespace",
+                "tag": "Namespace",
+                "children": [
+                    {
+                        "title": "Widget Class",
+                        "href": "widget-class.htm",
+                        "tag": "Class",
+                        "children": [
+                            {
+                                "title": "Widget Properties",
+                                "href": "widget-properties.htm",
+                                "tag": "Properties",
+                                "children": [
+                                    {"title": "Symbol Property", "href": "symbol-property.htm", "tag": "Property"},
+                                ],
+                            },
+                        ],
+                    },
+                ],
+            },
+        ],
+    }
+]
 
 _CLASS_HTML = """
 <html><body>
@@ -43,6 +74,64 @@ _PROPERTY_HTML = """
 def _prime_cache(crawler: Crawler, url: str, content: str) -> None:
     crawler.config.cache_dir.mkdir(parents=True, exist_ok=True)
     crawler._cache_path(url).write_text(content, encoding="utf-8")
+
+
+def test_run_discovery_reports_page_count_without_fetching_pages(tmp_path):
+    """run_discovery should report the full page count discover_index finds
+    (e.g. so a user can gauge a full run's scale up front) without fetching
+    any of the individual class/property/method pages themselves.
+    """
+    output_dir = tmp_path / "output"
+    config = CrawlConfig(version="2024", namespace_prefix="Autodesk.Revit.DB", cache_dir=output_dir / "cache")
+    crawler = Crawler(config)
+
+    tree = [
+        {
+            "title": "Namespaces",
+            "children": [
+                {
+                    "title": "Autodesk.Revit.DB Namespace",
+                    "tag": "Namespace",
+                    "children": [
+                        {
+                            "title": "Widget Class",
+                            "href": "widget-class.htm",
+                            "tag": "Class",
+                            "children": [
+                                {
+                                    "title": "Widget Properties",
+                                    "href": "widget-properties.htm",
+                                    "tag": "Properties",
+                                    "children": [
+                                        {"title": "Symbol Property", "href": "symbol-property.htm", "tag": "Property"},
+                                    ],
+                                },
+                            ],
+                        },
+                    ],
+                },
+            ],
+        }
+    ]
+    _prime_cache(crawler, crawler.namespace_json_url(), json.dumps(tree))
+    root_url = crawler.version_root_url()
+    _prime_cache(crawler, root_url, "<html><body></body></html>")
+    for toc_name in ("toc.js", "webtoc.xml", "toc.json", "toc.html"):
+        _prime_cache(crawler, root_url + toc_name, "")
+    _prime_cache(crawler, "https://www.revitapidocs.com/sitemap.xml", "")
+    # Deliberately do NOT prime widget-class.htm/widget-properties.htm/
+    # symbol-property.htm -- discovery must not need to fetch them.
+
+    result = run_discovery(config, output_dir)
+
+    urls = {e["url"] for e in result.raw_index_entries}
+    assert urls == {
+        "https://www.revitapidocs.com/2024/widget-class.htm",
+        "https://www.revitapidocs.com/2024/widget-properties.htm",
+        "https://www.revitapidocs.com/2024/symbol-property.htm",
+    }
+    assert result.counts_by_source["namespace_json"] == 3
+    assert (output_dir / "raw_index.json").exists()
 
 
 def test_property_discovered_only_via_namespace_json_gets_declaring_type(tmp_path):
@@ -104,6 +193,81 @@ def test_property_discovered_only_via_namespace_json_gets_declaring_type(tmp_pat
     symbol_pages = [p for p in result.pages if p.full_type_name.endswith(".Symbol")]
     assert len(symbol_pages) == 1
     assert symbol_pages[0].declaring_type == "Autodesk.Revit.DB.Widget"
+
+
+def test_crawl_and_parse_calls_checkpoint_periodically_with_growing_state(tmp_path):
+    """checkpoint() must be called multiple times during a crawl (not just
+    once at the very end) with real, growing snapshots of progress so far --
+    this is what lets a long-running full crawl leave inspectable, current
+    output on disk throughout, instead of only after everything finishes.
+    """
+    output_dir = tmp_path / "output"
+    config = CrawlConfig(version="2024", namespace_prefix="Autodesk.Revit.DB", cache_dir=output_dir / "cache")
+    crawler = Crawler(config)
+
+    _prime_cache(crawler, crawler.namespace_json_url(), json.dumps(_WIDGET_NAMESPACE_TREE))
+    _prime_cache(crawler, "https://www.revitapidocs.com/2024/widget-class.htm", _CLASS_HTML)
+    _prime_cache(crawler, "https://www.revitapidocs.com/2024/widget-properties.htm", _PROPERTIES_INDEX_HTML)
+    _prime_cache(crawler, "https://www.revitapidocs.com/2024/symbol-property.htm", _PROPERTY_HTML)
+
+    entries, _ = crawler.discover_via_namespace_json()
+    by_url = {e["url"]: e for e in entries}
+
+    calls: list[tuple[int, int]] = []
+
+    def spy_checkpoint(pages, failed_urls):
+        calls.append((len(pages), len(failed_urls)))
+
+    pages, failed_urls = _crawl_and_parse(crawler, config, by_url, checkpoint=spy_checkpoint, checkpoint_interval=1)
+
+    assert len(pages) == 2  # Widget class page + Symbol property page (the Properties index page isn't itself a page)
+    assert len(calls) == 3  # checkpoint_interval=1, 3 total pages fetched
+    # Not every snapshot shows the same count -- proves these are real
+    # incremental snapshots taken while the crawl was still in progress,
+    # not the same final state recorded three times.
+    assert len({c[0] for c in calls}) > 1
+
+
+def test_crawl_and_parse_writes_final_checkpoint_on_interrupt(tmp_path, monkeypatch):
+    """A KeyboardInterrupt (or any BaseException) that escapes the crawl loop
+    must trigger one last checkpoint call reflecting whatever was parsed so
+    far, and then propagate -- not get swallowed -- so an interrupted crawl
+    still leaves current output on disk instead of nothing at all.
+    """
+    output_dir = tmp_path / "output"
+    config = CrawlConfig(version="2024", namespace_prefix="Autodesk.Revit.DB", cache_dir=output_dir / "cache")
+    crawler = Crawler(config)
+
+    _prime_cache(crawler, crawler.namespace_json_url(), json.dumps(_WIDGET_NAMESPACE_TREE))
+    _prime_cache(crawler, "https://www.revitapidocs.com/2024/widget-class.htm", _CLASS_HTML)
+    _prime_cache(crawler, "https://www.revitapidocs.com/2024/widget-properties.htm", _PROPERTIES_INDEX_HTML)
+    # Deliberately do NOT prime symbol-property.htm -- fetching it raises below.
+
+    entries, _ = crawler.discover_via_namespace_json()
+    by_url = {e["url"]: e for e in entries}
+
+    real_fetch = crawler.fetch
+
+    def fetch_then_interrupt(url):
+        if url.endswith("symbol-property.htm"):
+            raise KeyboardInterrupt()
+        return real_fetch(url)
+
+    monkeypatch.setattr(crawler, "fetch", fetch_then_interrupt)
+
+    calls: list[tuple[int, int]] = []
+
+    def spy_checkpoint(pages, failed_urls):
+        calls.append((len(pages), len(failed_urls)))
+
+    with pytest.raises(KeyboardInterrupt):
+        _crawl_and_parse(crawler, config, by_url, checkpoint=spy_checkpoint, checkpoint_interval=1)
+
+    assert len(calls) >= 1
+    # The final call is the except-BaseException handler's checkpoint, fired
+    # after widget-class.htm finished parsing but before the interrupt hit
+    # on symbol-property.htm.
+    assert calls[-1][0] == 1
 
 
 _VIEW_CLASS_HTML = """

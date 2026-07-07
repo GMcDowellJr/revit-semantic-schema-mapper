@@ -17,6 +17,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Callable
 from urllib.parse import urlparse
 
 from . import classify, export
@@ -45,7 +46,49 @@ class PipelineResult:
     failed_urls: list[str]
 
 
-def _crawl_and_parse(crawler: Crawler, config: CrawlConfig, by_url: dict[str, dict]) -> tuple[list[ApiPage], list[str]]:
+@dataclass
+class DiscoveryResult:
+    raw_index_entries: list[dict]
+    discovery_errors: list[str]
+    counts_by_source: dict[str, int]
+
+
+def run_discovery(config: CrawlConfig, output_dir: Path | None = None) -> DiscoveryResult:
+    """Run just page discovery (``Crawler.discover_index``) and report how
+    many pages a full ``run_pipeline``/``run_targeted_pipeline`` call would
+    need to fetch, without actually fetching/parsing any of them.
+
+    This costs only the handful of requests discover_index itself makes
+    (namespace JSON, root page, a few TOC file probes, sitemap.xml) --
+    letting you check a full run's scale up front instead of discovering it
+    partway through a multi-hour crawl.
+    """
+    crawler = Crawler(config)
+    raw_index_entries = crawler.discover_index()
+
+    counts_by_source: dict[str, int] = {}
+    for entry in raw_index_entries:
+        source = entry.get("discovered_via", "unknown").split(":", 1)[0]
+        counts_by_source[source] = counts_by_source.get(source, 0) + 1
+
+    if output_dir is not None:
+        output_dir.mkdir(parents=True, exist_ok=True)
+        export.write_raw_index(output_dir, raw_index_entries)
+
+    return DiscoveryResult(
+        raw_index_entries=raw_index_entries,
+        discovery_errors=crawler.last_discovery_errors,
+        counts_by_source=counts_by_source,
+    )
+
+
+def _crawl_and_parse(
+    crawler: Crawler,
+    config: CrawlConfig,
+    by_url: dict[str, dict],
+    checkpoint: Callable[[list[ApiPage], list[str]], None] | None = None,
+    checkpoint_interval: int = 25,
+) -> tuple[list[ApiPage], list[str]]:
     """Fetch/sniff/parse every URL in ``by_url``, following class ->
     Members-page links and enqueueing newly-discovered member pages as it
     goes. ``by_url`` is mutated in place (new entries are added for anything
@@ -53,6 +96,16 @@ def _crawl_and_parse(crawler: Crawler, config: CrawlConfig, by_url: dict[str, di
     crawl) and ``run_targeted_pipeline`` (scoped validation crawl), which
     differ only in how they seed ``by_url`` and what they do with the
     results afterward.
+
+    If ``checkpoint`` is given, it's called every ``checkpoint_interval``
+    pages with the pages/failed_urls parsed so far (the caller is expected to
+    export them), and once more if the loop exits early via an unhandled
+    exception -- including KeyboardInterrupt -- so a long crawl that's
+    interrupted partway through still leaves reasonably fresh, usable output
+    on disk instead of nothing at all. The caller is responsible for calling
+    ``checkpoint`` itself one final time after this returns normally, to
+    export the complete result -- this function only guarantees a checkpoint
+    on the *abnormal*-exit path.
     """
     pages: list[ApiPage] = []
     failed_urls: list[str] = []
@@ -109,6 +162,43 @@ def _crawl_and_parse(crawler: Crawler, config: CrawlConfig, by_url: dict[str, di
                 by_url[url]["discovered_via"] = f"{discovered_via_prefix}:{row_declaring_type_hint}"
 
     queue = list(by_url.keys())
+    try:
+        _run_crawl_loop(
+            crawler=crawler,
+            config=config,
+            by_url=by_url,
+            queue=queue,
+            visited=visited,
+            member_queue=member_queue,
+            pages=pages,
+            failed_urls=failed_urls,
+            enqueue_member_links=enqueue_member_links,
+            checkpoint=checkpoint,
+            checkpoint_interval=checkpoint_interval,
+        )
+    except BaseException:
+        if checkpoint is not None:
+            logger.info("crawl interrupted -- writing a final checkpoint with %d page(s) parsed so far", len(pages))
+            checkpoint(pages, failed_urls)
+        raise
+
+    return pages, failed_urls
+
+
+def _run_crawl_loop(
+    *,
+    crawler: Crawler,
+    config: CrawlConfig,
+    by_url: dict[str, dict],
+    queue: list[str],
+    visited: set[str],
+    member_queue: list[tuple[str, str]],
+    pages: list[ApiPage],
+    failed_urls: list[str],
+    enqueue_member_links: Callable[[list[dict], str, str], None],
+    checkpoint: Callable[[list[ApiPage], list[str]], None] | None,
+    checkpoint_interval: int,
+) -> None:
     while queue:
         url = queue.pop(0)
         if url in visited:
@@ -116,6 +206,13 @@ def _crawl_and_parse(crawler: Crawler, config: CrawlConfig, by_url: dict[str, di
         visited.add(url)
         if config.max_pages is not None and len(visited) > config.max_pages:
             break
+        if len(visited) % checkpoint_interval == 0:
+            logger.info(
+                "progress: %d pages fetched, %d queued, %d parsed, %d failed",
+                len(visited), len(queue), len(pages), len(failed_urls),
+            )
+            if checkpoint is not None:
+                checkpoint(pages, failed_urls)
 
         # by_url's declaring_type_hint is checked first (and is the only one
         # enqueue_member_links corrects in place -- see its docstring), so a
@@ -187,88 +284,105 @@ def _crawl_and_parse(crawler: Crawler, config: CrawlConfig, by_url: dict[str, di
             logger.warning("failed to parse %s: %r", url, exc)
             failed_urls.append(url)
 
-    return pages, failed_urls
 
-
-def run_pipeline(config: CrawlConfig, output_dir: Path, fallback_reason: str | None = None) -> PipelineResult:
+def run_pipeline(
+    config: CrawlConfig,
+    output_dir: Path,
+    fallback_reason: str | None = None,
+    include_doc_text: bool = False,
+    checkpoint_interval: int = 25,
+) -> PipelineResult:
     crawler = Crawler(config)
     output_dir.mkdir(parents=True, exist_ok=True)
 
     raw_index_entries = crawler.discover_index()
     by_url = {e["url"]: e for e in raw_index_entries}
 
-    pages, failed_urls = _crawl_and_parse(crawler, config, by_url)
+    last_result: dict = {}
 
-    in_scope_pages = [p for p in pages if not p.namespace or p.namespace.startswith(config.namespace_prefix)]
+    def checkpoint(pages: list[ApiPage], failed_urls: list[str]) -> None:
+        """Write every output file reflecting ``pages``/``failed_urls`` as
+        parsed so far. Called periodically during the crawl (see
+        ``_crawl_and_parse``) and once more after it returns, so a full run
+        that takes hours leaves current, usable output on disk throughout --
+        not just after everything finishes -- and a run that's interrupted
+        partway through (including by KeyboardInterrupt) still leaves
+        whatever was parsed up to that point, instead of nothing at all.
+        """
+        in_scope_pages = [p for p in pages if not p.namespace or p.namespace.startswith(config.namespace_prefix)]
 
-    node_candidates = classify.build_node_candidates(in_scope_pages)
-    edge_candidates = classify.build_edge_candidates(in_scope_pages)
+        node_candidates = classify.build_node_candidates(in_scope_pages)
+        edge_candidates = classify.build_edge_candidates(in_scope_pages)
 
-    raw_index_entries = list(by_url.values())
+        raw_index = list(by_url.values())
 
-    export.write_raw_index(output_dir, raw_index_entries)
-    export.write_api_pages(output_dir, in_scope_pages)
-    export.write_node_candidates(output_dir, node_candidates)
-    export.write_edge_candidates(output_dir, edge_candidates)
-    export.write_enum_catalogs(output_dir, in_scope_pages)
+        export.write_raw_index(output_dir, raw_index)
+        export.write_api_pages(output_dir, in_scope_pages, include_doc_text=include_doc_text)
+        export.write_node_candidates(output_dir, node_candidates)
+        export.write_edge_candidates(output_dir, edge_candidates)
+        export.write_enum_catalogs(output_dir, in_scope_pages)
 
-    limitations = [
-        "Edge classification is a static, docs-only heuristic; no candidate edge has been "
-        "validated against a live Revit document (see confidence label needs_runtime_validation).",
-        "Member pages reachable only via a type's members table are discovered incrementally "
-        "during parsing; a partial/interrupted crawl can under-count members for the last few "
-        "types processed.",
-        "Name-keyword-to-edge-type mapping (classify.py) is heuristic and English-name-based; "
-        "it will misclassify or under-classify members whose names don't match the documented "
-        "keyword list.",
-    ]
-    if failed_urls:
-        limitations.append(f"{len(failed_urls)} page(s) failed to fetch or parse: {failed_urls[:10]}{' ...' if len(failed_urls) > 10 else ''}")
-    if crawler.last_discovery_errors:
-        limitations.append(
-            f"discover_index encountered {len(crawler.last_discovery_errors)} error(s) while "
-            f"finding pages to crawl (see logs for full detail): {crawler.last_discovery_errors[:5]}"
-            f"{' ...' if len(crawler.last_discovery_errors) > 5 else ''}"
+        limitations = [
+            "Edge classification is a static, docs-only heuristic; no candidate edge has been "
+            "validated against a live Revit document (see confidence label needs_runtime_validation).",
+            "Member pages reachable only via a type's members table are discovered incrementally "
+            "during parsing; a partial/interrupted crawl can under-count members for the last few "
+            "types processed.",
+            "Name-keyword-to-edge-type mapping (classify.py) is heuristic and English-name-based; "
+            "it will misclassify or under-classify members whose names don't match the documented "
+            "keyword list.",
+        ]
+        if failed_urls:
+            limitations.append(f"{len(failed_urls)} page(s) failed to fetch or parse: {failed_urls[:10]}{' ...' if len(failed_urls) > 10 else ''}")
+        if crawler.last_discovery_errors:
+            limitations.append(
+                f"discover_index encountered {len(crawler.last_discovery_errors)} error(s) while "
+                f"finding pages to crawl (see logs for full detail): {crawler.last_discovery_errors[:5]}"
+                f"{' ...' if len(crawler.last_discovery_errors) > 5 else ''}"
+            )
+        if not raw_index and crawler.last_discovery_errors:
+            limitations.append(
+                "0 pages were discovered this run. This is not 'the site has nothing under this "
+                "namespace' -- discover_index's fetch attempts all failed (see the error(s) above), "
+                "which most commonly means a network/proxy/TLS/reachability problem, not a parser "
+                "bug."
+            )
+
+        next_steps = [
+            "Run against a live revitapidocs.com session and diff parser_notes across all pages to "
+            "find and fix selector assumptions that didn't hold (see docs/crawl_notes.md).",
+            "Expand the name-keyword edge taxonomy with additional evidence gathered from real docs "
+            "text (docs_semantic_hint) rather than name matching alone.",
+            "Cross-check high-confidence candidate edges (direct_return_type, "
+            "elementid_with_strong_name) against a small number of real Revit documents to promote "
+            "them out of 'candidate' status.",
+            "Extend to Autodesk.Revit.DB.Architecture and Autodesk.Revit.DB.Structure for "
+            "Room/Space and structural element coverage once the core DB namespace is validated.",
+        ]
+
+        export.write_summary(
+            output_dir,
+            revit_version=config.version,
+            fallback_reason=fallback_reason,
+            raw_index_entries=raw_index,
+            pages=in_scope_pages,
+            node_candidates=node_candidates,
+            edge_candidates=edge_candidates,
+            limitations=limitations,
+            next_steps=next_steps,
         )
-    if not raw_index_entries and crawler.last_discovery_errors:
-        limitations.append(
-            "0 pages were discovered this run. This is not 'the site has nothing under this "
-            "namespace' -- discover_index's fetch attempts all failed (see the error(s) above), "
-            "which most commonly means a network/proxy/TLS/reachability problem, not a parser "
-            "bug."
-        )
 
-    next_steps = [
-        "Run against a live revitapidocs.com session and diff parser_notes across all pages to "
-        "find and fix selector assumptions that didn't hold (see docs/crawl_notes.md).",
-        "Expand the name-keyword edge taxonomy with additional evidence gathered from real docs "
-        "text (docs_semantic_hint) rather than name matching alone.",
-        "Cross-check high-confidence candidate edges (direct_return_type, "
-        "elementid_with_strong_name) against a small number of real Revit documents to promote "
-        "them out of 'candidate' status.",
-        "Extend to Autodesk.Revit.DB.Architecture and Autodesk.Revit.DB.Structure for "
-        "Room/Space and structural element coverage once the core DB namespace is validated.",
-    ]
+        last_result["raw_index_entries"] = raw_index
+        last_result["pages"] = in_scope_pages
+        last_result["node_candidates"] = node_candidates
+        last_result["edge_candidates"] = edge_candidates
+        last_result["failed_urls"] = failed_urls
 
-    export.write_summary(
-        output_dir,
-        revit_version=config.version,
-        fallback_reason=fallback_reason,
-        raw_index_entries=raw_index_entries,
-        pages=in_scope_pages,
-        node_candidates=node_candidates,
-        edge_candidates=edge_candidates,
-        limitations=limitations,
-        next_steps=next_steps,
-    )
+    pages, failed_urls = _crawl_and_parse(crawler, config, by_url, checkpoint=checkpoint, checkpoint_interval=checkpoint_interval)
 
-    return PipelineResult(
-        raw_index_entries=raw_index_entries,
-        pages=in_scope_pages,
-        node_candidates=node_candidates,
-        edge_candidates=edge_candidates,
-        failed_urls=failed_urls,
-    )
+    checkpoint(pages, failed_urls)  # guaranteed final write reflecting the complete result
+
+    return PipelineResult(**last_result)
 
 
 # -- targeted validation crawl -------------------------------------------------
@@ -480,6 +594,8 @@ def run_targeted_pipeline(
     output_dir: Path,
     target_full_type_names: list[str] | None = None,
     known_edge_checks: list[tuple[str, str]] | None = None,
+    include_doc_text: bool = False,
+    checkpoint_interval: int = 25,
 ) -> TargetedPipelineResult:
     """Scoped validation crawl: fetch only the target classes' pages (class,
     Members, Methods/Properties, and every linked property/method page) via
@@ -502,44 +618,50 @@ def run_targeted_pipeline(
     entries, found_map, discovery_notes = crawler.discover_targeted(target_full_type_names)
 
     by_url = {e["url"]: e for e in entries}
-    pages, failed_urls = _crawl_and_parse(crawler, config, by_url)
 
-    node_candidates = classify.build_node_candidates(pages)
-    edge_candidates = classify.build_edge_candidates(pages)
+    last_result: dict = {}
 
-    raw_index_entries = list(by_url.values())
+    def checkpoint(pages: list[ApiPage], failed_urls: list[str]) -> None:
+        node_candidates = classify.build_node_candidates(pages)
+        edge_candidates = classify.build_edge_candidates(pages)
 
-    target_report = _build_target_report(target_full_type_names, found_map, pages)
-    known_edge_report = _build_known_edge_report(pages, edge_candidates, node_candidates, known_edge_checks)
+        raw_index_entries = list(by_url.values())
 
-    export.write_raw_index(output_dir, raw_index_entries)
-    export.write_api_pages(output_dir, pages)
-    export.write_node_candidates(output_dir, node_candidates)
-    export.write_edge_candidates(output_dir, edge_candidates)
-    export.write_enum_catalogs(output_dir, pages)
-    export.write_target_report(output_dir, target_report)
-    export.write_known_edge_report(output_dir, known_edge_report)
-    export.write_validation_summary(
-        output_dir,
-        revit_version=config.version,
-        target_full_type_names=target_full_type_names,
-        target_report=target_report,
-        known_edge_report=known_edge_report,
-        raw_index_entries=raw_index_entries,
-        pages=pages,
-        node_candidates=node_candidates,
-        edge_candidates=edge_candidates,
-        failed_urls=failed_urls,
-        discovery_notes=discovery_notes,
-    )
+        target_report = _build_target_report(target_full_type_names, found_map, pages)
+        known_edge_report = _build_known_edge_report(pages, edge_candidates, node_candidates, known_edge_checks)
 
-    return TargetedPipelineResult(
-        raw_index_entries=raw_index_entries,
-        pages=pages,
-        node_candidates=node_candidates,
-        edge_candidates=edge_candidates,
-        failed_urls=failed_urls,
-        target_report=target_report,
-        known_edge_report=known_edge_report,
-        discovery_notes=discovery_notes,
-    )
+        export.write_raw_index(output_dir, raw_index_entries)
+        export.write_api_pages(output_dir, pages, include_doc_text=include_doc_text)
+        export.write_node_candidates(output_dir, node_candidates)
+        export.write_edge_candidates(output_dir, edge_candidates)
+        export.write_enum_catalogs(output_dir, pages)
+        export.write_target_report(output_dir, target_report)
+        export.write_known_edge_report(output_dir, known_edge_report)
+        export.write_validation_summary(
+            output_dir,
+            revit_version=config.version,
+            target_full_type_names=target_full_type_names,
+            target_report=target_report,
+            known_edge_report=known_edge_report,
+            raw_index_entries=raw_index_entries,
+            pages=pages,
+            node_candidates=node_candidates,
+            edge_candidates=edge_candidates,
+            failed_urls=failed_urls,
+            discovery_notes=discovery_notes,
+        )
+
+        last_result["raw_index_entries"] = raw_index_entries
+        last_result["pages"] = pages
+        last_result["node_candidates"] = node_candidates
+        last_result["edge_candidates"] = edge_candidates
+        last_result["failed_urls"] = failed_urls
+        last_result["target_report"] = target_report
+        last_result["known_edge_report"] = known_edge_report
+        last_result["discovery_notes"] = discovery_notes
+
+    pages, failed_urls = _crawl_and_parse(crawler, config, by_url, checkpoint=checkpoint, checkpoint_interval=checkpoint_interval)
+
+    checkpoint(pages, failed_urls)  # guaranteed final write reflecting the complete result
+
+    return TargetedPipelineResult(**last_result)

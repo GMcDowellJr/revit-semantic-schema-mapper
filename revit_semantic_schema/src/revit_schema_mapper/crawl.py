@@ -6,9 +6,14 @@ Design constraints (see docs/crawl_notes.md for the full rationale):
 - Throttled: a minimum delay between requests to the same host.
 - Cached: every fetched page is written to disk under ``cache_dir`` keyed by
   URL, and is never re-fetched on a later run unless ``force_refresh=True``.
-- Resumable: ``raw_index.json`` is written incrementally so a crawl that is
-  interrupted partway through can be restarted and will pick up where it
-  left off.
+  This is what makes restarting an interrupted crawl cheap: re-running the
+  same command skips every already-cached page and only fetches what's
+  missing.
+- Checkpointed: ``pipeline.run_pipeline``/``run_targeted_pipeline`` write all
+  output files (not just ``raw_index.json``) every ``checkpoint_interval``
+  pages, and once more before propagating an unhandled exception (including
+  KeyboardInterrupt) -- so a long crawl that's interrupted partway through
+  still leaves current, usable output on disk, not nothing at all.
 - Scoped: only URLs under the configured RevitApiDocs version path are
   followed; nothing outside revitapidocs.com is ever requested.
 
@@ -47,6 +52,8 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from urllib.parse import urljoin, urlparse
+from urllib.robotparser import RobotFileParser
+from xml.etree import ElementTree
 
 try:
     from bs4 import BeautifulSoup
@@ -65,7 +72,7 @@ USER_AGENT = (
     "polite, throttled, caches locally)"
 )
 
-DEFAULT_THROTTLE_SECONDS = 1.5
+DEFAULT_THROTTLE_SECONDS = 2.0
 ALLOWED_HOST = "www.revitapidocs.com"
 # CDN host serving the client-side namespace/TOC JSON (see discover_via_namespace_json).
 NAMESPACE_JSON_HOST = "d24b2zsrnzhmgb.cloudfront.net"
@@ -87,6 +94,10 @@ class OutOfScopeURLError(ValueError):
     """Raised when the crawler is asked to fetch a URL outside revitapidocs.com."""
 
 
+class RobotsDisallowedError(ValueError):
+    """Raised when robots.txt disallows fetching a URL for our user-agent."""
+
+
 class Crawler:
     def __init__(self, config: CrawlConfig):
         self.config = config
@@ -94,6 +105,11 @@ class Crawler:
         self.client = HttpClient({"User-Agent": USER_AGENT})
         self._last_request_time: float = 0.0
         self.last_discovery_errors: list[str] = []
+        # Lazily loaded on the first real (non-cached) fetch of ALLOWED_HOST,
+        # not here in __init__ -- so constructing a Crawler in a test that
+        # primes every URL it touches in the cache never makes a real
+        # network call just to check robots.txt.
+        self._robots: RobotFileParser | None = None
 
     # -- low-level fetch -------------------------------------------------
 
@@ -111,11 +127,70 @@ class Crawler:
         if wait > 0:
             time.sleep(wait)
 
+    def _parse_robots_text(self, text: str) -> None:
+        parser = RobotFileParser()
+        parser.parse(text.splitlines())
+        # parser.parse() alone leaves last_checked at 0; can_fetch()
+        # unconditionally returns False until it's set (that's normally
+        # read()'s job, but read() does its own urllib.request fetch,
+        # bypassing our HttpClient backend/proxy handling -- so we fetch via
+        # self.client and parse the text ourselves instead, and must set
+        # this flag by hand to get functional can_fetch() behavior).
+        parser.last_checked = time.time()
+        delay = parser.crawl_delay(USER_AGENT)
+        if delay is not None:
+            logger.info("robots.txt: crawl-delay directive = %.1fs (for %r)", float(delay), USER_AGENT)
+            if float(delay) > self.config.throttle_seconds:
+                logger.info(
+                    "robots.txt: crawl-delay %.1fs exceeds configured throttle_seconds=%.1fs -- honoring the larger value",
+                    delay, self.config.throttle_seconds,
+                )
+                self.config.throttle_seconds = float(delay)
+        else:
+            logger.info("robots.txt: no crawl-delay directive found")
+        version_root = self.version_root_url()
+        logger.info(
+            "robots.txt: can_fetch(%r, %r) = %s",
+            USER_AGENT, version_root, parser.can_fetch(USER_AGENT, version_root),
+        )
+        self._robots = parser
+
+    def _ensure_robots_loaded(self) -> None:
+        """Fetch and parse ``robots.txt`` for ``ALLOWED_HOST`` on first use.
+
+        Not routed through ``fetch()`` (and not cached to disk): robots.txt
+        is small, cheap, and should reflect the site's *current* rules each
+        run rather than a stale cached copy. A fetch failure is treated as
+        "no restrictions" -- the conventional interpretation when robots.txt
+        is unreachable (as opposed to an explicit 401/403, which would mean
+        "disallow all"; ``HttpClient`` doesn't currently distinguish that
+        case from other failures, so both are treated the same, permissive
+        way here).
+        """
+        if self._robots is not None:
+            return
+        robots_url = urljoin(self.config.base_url, "/robots.txt")
+        try:
+            self._throttle()
+            result = self.client.get(robots_url, timeout=30)
+            self._last_request_time = time.monotonic()
+        except Exception as exc:  # noqa: BLE001 - see docstring
+            logger.info("robots.txt: could not fetch %s (%r) -- proceeding as if unrestricted", robots_url, exc)
+            parser = RobotFileParser()
+            parser.allow_all = True  # can_fetch() short-circuits to True on this, unlike an unparsed/empty parser
+            self._robots = parser
+            return
+        logger.info("robots.txt: loaded from %s", robots_url)
+        logger.info("robots.txt: raw content --\n%s", result.text)
+        self._parse_robots_text(result.text)
+
     def fetch(self, url: str) -> str:
         """Fetch a URL, using the on-disk cache when available.
 
         Raises OutOfScopeURLError if the URL is not on revitapidocs.com, so a
         bug in link discovery cannot accidentally crawl the wider internet.
+        Raises RobotsDisallowedError if ALLOWED_HOST's robots.txt disallows
+        this path for our user-agent.
         """
         host = urlparse(url).netloc
         if host not in ALLOWED_HOSTS:
@@ -124,6 +199,11 @@ class Crawler:
         cache_path = self._cache_path(url)
         if cache_path.exists() and not self.config.force_refresh:
             return cache_path.read_text(encoding="utf-8", errors="replace")
+
+        if host == ALLOWED_HOST:
+            self._ensure_robots_loaded()
+            if self._robots is not None and not self._robots.can_fetch(USER_AGENT, url):
+                raise RobotsDisallowedError(f"robots.txt disallows fetching {url!r} for user-agent {USER_AGENT!r}")
 
         self._throttle()
         result = self.client.get(url, timeout=30)
@@ -377,7 +457,7 @@ class Crawler:
         sitemap_url = urljoin(self.config.base_url, "/sitemap.xml")
         try:
             sitemap_text = self.fetch(sitemap_url)
-            found.update(self._links_from_html(sitemap_text, sitemap_url, "sitemap_xml"))
+            found.update(self._links_from_sitemap_xml(sitemap_text, sitemap_url))
         except Exception:  # noqa: BLE001 - optional source
             pass
 
@@ -422,4 +502,27 @@ class Crawler:
                 absolute,
                 {"url": absolute, "link_text": "", "discovered_via": f"{discovered_via}:regex_guid"},
             )
+        return found
+
+    def _links_from_sitemap_xml(self, text: str, source_url: str) -> dict[str, dict]:
+        """A sitemap.xml lists pages as ``<url><loc>...</loc></url>``, not
+        ``<a href>`` -- ``_links_from_html``'s BeautifulSoup/regex approach
+        never matches that shape (and, parsing genuine XML with an HTML
+        parser, only earns a noisy ``XMLParsedAsHTMLWarning``). Extract
+        ``<loc>`` text directly via the stdlib XML parser instead.
+        """
+        found: dict[str, dict] = {}
+        try:
+            root = ElementTree.fromstring(text)
+        except ElementTree.ParseError:
+            return found
+        for element in root.iter():
+            if element.tag.rsplit("}", 1)[-1] != "loc" or not element.text:
+                continue
+            absolute = urljoin(source_url, element.text.strip())
+            if urlparse(absolute).netloc != ALLOWED_HOST:
+                continue
+            if f"/{self.config.version}/" not in absolute:
+                continue
+            found[absolute] = {"url": absolute, "link_text": "", "discovered_via": "sitemap_xml"}
         return found

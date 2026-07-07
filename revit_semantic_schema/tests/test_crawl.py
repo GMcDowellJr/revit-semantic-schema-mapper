@@ -1,6 +1,8 @@
 import json
 
-from revit_schema_mapper.crawl import CrawlConfig, Crawler
+import pytest
+
+from revit_schema_mapper.crawl import CrawlConfig, Crawler, RobotsDisallowedError
 
 
 def _prime_cache(crawler: Crawler, url: str, content: str) -> None:
@@ -191,3 +193,123 @@ def test_discover_index_merges_namespace_json_results(tmp_path):
 
     urls = {e["url"] for e in entries}
     assert "https://www.revitapidocs.com/2024/wall-class.htm" in urls
+
+
+def test_discover_index_finds_urls_in_real_sitemap_xml(tmp_path):
+    config = CrawlConfig(version="2024", namespace_prefix="Autodesk.Revit.DB", cache_dir=tmp_path / "cache")
+    crawler = Crawler(config)
+    _prime_cache(crawler, crawler.namespace_json_url(), json.dumps([]))
+    root_url = crawler.version_root_url()
+    _prime_cache(crawler, root_url, "<html><body></body></html>")
+    for toc_name in ("toc.js", "webtoc.xml", "toc.json", "toc.html"):
+        _prime_cache(crawler, root_url + toc_name, "")
+    # A sitemap.xml lists pages as <url><loc>...</loc></url>, not <a href> --
+    # this is genuine XML, not HTML with anchor tags.
+    sitemap_xml = (
+        '<?xml version="1.0" encoding="UTF-8"?>'
+        '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">'
+        "<url><loc>https://www.revitapidocs.com/2024/wall-class.htm</loc></url>"
+        "<url><loc>https://www.revitapidocs.com/2023/other-version.htm</loc></url>"
+        "</urlset>"
+    )
+    _prime_cache(crawler, "https://www.revitapidocs.com/sitemap.xml", sitemap_xml)
+
+    entries = crawler.discover_index()
+
+    urls = {e["url"] for e in entries}
+    assert "https://www.revitapidocs.com/2024/wall-class.htm" in urls
+    assert "https://www.revitapidocs.com/2023/other-version.htm" not in urls
+
+
+def test_links_from_sitemap_xml_ignores_malformed_content(tmp_path):
+    config = CrawlConfig(version="2024", namespace_prefix="Autodesk.Revit.DB", cache_dir=tmp_path / "cache")
+    crawler = Crawler(config)
+
+    assert crawler._links_from_sitemap_xml("not xml at all", "https://www.revitapidocs.com/sitemap.xml") == {}
+
+
+def test_fetch_raises_when_robots_txt_disallows_path(tmp_path):
+    config = CrawlConfig(version="2024", namespace_prefix="Autodesk.Revit.DB", cache_dir=tmp_path / "cache")
+    crawler = Crawler(config)
+    crawler._parse_robots_text("User-agent: *\nDisallow: /2024/blocked-class.htm\n")
+
+    with pytest.raises(RobotsDisallowedError):
+        crawler.fetch("https://www.revitapidocs.com/2024/blocked-class.htm")
+
+
+def test_fetch_allows_path_robots_txt_does_not_disallow(tmp_path, monkeypatch):
+    """Exercises the real (non-cached) fetch path end-to-end -- including
+    _ensure_robots_loaded and can_fetch -- for a URL robots.txt doesn't
+    disallow, without making a real network call.
+    """
+    from revit_schema_mapper.http_compat import FetchResult
+
+    config = CrawlConfig(version="2024", namespace_prefix="Autodesk.Revit.DB", cache_dir=tmp_path / "cache")
+    crawler = Crawler(config)
+    crawler._parse_robots_text("User-agent: *\nDisallow: /2024/blocked-class.htm\n")
+    monkeypatch.setattr(crawler.client, "get", lambda url, timeout=30: FetchResult(text="<html></html>", status_code=200))
+
+    assert crawler.fetch("https://www.revitapidocs.com/2024/allowed-class.htm") == "<html></html>"
+
+
+def test_fetch_does_not_check_robots_txt_for_already_cached_urls(tmp_path):
+    """Serving already-cached content doesn't re-hit the server, so it
+    shouldn't require (or be blocked by) a robots.txt check.
+    """
+    config = CrawlConfig(version="2024", namespace_prefix="Autodesk.Revit.DB", cache_dir=tmp_path / "cache")
+    crawler = Crawler(config)
+    _prime_cache(crawler, "https://www.revitapidocs.com/2024/wall-class.htm", "<html></html>")
+
+    assert crawler.fetch("https://www.revitapidocs.com/2024/wall-class.htm") == "<html></html>"
+    assert crawler._robots is None  # never touched -- cache hit returned before any robots check
+
+
+def test_robots_txt_crawl_delay_raises_effective_throttle(tmp_path):
+    config = CrawlConfig(version="2024", namespace_prefix="Autodesk.Revit.DB", cache_dir=tmp_path / "cache", throttle_seconds=1.0)
+    crawler = Crawler(config)
+
+    crawler._parse_robots_text("User-agent: *\nCrawl-delay: 5\n")
+
+    assert crawler.config.throttle_seconds == 5.0
+
+
+def test_robots_txt_unreachable_allows_fetch_rather_than_blocking_everything(tmp_path):
+    """Regression test: urllib.robotparser.RobotFileParser.can_fetch() returns
+    False unconditionally until .read() (not .parse()) sets last_checked, so
+    naively doing `self._robots = RobotFileParser()` on a fetch failure (with
+    no rules parsed and no allow_all set) silently disallowed every single
+    fetch -- the opposite of the intended "treat unreachable robots.txt as
+    unrestricted" behavior.
+    """
+    config = CrawlConfig(version="2024", namespace_prefix="Autodesk.Revit.DB", cache_dir=tmp_path / "cache")
+    crawler = Crawler(config)
+
+    # Do NOT prime robots.txt in the cache and do NOT call _parse_robots_text
+    # -- _ensure_robots_loaded's real (network) fetch will fail in the test
+    # sandbox, exercising the except branch.
+    crawler._ensure_robots_loaded()
+
+    assert crawler._robots is not None
+    assert crawler._robots.can_fetch("AnyAgent/1.0", "https://www.revitapidocs.com/2024/wall-class.htm") is True
+
+
+def test_parsed_robots_txt_with_no_matching_rules_allows_fetch(tmp_path):
+    """Regression test for the same can_fetch()-needs-last_checked pitfall,
+    on the success path: parsing real robots.txt text that simply doesn't
+    disallow anything must not leave every URL blocked.
+    """
+    config = CrawlConfig(version="2024", namespace_prefix="Autodesk.Revit.DB", cache_dir=tmp_path / "cache")
+    crawler = Crawler(config)
+
+    crawler._parse_robots_text("User-agent: *\nDisallow:\n")
+
+    assert crawler._robots.can_fetch(config.namespace_prefix, "https://www.revitapidocs.com/2024/wall-class.htm") is True
+
+
+def test_robots_txt_crawl_delay_does_not_lower_configured_throttle(tmp_path):
+    config = CrawlConfig(version="2024", namespace_prefix="Autodesk.Revit.DB", cache_dir=tmp_path / "cache", throttle_seconds=10.0)
+    crawler = Crawler(config)
+
+    crawler._parse_robots_text("User-agent: *\nCrawl-delay: 2\n")
+
+    assert crawler.config.throttle_seconds == 10.0
