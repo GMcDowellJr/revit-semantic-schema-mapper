@@ -22,8 +22,9 @@ from typing import Callable
 from urllib.parse import urlparse
 
 from . import classify, export
+from .community import DEFAULT_OPENROUTER_MODEL
 from .crawl import ALLOWED_HOST, CrawlConfig, Crawler
-from .graph import GraphBuildResult, build_graph
+from .graph import GraphBuildResult, apply_communities, build_graph
 from .models import ApiPage, EdgeCandidate, Kind, NodeCandidate
 from .parse import (
     extract_member_links,
@@ -84,10 +85,17 @@ def run_discovery(config: CrawlConfig, output_dir: Path | None = None) -> Discov
     )
 
 
-def run_graph_only(output_dir: Path, revit_version: str) -> GraphBuildResult:
-    """Recompute ``graph.json``/``graph_core.json`` (and refresh the
-    'Knowledge graph materialization' section of whichever summary file
-    exists) from an existing run's already-written
+def run_graph_only(
+    output_dir: Path,
+    revit_version: str,
+    *,
+    label_communities_llm: bool = False,
+    community_label_model: str = DEFAULT_OPENROUTER_MODEL,
+    openrouter_api_key: str | None = None,
+) -> GraphBuildResult:
+    """Recompute ``graph.json``/``graph_core.json``/``graph.html`` (and
+    refresh the 'Knowledge graph materialization' section of whichever
+    summary file exists) from an existing run's already-written
     ``node_type_candidates.json``/``candidate_edges.json`` -- no crawling,
     fetching, or re-parsing of any page.
 
@@ -95,13 +103,15 @@ def run_graph_only(output_dir: Path, revit_version: str) -> GraphBuildResult:
     and re-classifies every page from scratch, which is itself the slow
     part on constrained hardware (e.g. a Raspberry Pi working through tens
     of thousands of cached pages) -- this mode is for iterating on graph.py
-    alone without paying that cost again.
+    (or community detection/labeling) alone without paying that cost again.
     """
     node_candidates = export.read_node_candidates(output_dir)
     edge_candidates = export.read_edge_candidates(output_dir)
     result = build_graph(node_candidates, edge_candidates)
+    apply_communities(result, use_llm_labels=label_communities_llm, model=community_label_model, api_key=openrouter_api_key)
 
     export.write_graph(output_dir, result, revit_version=revit_version)
+    export.write_graph_html(output_dir, result, revit_version=revit_version)
     # Try both -- a no-op for whichever summary filename isn't this
     # directory's kind (full run vs. --targeted-validation).
     export.refresh_graph_section_in_file(output_dir / "summary.md", result, section_number=14)
@@ -114,7 +124,7 @@ def _crawl_and_parse(
     crawler: Crawler,
     config: CrawlConfig,
     by_url: dict[str, dict],
-    checkpoint: Callable[[list[ApiPage], list[str]], None] | None = None,
+    checkpoint: Callable[[list[ApiPage], list[str], bool], None] | None = None,
     checkpoint_interval: int = 25,
     checkpoint_min_interval_seconds: float = 30.0,
 ) -> tuple[list[ApiPage], list[str]]:
@@ -145,6 +155,14 @@ def _crawl_and_parse(
     at all. The caller is responsible for calling ``checkpoint`` itself one
     final time after this returns normally, to export the complete result --
     this function only guarantees a checkpoint on the *abnormal*-exit path.
+
+    ``checkpoint``'s third argument, ``is_final``, is ``False`` for every
+    periodic in-loop call and ``True`` for the abnormal-exit call here (the
+    last checkpoint this process will make, even if the crawl itself was
+    interrupted). Callers use this to gate anything with a real per-call
+    cost -- e.g. an opt-in LLM labeling request -- to just once at the end
+    of a run rather than repeating it (and its cost) at every periodic
+    checkpoint of a long crawl.
     """
     pages: list[ApiPage] = []
     failed_urls: list[str] = []
@@ -219,7 +237,7 @@ def _crawl_and_parse(
     except BaseException:
         if checkpoint is not None:
             logger.info("crawl interrupted -- writing a final checkpoint with %d page(s) parsed so far", len(pages))
-            checkpoint(pages, failed_urls)
+            checkpoint(pages, failed_urls, True)
         raise
 
     return pages, failed_urls
@@ -236,7 +254,7 @@ def _run_crawl_loop(
     pages: list[ApiPage],
     failed_urls: list[str],
     enqueue_member_links: Callable[[list[dict], str, str], None],
-    checkpoint: Callable[[list[ApiPage], list[str]], None] | None,
+    checkpoint: Callable[[list[ApiPage], list[str], bool], None] | None,
     checkpoint_interval: int,
     checkpoint_min_interval_seconds: float,
 ) -> None:
@@ -254,7 +272,7 @@ def _run_crawl_loop(
                 len(visited), len(queue), len(pages), len(failed_urls),
             )
             if checkpoint is not None and time.monotonic() - last_checkpoint_time >= checkpoint_min_interval_seconds:
-                checkpoint(pages, failed_urls)
+                checkpoint(pages, failed_urls, False)
                 # Measured *after* checkpoint() returns, not before: a slow
                 # export (the case this rate limit exists to protect --
                 # e.g. serializing a large crawl can itself take longer than
@@ -342,6 +360,9 @@ def run_pipeline(
     include_doc_text: bool = False,
     checkpoint_interval: int = 25,
     checkpoint_min_interval_seconds: float = 30.0,
+    label_communities_llm: bool = False,
+    community_label_model: str = DEFAULT_OPENROUTER_MODEL,
+    openrouter_api_key: str | None = None,
 ) -> PipelineResult:
     crawler = Crawler(config)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -351,7 +372,7 @@ def run_pipeline(
 
     last_result: dict = {}
 
-    def checkpoint(pages: list[ApiPage], failed_urls: list[str]) -> None:
+    def checkpoint(pages: list[ApiPage], failed_urls: list[str], is_final: bool = False) -> None:
         """Write every output file reflecting ``pages``/``failed_urls`` as
         parsed so far. Called periodically during the crawl (see
         ``_crawl_and_parse``) and once more after it returns, so a full run
@@ -359,12 +380,24 @@ def run_pipeline(
         not just after everything finishes -- and a run that's interrupted
         partway through (including by KeyboardInterrupt) still leaves
         whatever was parsed up to that point, instead of nothing at all.
+
+        Community *detection* and heuristic labeling are free and run every
+        checkpoint. The opt-in OpenRouter labeling call has a real per-call
+        cost, so it's gated to ``is_final`` -- otherwise a long crawl's
+        periodic checkpoints would each re-label the (still-growing) graph
+        and multiply that cost for no benefit.
         """
         in_scope_pages = [p for p in pages if not p.namespace or p.namespace.startswith(config.namespace_prefix)]
 
         node_candidates = classify.build_node_candidates(in_scope_pages)
         edge_candidates = classify.build_edge_candidates(in_scope_pages)
         graph_result = build_graph(node_candidates, edge_candidates)
+        apply_communities(
+            graph_result,
+            use_llm_labels=label_communities_llm and is_final,
+            model=community_label_model,
+            api_key=openrouter_api_key,
+        )
 
         raw_index = list(by_url.values())
 
@@ -374,6 +407,7 @@ def run_pipeline(
         export.write_edge_candidates(output_dir, edge_candidates)
         export.write_enum_catalogs(output_dir, in_scope_pages)
         export.write_graph(output_dir, graph_result, revit_version=config.version)
+        export.write_graph_html(output_dir, graph_result, revit_version=config.version)
 
         limitations = [
             "Edge classification is a static, docs-only heuristic; no candidate edge has been "
@@ -436,7 +470,7 @@ def run_pipeline(
         crawler, config, by_url, checkpoint=checkpoint, checkpoint_interval=checkpoint_interval, checkpoint_min_interval_seconds=checkpoint_min_interval_seconds
     )
 
-    checkpoint(pages, failed_urls)  # guaranteed final write reflecting the complete result
+    checkpoint(pages, failed_urls, True)  # guaranteed final write reflecting the complete result
 
     return PipelineResult(**last_result)
 
@@ -653,6 +687,9 @@ def run_targeted_pipeline(
     include_doc_text: bool = False,
     checkpoint_interval: int = 25,
     checkpoint_min_interval_seconds: float = 30.0,
+    label_communities_llm: bool = False,
+    community_label_model: str = DEFAULT_OPENROUTER_MODEL,
+    openrouter_api_key: str | None = None,
 ) -> TargetedPipelineResult:
     """Scoped validation crawl: fetch only the target classes' pages (class,
     Members, Methods/Properties, and every linked property/method page) via
@@ -678,10 +715,16 @@ def run_targeted_pipeline(
 
     last_result: dict = {}
 
-    def checkpoint(pages: list[ApiPage], failed_urls: list[str]) -> None:
+    def checkpoint(pages: list[ApiPage], failed_urls: list[str], is_final: bool = False) -> None:
         node_candidates = classify.build_node_candidates(pages)
         edge_candidates = classify.build_edge_candidates(pages)
         graph_result = build_graph(node_candidates, edge_candidates)
+        apply_communities(
+            graph_result,
+            use_llm_labels=label_communities_llm and is_final,
+            model=community_label_model,
+            api_key=openrouter_api_key,
+        )
 
         raw_index_entries = list(by_url.values())
 
@@ -694,6 +737,7 @@ def run_targeted_pipeline(
         export.write_edge_candidates(output_dir, edge_candidates)
         export.write_enum_catalogs(output_dir, pages)
         export.write_graph(output_dir, graph_result, revit_version=config.version)
+        export.write_graph_html(output_dir, graph_result, revit_version=config.version)
         export.write_target_report(output_dir, target_report)
         export.write_known_edge_report(output_dir, known_edge_report)
         export.write_validation_summary(
@@ -724,6 +768,6 @@ def run_targeted_pipeline(
         crawler, config, by_url, checkpoint=checkpoint, checkpoint_interval=checkpoint_interval, checkpoint_min_interval_seconds=checkpoint_min_interval_seconds
     )
 
-    checkpoint(pages, failed_urls)  # guaranteed final write reflecting the complete result
+    checkpoint(pages, failed_urls, True)  # guaranteed final write reflecting the complete result
 
     return TargetedPipelineResult(**last_result)

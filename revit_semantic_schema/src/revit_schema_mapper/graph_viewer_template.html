@@ -1,0 +1,800 @@
+<title>Revit DB Knowledge Graph — Core Subgraph</title>
+<style>
+  :root {
+    --bg: #eef1f6;
+    --panel: #ffffff;
+    --ink: #16202f;
+    --ink-dim: #5b6b83;
+    --ink-faint: #8493ab;
+    --accent: #b8632a;
+    --line: #d7deea;
+    --line-strong: #b9c4d6;
+    --edge: rgba(91, 107, 131, 0.28);
+    --edge-hi: #b8632a;
+    --chip-bg: rgba(0, 0, 0, 0.04);
+    --shadow: 0 1px 2px rgba(22, 32, 47, 0.06);
+    /* categorical (validated: dataviz skill, order fixed) */
+    --c-element_type:    #2a78d6;
+    --c-element_subtype: #1baf7a;
+    --c-utility_class:   #eda100;
+    --c-enum:            #008300;
+    --c-options_class:   #4a3aa7;
+    --c-value_object:    #e34948;
+    --c-unknown:         #e87ba4;
+    --c-external:        #eb6834;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0d1420;
+      --panel: #131c2c;
+      --ink: #dbe4f0;
+      --ink-dim: #8493ab;
+      --ink-faint: #5d6c85;
+      --accent: #d98a4a;
+      --line: #26314a;
+      --line-strong: #344266;
+      --edge: rgba(132, 147, 171, 0.22);
+      --edge-hi: #d98a4a;
+      --chip-bg: rgba(255, 255, 255, 0.06);
+      --shadow: 0 1px 2px rgba(0, 0, 0, 0.4);
+      --c-element_type:    #3987e5;
+      --c-element_subtype: #199e70;
+      --c-utility_class:   #c98500;
+      --c-enum:            #008300;
+      --c-options_class:   #9085e9;
+      --c-value_object:    #e66767;
+      --c-unknown:         #d55181;
+      --c-external:        #d95926;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #0d1420; --panel: #131c2c; --ink: #dbe4f0; --ink-dim: #8493ab; --ink-faint: #5d6c85;
+    --accent: #d98a4a; --line: #26314a; --line-strong: #344266;
+    --edge: rgba(132, 147, 171, 0.22); --edge-hi: #d98a4a; --chip-bg: rgba(255, 255, 255, 0.06);
+    --shadow: 0 1px 2px rgba(0, 0, 0, 0.4);
+    --c-element_type: #3987e5; --c-element_subtype: #199e70; --c-utility_class: #c98500;
+    --c-enum: #008300; --c-options_class: #9085e9; --c-value_object: #e66767;
+    --c-unknown: #d55181; --c-external: #d95926;
+  }
+  :root[data-theme="light"] {
+    --bg: #eef1f6; --panel: #ffffff; --ink: #16202f; --ink-dim: #5b6b83; --ink-faint: #8493ab;
+    --accent: #b8632a; --line: #d7deea; --line-strong: #b9c4d6;
+    --edge: rgba(91, 107, 131, 0.28); --edge-hi: #b8632a; --chip-bg: rgba(0, 0, 0, 0.04);
+    --shadow: 0 1px 2px rgba(22, 32, 47, 0.06);
+    --c-element_type: #2a78d6; --c-element_subtype: #1baf7a; --c-utility_class: #eda100;
+    --c-enum: #008300; --c-options_class: #4a3aa7; --c-value_object: #e34948;
+    --c-unknown: #e87ba4; --c-external: #eb6834;
+  }
+
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    background: var(--bg);
+    color: var(--ink);
+    font-family: -apple-system, "Segoe UI", ui-sans-serif, system-ui, sans-serif;
+    overflow: hidden;
+  }
+  ::selection { background: var(--accent); color: #fff; }
+
+  .app {
+    display: grid;
+    grid-template-columns: 1fr 336px;
+    grid-template-rows: 1fr 40px;
+    height: 100vh;
+    width: 100vw;
+  }
+  .stage {
+    grid-column: 1;
+    grid-row: 1;
+    position: relative;
+    overflow: hidden;
+    border-right: 1px solid var(--line);
+  }
+  canvas { display: block; width: 100%; height: 100%; cursor: grab; }
+  canvas.grabbing { cursor: grabbing; }
+
+  .masthead {
+    position: absolute;
+    top: 18px;
+    left: 20px;
+    pointer-events: none;
+    max-width: 60%;
+  }
+  .masthead h1 {
+    margin: 0 0 2px;
+    font-size: 15px;
+    font-weight: 650;
+    letter-spacing: 0.01em;
+  }
+  .masthead p {
+    margin: 0;
+    font-size: 12px;
+    color: var(--ink-dim);
+    line-height: 1.5;
+  }
+  .masthead code {
+    font-family: ui-monospace, "SF Mono", "Cascadia Code", Menlo, Consolas, monospace;
+    background: var(--chip-bg);
+    padding: 1px 5px;
+    border-radius: 3px;
+    font-size: 11px;
+  }
+
+  .zoom-hint {
+    position: absolute;
+    bottom: 14px;
+    left: 20px;
+    font-size: 11px;
+    color: var(--ink-faint);
+    pointer-events: none;
+  }
+
+  .panel {
+    grid-column: 2;
+    grid-row: 1;
+    background: var(--panel);
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+  }
+  .panel-section {
+    padding: 16px 18px;
+    border-bottom: 1px solid var(--line);
+  }
+  .panel-section.grow {
+    flex: 1;
+    overflow-y: auto;
+    min-height: 0;
+  }
+  .panel-label {
+    font-size: 11px;
+    font-weight: 650;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--ink-faint);
+    margin: 0 0 10px;
+  }
+
+  #search {
+    width: 100%;
+    background: var(--bg);
+    border: 1px solid var(--line);
+    color: var(--ink);
+    border-radius: 7px;
+    padding: 9px 11px;
+    font-size: 13px;
+    font-family: inherit;
+  }
+  #search:focus {
+    outline: none;
+    border-color: var(--accent);
+  }
+  #search-count {
+    margin-top: 8px;
+    font-size: 11.5px;
+    color: var(--ink-faint);
+    min-height: 14px;
+  }
+
+  .node-info-empty {
+    font-size: 12.5px;
+    color: var(--ink-faint);
+    font-style: italic;
+  }
+  .node-info h2 {
+    margin: 0 0 2px;
+    font-size: 14px;
+    font-family: ui-monospace, "SF Mono", "Cascadia Code", Menlo, Consolas, monospace;
+    word-break: break-word;
+  }
+  .node-info .ns {
+    font-size: 11.5px;
+    color: var(--ink-faint);
+    margin-bottom: 10px;
+  }
+  .chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    font-size: 11px;
+    font-weight: 600;
+    padding: 3px 8px;
+    border-radius: 100px;
+    background: var(--chip-bg);
+    margin-right: 6px;
+  }
+  .chip .dot { width: 7px; height: 7px; border-radius: 50%; flex: none; }
+  .node-info a.src {
+    display: block;
+    font-size: 11.5px;
+    color: var(--accent);
+    text-decoration: none;
+    margin: 10px 0 12px;
+    word-break: break-all;
+  }
+  .node-info a.src:hover { text-decoration: underline; }
+  .conn-title {
+    font-size: 11px;
+    font-weight: 650;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    color: var(--ink-faint);
+    margin: 4px 0 8px;
+  }
+  .conn-list { display: flex; flex-direction: column; gap: 1px; max-height: 260px; overflow-y: auto; }
+  .conn-row {
+    display: flex;
+    align-items: baseline;
+    gap: 6px;
+    font-size: 12px;
+    padding: 5px 6px;
+    border-radius: 5px;
+    cursor: pointer;
+  }
+  .conn-row:hover { background: var(--chip-bg); }
+  .conn-row .dir { color: var(--ink-faint); flex: none; font-family: ui-monospace, monospace; }
+  .conn-row .etype { color: var(--accent); font-size: 10.5px; font-weight: 650; flex: none; }
+  .conn-row .target {
+    font-family: ui-monospace, "SF Mono", "Cascadia Code", Menlo, Consolas, monospace;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .communities-header-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 10px;
+  }
+  .select-all-row {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    font-size: 12.5px;
+    font-weight: 600;
+    cursor: pointer;
+    user-select: none;
+  }
+  .community-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 5px 2px;
+    font-size: 12.5px;
+    cursor: pointer;
+    user-select: none;
+    border-radius: 5px;
+  }
+  .community-row:hover { background: var(--chip-bg); }
+  .community-row input { accent-color: var(--accent); flex: none; }
+  .community-row .dot { width: 9px; height: 9px; border-radius: 50%; flex: none; }
+  .community-row .label { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .community-row .count {
+    font-variant-numeric: tabular-nums;
+    color: var(--ink-faint);
+    font-size: 11.5px;
+  }
+  .community-row.dimmed .label, .community-row.dimmed .count { color: var(--ink-faint); opacity: 0.55; }
+
+  footer.stats {
+    grid-column: 1 / 3;
+    grid-row: 2;
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    padding: 0 18px;
+    background: var(--panel);
+    border-top: 1px solid var(--line);
+    font-size: 12px;
+    color: var(--ink-dim);
+    font-variant-numeric: tabular-nums;
+  }
+  footer.stats strong { color: var(--ink); font-weight: 650; }
+  footer.stats .sep { color: var(--line-strong); }
+  footer.stats .fill { flex: 1; }
+  footer.stats .credit { color: var(--ink-faint); font-size: 11px; }
+
+  @media (max-width: 760px) {
+    .app { grid-template-columns: 1fr; grid-template-rows: 58vh 1fr 40px; }
+    .stage { grid-column: 1; grid-row: 1; border-right: none; border-bottom: 1px solid var(--line); }
+    .panel { grid-column: 1; grid-row: 2; }
+    footer.stats { grid-column: 1; grid-row: 3; }
+  }
+</style>
+
+<div class="app">
+  <div class="stage" id="stage">
+    <canvas id="graph"></canvas>
+    <div class="masthead">
+      <h1>Revit DB Knowledge Graph — core subgraph</h1>
+      <p>Revit __REVIT_VERSION__ · <code>confidence_tier: core</code> only · candidate schema, not verified against a live model</p>
+    </div>
+    <div class="zoom-hint">scroll to zoom · drag canvas to pan · drag a node to pin it</div>
+  </div>
+
+  <aside class="panel">
+    <div class="panel-section">
+      <p class="panel-label">Search nodes</p>
+      <input id="search" type="text" placeholder="e.g. FamilySymbol, ViewSheet…" autocomplete="off" spellcheck="false">
+      <div id="search-count"></div>
+    </div>
+
+    <div class="panel-section" id="node-info-section">
+      <p class="panel-label">Node info</p>
+      <div id="node-info"><div class="node-info-empty">Click a node to inspect it.</div></div>
+    </div>
+
+    <div class="panel-section grow">
+      <div class="communities-header-row">
+        <p class="panel-label" style="margin:0;">Communities</p>
+      </div>
+      <label class="select-all-row">
+        <input type="checkbox" id="select-all" checked>
+        Select all
+      </label>
+      <div id="communities-list" style="margin-top:10px;"></div>
+    </div>
+  </aside>
+
+  <footer class="stats" id="stats-bar"></footer>
+</div>
+
+<script>
+const DATA = __GRAPH_DATA__;
+
+const GROUP_COLOR = {
+  element_type: "var(--c-element_type)",
+  element_subtype: "var(--c-element_subtype)",
+  utility_class: "var(--c-utility_class)",
+  enum: "var(--c-enum)",
+  options_class: "var(--c-options_class)",
+  value_object: "var(--c-value_object)",
+  unknown: "var(--c-unknown)",
+  external: "var(--c-external)",
+};
+const GROUP_LABEL = {
+  element_type: "Element type",
+  element_subtype: "Element subtype",
+  utility_class: "Utility class",
+  enum: "Enum",
+  options_class: "Options class",
+  value_object: "Value object",
+  unknown: "Unknown",
+  external: "External (uncrawled)",
+};
+
+function resolveVar(v) {
+  if (!v.startsWith("var(")) return v;
+  const name = v.slice(4, -1);
+  return getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+}
+
+// ---- build node/edge working set -------------------------------------------------
+const nodesById = new Map();
+const NO_COMMUNITY_ID = -1;
+
+const nodes = DATA.nodes.map((n) => {
+  const group = n.external ? "external" : (n.class_role || "unknown");
+  const rec = {
+    id: n.id,
+    short: n.short_name,
+    kind: n.kind,
+    namespace: n.namespace,
+    external: n.external,
+    group,
+    communityId: n.community_id === null || n.community_id === undefined ? NO_COMMUNITY_ID : n.community_id,
+    sourceUrl: n.source_url || "",
+    x: (Math.random() - 0.5) * 800,
+    y: (Math.random() - 0.5) * 800,
+    vx: 0, vy: 0,
+    fx: null, fy: null,
+    degree: 0,
+    out: [],
+    in: [],
+  };
+  nodesById.set(n.id, rec);
+  return rec;
+});
+
+const edges = [];
+for (const e of DATA.edges) {
+  const s = nodesById.get(e.source);
+  const t = e.target ? nodesById.get(e.target) : null;
+  if (!s || !t || s === t) continue;
+  const rec = { source: s, target: t, memberName: e.member_name, edgeType: e.edge_type, confidence: e.confidence, sourceUrl: e.source_url || "" };
+  edges.push(rec);
+  s.degree++; t.degree++;
+  s.out.push(rec); t.in.push(rec);
+}
+
+const maxDegree = Math.max(1, ...nodes.map((n) => n.degree));
+for (const n of nodes) {
+  n.radius = 3.2 + Math.sqrt(n.degree / maxDegree) * 10;
+}
+
+// Communities are structurally detected (see community.py), not colored --
+// the categorical palette above is reserved for class_role (a fixed 8-slot
+// set); community count is unbounded, so identity here is the label text +
+// spatial clustering from the force layout itself, not a per-community hue.
+const communityById = new Map(DATA.communities.map((c) => [c.id, c]));
+const uncommunitiedCount = nodes.filter((n) => n.communityId === NO_COMMUNITY_ID).length;
+if (uncommunitiedCount > 0) {
+  communityById.set(NO_COMMUNITY_ID, { id: NO_COMMUNITY_ID, label: "Ungrouped", label_source: "n/a", size: uncommunitiedCount });
+}
+const communityOrder = [...communityById.values()].sort((a, b) => b.size - a.size).map((c) => c.id);
+const activeGroups = new Set(communityOrder);
+
+// ---- force simulation (hand-rolled, d3-force-style cooling schedule) -------------
+let alpha = 1, alphaTarget = 0, alphaDecay = 1 - Math.pow(0.001, 1 / 240), alphaMin = 0.001;
+const CHARGE = 420, LINK_DIST = 46, LINK_STRENGTH = 0.5, CENTER_STRENGTH = 0.02;
+
+function tick() {
+  alpha += (alphaTarget - alpha) * alphaDecay;
+
+  // repulsion (all-pairs -- fine at n≈300): push a and b apart along the
+  // vector between them, magnitude ~ CHARGE/distSq (positive = repulsive).
+  for (let i = 0; i < nodes.length; i++) {
+    const a = nodes[i];
+    for (let j = i + 1; j < nodes.length; j++) {
+      const b = nodes[j];
+      let dx = a.x - b.x, dy = a.y - b.y;
+      let distSq = dx * dx + dy * dy;
+      if (distSq < 0.01) { distSq = 0.01; dx = (Math.random() - 0.5) * 0.1; dy = (Math.random() - 0.5) * 0.1; }
+      const dist = Math.sqrt(distSq);
+      const force = (CHARGE * alpha) / distSq;
+      const ux = dx / dist, uy = dy / dist;
+      a.vx += ux * force; a.vy += uy * force;
+      b.vx -= ux * force; b.vy -= uy * force;
+    }
+  }
+  // springs
+  for (const e of edges) {
+    let dx = e.target.x - e.source.x, dy = e.target.y - e.source.y;
+    const dist = Math.sqrt(dx * dx + dy * dy) || 0.01;
+    const diff = (dist - LINK_DIST) / dist * LINK_STRENGTH * alpha;
+    const ox = dx * diff, oy = dy * diff;
+    if (e.source.fx === null) { e.source.vx += ox; e.source.vy += oy; }
+    if (e.target.fx === null) { e.target.vx -= ox; e.target.vy -= oy; }
+  }
+  // centering
+  for (const n of nodes) {
+    n.vx -= n.x * CENTER_STRENGTH * alpha;
+    n.vy -= n.y * CENTER_STRENGTH * alpha;
+  }
+  // integrate
+  for (const n of nodes) {
+    if (n.fx !== null) { n.x = n.fx; n.y = n.fy; n.vx = 0; n.vy = 0; continue; }
+    n.vx *= 0.86; n.vy *= 0.86;
+    n.x += n.vx; n.y += n.vy;
+  }
+}
+
+// ---- canvas / camera --------------------------------------------------------------
+const canvas = document.getElementById("graph");
+const stage = document.getElementById("stage");
+const ctx = canvas.getContext("2d");
+let cam = { x: 0, y: 0, k: 1 };
+let dpr = Math.max(1, window.devicePixelRatio || 1);
+
+function resize() {
+  const r = stage.getBoundingClientRect();
+  canvas.width = r.width * dpr;
+  canvas.height = r.height * dpr;
+  canvas.style.width = r.width + "px";
+  canvas.style.height = r.height + "px";
+}
+window.addEventListener("resize", resize);
+resize();
+
+function worldToScreen(x, y) {
+  const r = stage.getBoundingClientRect();
+  return [(x + cam.x) * cam.k + r.width / 2, (y + cam.y) * cam.k + r.height / 2];
+}
+function screenToWorld(sx, sy) {
+  const r = stage.getBoundingClientRect();
+  return [(sx - r.width / 2) / cam.k - cam.x, (sy - r.height / 2) / cam.k - cam.y];
+}
+
+let searchQuery = "";
+let selectedNode = null;
+let hoveredNode = null;
+
+function nodeVisible(n) {
+  return activeGroups.has(n.communityId);
+}
+
+function render() {
+  const r = stage.getBoundingClientRect();
+  ctx.save();
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, r.width, r.height);
+
+  const edgeColor = resolveVar("var(--edge)");
+  const hiColor = resolveVar("var(--edge-hi)");
+  const inkFaint = resolveVar("var(--ink-faint)");
+  const ink = resolveVar("var(--ink)");
+  const panelBg = resolveVar("var(--panel)");
+
+  // edges
+  ctx.lineWidth = Math.max(0.5, 1 / cam.k);
+  for (const e of edges) {
+    if (!nodeVisible(e.source) || !nodeVisible(e.target)) continue;
+    const connectedToFocus = selectedNode && (e.source === selectedNode || e.target === selectedNode);
+    if (searchQuery && !connectedToFocus) {
+      const sMatch = e.source.short.toLowerCase().includes(searchQuery) || e.source.id.toLowerCase().includes(searchQuery);
+      const tMatch = e.target.short.toLowerCase().includes(searchQuery) || e.target.id.toLowerCase().includes(searchQuery);
+      if (!sMatch && !tMatch) continue;
+    }
+    const [x1, y1] = worldToScreen(e.source.x, e.source.y);
+    const [x2, y2] = worldToScreen(e.target.x, e.target.y);
+    ctx.strokeStyle = connectedToFocus ? hiColor : edgeColor;
+    ctx.beginPath();
+    ctx.moveTo(x1, y1);
+    ctx.lineTo(x2, y2);
+    ctx.stroke();
+  }
+
+  // nodes
+  for (const n of nodes) {
+    if (!nodeVisible(n)) continue;
+    const [x, y] = worldToScreen(n.x, n.y);
+    if (x < -20 || x > r.width + 20 || y < -20 || y > r.height + 20) continue;
+
+    let matched = true, dimmed = false;
+    if (searchQuery) {
+      matched = n.short.toLowerCase().includes(searchQuery) || n.id.toLowerCase().includes(searchQuery);
+      dimmed = !matched;
+    }
+    const isFocus = n === selectedNode || n === hoveredNode;
+    const rad = n.radius * cam.k;
+
+    ctx.globalAlpha = dimmed ? 0.15 : 1;
+    ctx.fillStyle = resolveVar(GROUP_COLOR[n.group] || GROUP_COLOR.unknown);
+    ctx.beginPath();
+    ctx.arc(x, y, Math.max(1.4, rad), 0, Math.PI * 2);
+    ctx.fill();
+
+    if (n.external) {
+      ctx.globalAlpha = dimmed ? 0.15 : 0.9;
+      ctx.strokeStyle = panelBg;
+      ctx.setLineDash([2, 2]);
+      ctx.lineWidth = 1.2;
+      ctx.stroke();
+      ctx.setLineDash([]);
+    }
+
+    if (isFocus) {
+      ctx.globalAlpha = 1;
+      ctx.lineWidth = 2;
+      ctx.strokeStyle = hiColor;
+      ctx.beginPath();
+      ctx.arc(x, y, Math.max(1.4, rad) + 2.5, 0, Math.PI * 2);
+      ctx.stroke();
+    }
+    ctx.globalAlpha = 1;
+
+    if ((rad > 7 || isFocus) && !dimmed) {
+      ctx.fillStyle = ink;
+      ctx.font = `${isFocus ? 600 : 400} 11px ui-sans-serif, system-ui, sans-serif`;
+      ctx.textBaseline = "middle";
+      ctx.fillText(n.short, x + rad + 5, y);
+    }
+  }
+
+  ctx.restore();
+}
+
+function loop() {
+  if (alpha > alphaMin) tick();
+  render();
+  requestAnimationFrame(loop);
+}
+requestAnimationFrame(loop);
+
+// ---- interaction: pan / zoom / drag / click --------------------------------------
+let dragging = null; // node being dragged
+let panning = false;
+let panStart = null;
+let lastPointer = null;
+
+canvas.addEventListener("wheel", (ev) => {
+  ev.preventDefault();
+  const r = stage.getBoundingClientRect();
+  const mx = ev.clientX - r.left, my = ev.clientY - r.top;
+  const [wx, wy] = screenToWorld(mx, my);
+  const factor = Math.exp(-ev.deltaY * 0.0015);
+  cam.k = Math.min(6, Math.max(0.08, cam.k * factor));
+  const [nx, ny] = screenToWorld(mx, my);
+  cam.x += nx - wx;
+  cam.y += ny - wy;
+}, { passive: false });
+
+function pickNode(sx, sy) {
+  let best = null, bestDist = Infinity;
+  for (const n of nodes) {
+    if (!nodeVisible(n)) continue;
+    const [x, y] = worldToScreen(n.x, n.y);
+    const d = Math.hypot(x - sx, y - sy);
+    const hitR = Math.max(6, n.radius * cam.k) + 2;
+    if (d < hitR && d < bestDist) { best = n; bestDist = d; }
+  }
+  return best;
+}
+
+let dragMoved = 0;
+let downPos = null;
+
+canvas.addEventListener("pointerdown", (ev) => {
+  const r = stage.getBoundingClientRect();
+  const sx = ev.clientX - r.left, sy = ev.clientY - r.top;
+  const hit = pickNode(sx, sy);
+  lastPointer = { x: ev.clientX, y: ev.clientY };
+  downPos = { x: ev.clientX, y: ev.clientY };
+  dragMoved = 0;
+  if (hit) {
+    dragging = hit;
+    const [wx, wy] = screenToWorld(sx, sy);
+    hit.fx = wx; hit.fy = wy;
+    alphaTarget = 0.3; alpha = Math.max(alpha, 0.3);
+  } else {
+    panning = true;
+    canvas.classList.add("grabbing");
+  }
+  canvas.setPointerCapture(ev.pointerId);
+});
+
+canvas.addEventListener("pointermove", (ev) => {
+  const r = stage.getBoundingClientRect();
+  const sx = ev.clientX - r.left, sy = ev.clientY - r.top;
+  if (downPos) dragMoved = Math.max(dragMoved, Math.hypot(ev.clientX - downPos.x, ev.clientY - downPos.y));
+  if (dragging) {
+    const [wx, wy] = screenToWorld(sx, sy);
+    dragging.fx = wx; dragging.fy = wy;
+  } else if (panning && lastPointer) {
+    cam.x += (ev.clientX - lastPointer.x) / cam.k;
+    cam.y += (ev.clientY - lastPointer.y) / cam.k;
+    lastPointer = { x: ev.clientX, y: ev.clientY };
+  } else {
+    hoveredNode = pickNode(sx, sy);
+  }
+});
+
+canvas.addEventListener("pointerup", (ev) => {
+  if (dragging) {
+    const draggedNode = dragging;
+    // a click (no real movement) selects; an actual drag just repositions
+    // and pins the node (release the pin with shift so it rejoins the sim).
+    if (dragMoved < 4) {
+      selectNode(draggedNode);
+    } else if (ev.shiftKey) {
+      draggedNode.fx = null; draggedNode.fy = null;
+    }
+    dragging = null;
+  }
+  panning = false;
+  downPos = null;
+  canvas.classList.remove("grabbing");
+  alphaTarget = 0;
+});
+
+// ---- node info panel --------------------------------------------------------------
+const nodeInfoEl = document.getElementById("node-info");
+
+function edgeTypeLabel(t) {
+  return t.replace(/_/g, " ");
+}
+
+function selectNode(n) {
+  selectedNode = n;
+  renderNodeInfo(n);
+}
+
+function renderNodeInfo(n) {
+  const color = resolveVar(GROUP_COLOR[n.group] || GROUP_COLOR.unknown);
+  const conns = [...n.out.map((e) => ({ dir: "→", other: e.target, e })), ...n.in.map((e) => ({ dir: "←", other: e.source, e }))];
+  conns.sort((a, b) => a.e.edgeType.localeCompare(b.e.edgeType));
+
+  const rows = conns.map(({ dir, other, e }) => `
+    <div class="conn-row" data-target="${escapeAttr(other.id)}">
+      <span class="dir">${dir}</span>
+      <span class="etype">${escapeHtml(edgeTypeLabel(e.edgeType))}</span>
+      <span class="target">${escapeHtml(other.short)}</span>
+    </div>`).join("");
+
+  const community = communityById.get(n.communityId);
+
+  nodeInfoEl.innerHTML = `
+    <div class="node-info">
+      <h2>${escapeHtml(n.short)}</h2>
+      <div class="ns">${escapeHtml(n.namespace || n.id)}</div>
+      <span class="chip"><span class="dot" style="background:${color}"></span>${escapeHtml(GROUP_LABEL[n.group] || n.group)}</span>
+      <span class="chip">${escapeHtml(n.kind || "?")}</span>
+      ${n.external ? '<span class="chip">external — not crawled</span>' : ""}
+      ${community && community.id !== NO_COMMUNITY_ID ? `<span class="chip">community: ${escapeHtml(community.label)}</span>` : ""}
+      ${n.sourceUrl ? `<a class="src" href="${escapeAttr(n.sourceUrl)}" target="_blank" rel="noopener">${escapeHtml(n.sourceUrl)}</a>` : ""}
+      <div class="conn-title">${conns.length} connection${conns.length === 1 ? "" : "s"}</div>
+      <div class="conn-list">${rows || '<div class="node-info-empty">none</div>'}</div>
+    </div>`;
+
+  nodeInfoEl.querySelectorAll(".conn-row").forEach((row) => {
+    row.addEventListener("click", () => {
+      const target = nodesById.get(row.getAttribute("data-target"));
+      if (target) { selectNode(target); centerOn(target); }
+    });
+  });
+}
+
+function centerOn(n) {
+  cam.x = -n.x; cam.y = -n.y;
+}
+
+function escapeHtml(s) { return String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c])); }
+function escapeAttr(s) { return escapeHtml(s); }
+
+// ---- search -------------------------------------------------------------------
+const searchEl = document.getElementById("search");
+const searchCountEl = document.getElementById("search-count");
+searchEl.addEventListener("input", () => {
+  searchQuery = searchEl.value.trim().toLowerCase();
+  if (!searchQuery) { searchCountEl.textContent = ""; return; }
+  const n = nodes.filter((x) => nodeVisible(x) && (x.short.toLowerCase().includes(searchQuery) || x.id.toLowerCase().includes(searchQuery))).length;
+  searchCountEl.textContent = `${n} match${n === 1 ? "" : "es"}`;
+});
+
+// ---- communities panel ---------------------------------------------------------
+const listEl = document.getElementById("communities-list");
+const selectAllEl = document.getElementById("select-all");
+
+function buildCommunitiesList() {
+  listEl.innerHTML = communityOrder.map((id) => {
+    const c = communityById.get(id);
+    return `
+    <label class="community-row" data-group="${id}" title="${escapeAttr(c.label_source === "llm" ? "labeled by LLM" : c.label_source === "heuristic" ? "heuristic label (most-connected members)" : "")}">
+      <input type="checkbox" checked>
+      <span class="label">${escapeHtml(c.label)}</span>
+      <span class="count">${c.size}</span>
+    </label>`;
+  }).join("");
+
+  listEl.querySelectorAll(".community-row").forEach((row) => {
+    const id = Number(row.getAttribute("data-group"));
+    const checkbox = row.querySelector("input");
+    checkbox.addEventListener("change", () => {
+      if (checkbox.checked) activeGroups.add(id); else activeGroups.delete(id);
+      row.classList.toggle("dimmed", !checkbox.checked);
+      selectAllEl.checked = activeGroups.size === communityOrder.length;
+      updateStats();
+    });
+  });
+}
+buildCommunitiesList();
+
+selectAllEl.addEventListener("change", () => {
+  const on = selectAllEl.checked;
+  activeGroups.clear();
+  if (on) communityOrder.forEach((id) => activeGroups.add(id));
+  listEl.querySelectorAll(".community-row").forEach((row) => {
+    row.querySelector("input").checked = on;
+    row.classList.toggle("dimmed", !on);
+  });
+  updateStats();
+});
+
+// ---- footer stats ---------------------------------------------------------------
+const statsEl = document.getElementById("stats-bar");
+function updateStats() {
+  const visNodes = nodes.filter(nodeVisible);
+  const visIds = new Set(visNodes.map((n) => n.id));
+  const visEdges = edges.filter((e) => visIds.has(e.source.id) && visIds.has(e.target.id));
+  statsEl.innerHTML = `
+    <span><strong>${visNodes.length}</strong> nodes</span>
+    <span class="sep">·</span>
+    <span><strong>${visEdges.length}</strong> edges</span>
+    <span class="sep">·</span>
+    <span><strong>${activeGroups.size}</strong> / ${communityOrder.length} communities</span>
+    <span class="fill"></span>
+    <span class="credit">Revit Semantic Schema Mapper — graph_core.json</span>`;
+}
+updateStats();
+</script>

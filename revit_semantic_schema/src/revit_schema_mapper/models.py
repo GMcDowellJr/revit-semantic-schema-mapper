@@ -221,6 +221,9 @@ class GraphNode:
     is_element_candidate: Optional[str] = None
     base_type: Optional[str] = None
     source_url: str = ""
+    # Set by graph.apply_communities -- scoped to the core-tier subgraph
+    # (see docs/edge_taxonomy_v0.md), so most nodes outside it stay None.
+    community_id: Optional[int] = None
 
 
 @dataclass
@@ -243,3 +246,22 @@ class GraphEdge:
     target_resolution: TargetResolution
     evidence: list[str]
     source_url: str
+
+
+@dataclass
+class Community:
+    """One structurally-detected cluster of the core subgraph -- see
+    ``community.detect_communities`` and ``graph.apply_communities``.
+
+    ``label_source`` is ``"heuristic"`` (the default, dependency-free: the
+    community's most-connected member names) or ``"llm"`` (opt-in, via
+    OpenRouter -- see ``community.label_communities_llm``). Never a mix
+    within one community: either the LLM call for that specific community
+    succeeded, or it kept its heuristic label whole.
+    """
+
+    id: int
+    label: str
+    label_source: str
+    size: int
+    member_ids: list[str]

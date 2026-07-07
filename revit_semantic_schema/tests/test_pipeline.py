@@ -235,7 +235,7 @@ def test_crawl_and_parse_calls_checkpoint_periodically_with_growing_state(tmp_pa
 
     calls: list[tuple[int, int]] = []
 
-    def spy_checkpoint(pages, failed_urls):
+    def spy_checkpoint(pages, failed_urls, is_final=False):
         calls.append((len(pages), len(failed_urls)))
 
     # checkpoint_min_interval_seconds=0 disables the wall-clock gate (see
@@ -277,7 +277,7 @@ def test_crawl_and_parse_checkpoint_is_rate_limited_by_wall_clock_time(tmp_path)
 
     calls: list[tuple[int, int]] = []
 
-    def spy_checkpoint(pages, failed_urls):
+    def spy_checkpoint(pages, failed_urls, is_final=False):
         calls.append((len(pages), len(failed_urls)))
 
     # checkpoint_interval=1 would fire on every single page (as proven
@@ -329,7 +329,7 @@ def test_checkpoint_cooldown_starts_after_export_finishes_not_before(tmp_path, m
 
     calls: list[int] = []
 
-    def spy_checkpoint(pages, failed_urls):
+    def spy_checkpoint(pages, failed_urls, is_final=False):
         calls.append(len(calls))
         if len(calls) == 1:
             fake_clock.jump(5.0)  # simulate a slow export exceeding checkpoint_min_interval_seconds
@@ -373,7 +373,7 @@ def test_crawl_and_parse_writes_final_checkpoint_on_interrupt(tmp_path, monkeypa
 
     calls: list[tuple[int, int]] = []
 
-    def spy_checkpoint(pages, failed_urls):
+    def spy_checkpoint(pages, failed_urls, is_final=False):
         calls.append((len(pages), len(failed_urls)))
 
     with pytest.raises(KeyboardInterrupt):
@@ -492,6 +492,68 @@ def test_run_targeted_pipeline_reports_found_and_missing_targets_and_known_edges
     assert (output_dir / "target_report.json").exists()
     assert (output_dir / "known_edge_report.json").exists()
     assert (output_dir / "validation_summary.md").exists()
+    assert (output_dir / "graph.html").exists()
+
+
+def test_label_communities_llm_only_fires_on_the_final_checkpoint(tmp_path, monkeypatch):
+    """A long crawl's periodic checkpoints must not each re-trigger the
+    opt-in OpenRouter labeling call -- that has a real per-call cost, and
+    would otherwise multiply with every checkpoint of a multi-hour crawl.
+    Only the guaranteed final checkpoint should request LLM labels.
+    """
+    output_dir = tmp_path / "output"
+    config = CrawlConfig(version="2024", namespace_prefix="Autodesk.Revit.DB", cache_dir=output_dir / "cache")
+    crawler = Crawler(config)
+
+    tree = [
+        {
+            "title": "Namespaces",
+            "children": [
+                {
+                    "title": "Autodesk.Revit.DB Namespace",
+                    "tag": "Namespace",
+                    "children": [
+                        {
+                            "title": "View Class",
+                            "href": "view-class.htm",
+                            "tag": "Class",
+                            "children": [
+                                {"title": "View Members", "href": "view-members.htm", "tag": "Members"},
+                            ],
+                        },
+                    ],
+                },
+            ],
+        }
+    ]
+    _prime_cache(crawler, crawler.namespace_json_url(), json.dumps(tree))
+    _prime_cache(crawler, "https://www.revitapidocs.com/2024/view-class.htm", _VIEW_CLASS_HTML)
+    _prime_cache(crawler, "https://www.revitapidocs.com/2024/view-members.htm", _VIEW_MEMBERS_HTML)
+    _prime_cache(crawler, "https://www.revitapidocs.com/2024/viewtemplateid-property.htm", _VIEW_TEMPLATE_ID_PROPERTY_HTML)
+
+    calls = []
+    real_apply_communities = pipeline_module.apply_communities
+
+    def spy_apply_communities(result, *, use_llm_labels, model, api_key):
+        calls.append(use_llm_labels)
+        real_apply_communities(result, use_llm_labels=False, model=model, api_key=api_key)
+
+    monkeypatch.setattr(pipeline_module, "apply_communities", spy_apply_communities)
+
+    run_targeted_pipeline(
+        config,
+        output_dir,
+        target_full_type_names=["Autodesk.Revit.DB.View"],
+        known_edge_checks=[],
+        checkpoint_interval=1,
+        checkpoint_min_interval_seconds=0,
+        label_communities_llm=True,
+        openrouter_api_key="fake-key-not-actually-used",
+    )
+
+    assert len(calls) >= 1
+    assert calls[-1] is True
+    assert all(c is False for c in calls[:-1])
 
 
 _WALL_CLASS_HTML_NO_INLINE_TABLE = """
