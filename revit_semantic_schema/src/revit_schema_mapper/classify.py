@@ -47,6 +47,7 @@ KNOWN_REFERENCE_TYPES = {
     "ParameterFilterElement",
     "FillPatternElement",
     "LinePatternElement",
+    "Document",
 }
 
 PRIMITIVE_TYPES = {
