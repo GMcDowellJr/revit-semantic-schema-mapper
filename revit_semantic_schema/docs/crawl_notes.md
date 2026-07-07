@@ -47,6 +47,24 @@ definition-of-done checklist (section 7) as the thing to check first.
    `test_targeted_crawl_of_wall_alone_attributes_inherited_member_to_element` (verified to fail
    with the exact false attribution before the fix, pass after).
 
+   **A second review pass found the "already known" guard in `enqueue_member_links` still let
+   this leak through.** The namespace JSON's flatten (`Crawler._flatten_namespace_node`)
+   structurally nests every page it finds under whichever type node contains it, without any
+   notion of inheritance -- if it lists an inherited member (e.g. `ArePhasesModifiable`) directly
+   under the *derived* type's own subtree (plausible/likely, mirroring what the Members page
+   itself displays), that URL lands in `by_url` with `declaring_type_hint="...Wall"` *before* the
+   real Members page is ever fetched. The original fix only set `declaring_type_hint` when
+   creating a *new* `by_url` entry (`if url not in by_url`); when the real Members-page row parse
+   later resolved the true owner (`Element`), the `elif`-less guard silently discarded that
+   correction because the URL was already known, leaving the stale `Wall` hint in place. Fixed:
+   `enqueue_member_links` now updates an existing `by_url` entry's `declaring_type_hint` in place
+   when a row supplies its own explicit, resolved hint that differs from what's stored (only for
+   a URL not yet fetched); the per-iteration lookup in the crawl loop also now checks `by_url`
+   before the `member_queue` list, so a correction always wins over whatever was recorded at
+   enqueue time. Covered by
+   `test_preseeded_inherited_member_url_gets_corrected_by_members_page_parse` (verified to fail
+   with the exact false attribution before this second fix, pass after).
+
 ## Target version: 2027, with a documented fallback
 
 The brief asks to start with Revit 2027 docs on revitapidocs.com and fall back to 2026

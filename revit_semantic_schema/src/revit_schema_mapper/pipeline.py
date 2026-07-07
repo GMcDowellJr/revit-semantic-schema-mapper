@@ -62,6 +62,26 @@ def _crawl_and_parse(crawler: Crawler, config: CrawlConfig, by_url: dict[str, di
     visited: set[str] = set()
 
     def enqueue_member_links(links: list[dict], declaring_full_type_name: str, discovered_via_prefix: str) -> None:
+        """``links`` come from ``parse.extract_member_links``/
+        ``parse.parse_members_index_page``, whose row-level parsing can
+        supply an explicit ``declaring_type_hint`` for a member inherited
+        from a base type (e.g. ``ArePhasesModifiable`` on ``Wall``, actually
+        declared on ``Element``) -- see those functions' docstrings.
+
+        A URL can already be in ``by_url`` before that hint is known: the
+        namespace JSON's flatten structurally nests every page it finds
+        under whichever type node contains it (see
+        ``Crawler._flatten_namespace_node``), which doesn't distinguish
+        inherited from declared, so it seeds an inherited member's URL under
+        the *derived* type with that type as declaring_type_hint. When the
+        real Members-page row parse later resolves the true owner, that
+        stale hint must be corrected in place -- not left alone just because
+        the URL is already known -- or the member ends up permanently
+        mis-attributed (e.g. a false ``Wall.ArePhasesModifiable``) as soon as
+        it's fetched. Only correct when this call supplies its own explicit,
+        row-derived hint (not the generic per-call default), and only for a
+        URL not yet fetched (``visited``) -- once fetched, it's too late.
+        """
         for link in links:
             url = link["url"]
             if urlparse(url).netloc != ALLOWED_HOST:
@@ -69,14 +89,13 @@ def _crawl_and_parse(crawler: Crawler, config: CrawlConfig, by_url: dict[str, di
                 # ToString) out to MSDN instead of rendering them as plain text;
                 # out of scope by design, not a fetch failure.
                 continue
-            # A row inherited from a base type (e.g. ArePhasesModifiable on
-            # Wall, inherited from Element) carries its own resolved
-            # declaring_type_hint (see parse.py's inherited-row handling) --
-            # use that instead of this type's own name, so the member isn't
-            # mis-attributed to the type whose Members page it happened to be
-            # listed on.
-            declaring_type = link.get("declaring_type_hint") or declaring_full_type_name
-            if url not in visited and url not in by_url:
+            if url in visited:
+                continue
+
+            row_declaring_type_hint = link.get("declaring_type_hint")
+            declaring_type = row_declaring_type_hint or declaring_full_type_name
+
+            if url not in by_url:
                 by_url[url] = {
                     "url": url,
                     "link_text": link["name"],
@@ -85,6 +104,9 @@ def _crawl_and_parse(crawler: Crawler, config: CrawlConfig, by_url: dict[str, di
                 }
                 member_queue.append((url, declaring_type))
                 queue.append(url)
+            elif row_declaring_type_hint and by_url[url].get("declaring_type_hint") != row_declaring_type_hint:
+                by_url[url]["declaring_type_hint"] = row_declaring_type_hint
+                by_url[url]["discovered_via"] = f"{discovered_via_prefix}:{row_declaring_type_hint}"
 
     queue = list(by_url.keys())
     while queue:
@@ -95,13 +117,16 @@ def _crawl_and_parse(crawler: Crawler, config: CrawlConfig, by_url: dict[str, di
         if config.max_pages is not None and len(visited) > config.max_pages:
             break
 
-        declaring_type_hint = next((dt for u, dt in member_queue if u == url), None)
+        # by_url's declaring_type_hint is checked first (and is the only one
+        # enqueue_member_links corrects in place -- see its docstring), so a
+        # correction made after this URL was first seeded always wins over a
+        # possibly-stale member_queue entry recorded at that earlier time.
+        declaring_type_hint = by_url.get(url, {}).get("declaring_type_hint")
         if declaring_type_hint is None:
-            # Not reached by following a class's Members-page link -- e.g.
-            # discovered directly via the namespace JSON, which carries its
-            # own declaring_type_hint computed at flatten time (see
-            # Crawler._flatten_namespace_node).
-            declaring_type_hint = by_url.get(url, {}).get("declaring_type_hint")
+            # Not reached by following a class's Members-page link and not
+            # seeded via the namespace JSON either -- fall back to whatever
+            # enqueue_member_links recorded at enqueue time.
+            declaring_type_hint = next((dt for u, dt in member_queue if u == url), None)
 
         try:
             html = crawler.fetch(url)

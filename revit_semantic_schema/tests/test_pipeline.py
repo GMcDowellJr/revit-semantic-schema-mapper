@@ -299,3 +299,61 @@ def test_targeted_crawl_of_wall_alone_attributes_inherited_member_to_element(tmp
 
     # No edge/node output should ever claim Wall declares this method.
     assert not any(e.source_type == "Autodesk.Revit.DB.Wall" and e.member_name == "ArePhasesModifiable" for e in result.edge_candidates)
+
+
+def test_preseeded_inherited_member_url_gets_corrected_by_members_page_parse(tmp_path):
+    """Regression test: the namespace JSON's flatten structurally nests every
+    page it finds under whichever type node contains it (see
+    Crawler._flatten_namespace_node), which doesn't know about inheritance --
+    if it lists ArePhasesModifiable directly under Wall's own subtree (as
+    real API-doc TOCs commonly do, mirroring what the Members page displays),
+    the URL lands in by_url with declaring_type_hint="...Wall" *before* the
+    real Wall Members page is ever fetched. When that page's row parse later
+    identifies the true owner (Element), the earlier hint must be corrected
+    in place, not left stale just because the URL was already known --
+    otherwise the member is fetched with the wrong declaring type as soon as
+    its turn in the queue comes up.
+    """
+    output_dir = tmp_path / "output"
+    config = CrawlConfig(version="2024", namespace_prefix="Autodesk.Revit.DB", cache_dir=output_dir / "cache")
+    crawler = Crawler(config)
+
+    tree = [
+        {
+            "title": "Namespaces",
+            "children": [
+                {
+                    "title": "Autodesk.Revit.DB Namespace",
+                    "tag": "Namespace",
+                    "children": [
+                        {
+                            "title": "Wall Class",
+                            "href": "wall-class.htm",
+                            "tag": "Class",
+                            "children": [
+                                {"title": "Wall Members", "href": "wall-members.htm", "tag": "Members"},
+                                # The JSON structurally nests this inherited
+                                # method under Wall too, same as the real
+                                # Members page lists it -- this is the stale
+                                # pre-seed the fix must correct.
+                                {"title": "ArePhasesModifiable Method", "href": "arephasesmodifiable.htm", "tag": "Method"},
+                            ],
+                        },
+                    ],
+                },
+            ],
+        }
+    ]
+
+    _prime_cache(crawler, crawler.namespace_json_url(), json.dumps(tree))
+    _prime_cache(crawler, "https://www.revitapidocs.com/2024/wall-class.htm", _WALL_CLASS_HTML_NO_INLINE_TABLE)
+    _prime_cache(crawler, "https://www.revitapidocs.com/2024/wall-members.htm", _WALL_MEMBERS_HTML_WITH_INHERITED_ROW)
+    _prime_cache(crawler, "https://www.revitapidocs.com/2024/arephasesmodifiable.htm", _ARE_PHASES_MODIFIABLE_PROPERTY_HTML)
+
+    result = run_targeted_pipeline(config, output_dir, target_full_type_names=["Autodesk.Revit.DB.Wall"], known_edge_checks=[])
+
+    are_phases_pages = [p for p in result.pages if p.full_type_name.endswith(".ArePhasesModifiable")]
+    assert len(are_phases_pages) == 1
+    assert are_phases_pages[0].declaring_type == "Autodesk.Revit.DB.Element"
+
+    assert not any(e.source_type == "Autodesk.Revit.DB.Wall" and e.member_name == "ArePhasesModifiable" for e in result.edge_candidates)
