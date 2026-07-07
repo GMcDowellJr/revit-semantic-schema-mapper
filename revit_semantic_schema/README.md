@@ -336,3 +336,6 @@ namespaces outside `Autodesk.Revit.DB` (UI is touched only if needed to resolve 
 - `docs/edge_taxonomy_v0.md` — the full candidate edge type list and classification
   precedence.
 - `docs/confidence_model_v0.md` — definition of each confidence label.
+- `docs/dll_reflection_v0.md` — design (not yet implemented) for the next major step:
+  cross-validating the docs-derived candidate schema against ground truth read via .NET
+  reflection over the real, compiled `Autodesk.Revit.DB` assemblies.
