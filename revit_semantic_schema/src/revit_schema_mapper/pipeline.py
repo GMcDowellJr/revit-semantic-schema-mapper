@@ -244,6 +244,24 @@ def _crawl_and_parse(
     return pages, failed_urls
 
 
+def _format_duration(seconds: float | None) -> str:
+    """Human-readable duration for a progress-log ETA (e.g. ``"2h15m"``,
+    ``"45s"``). Returns ``"unknown"`` for ``None``/negative/infinite input --
+    the recent-throughput-was-zero and not-yet-measurable-first-interval
+    cases -- rather than printing ``"inf"`` or a negative number.
+    """
+    if seconds is None or seconds == float("inf") or seconds < 0:
+        return "unknown"
+    total_seconds = int(seconds)
+    hours, remainder = divmod(total_seconds, 3600)
+    minutes, secs = divmod(remainder, 60)
+    if hours:
+        return f"{hours}h{minutes:02d}m"
+    if minutes:
+        return f"{minutes}m{secs:02d}s"
+    return f"{secs}s"
+
+
 def _run_crawl_loop(
     *,
     crawler: Crawler,
@@ -259,7 +277,20 @@ def _run_crawl_loop(
     checkpoint_interval: int,
     checkpoint_min_interval_seconds: float,
 ) -> None:
-    last_checkpoint_time = time.monotonic()
+    crawl_start_time = time.monotonic()
+    last_checkpoint_time = crawl_start_time
+    # Tracked separately from last_checkpoint_time (which gates the
+    # expensive export call, not logging): the ETA uses the *recent*
+    # fetch rate between one progress line and the next, not the
+    # cumulative average since the crawl started, so it reflects the
+    # current mix of page types/cache hits rather than being dragged down
+    # by, say, a slow start (robots.txt, namespace JSON) or a since-resolved
+    # slow patch -- some pages really are faster than others (a cache hit or
+    # a small property page vs. an unthrottled first fetch of a large
+    # members-index page), and a single-average rate would understate how
+    # fast the crawl is going *right now*.
+    last_progress_time = crawl_start_time
+    last_progress_visited = 0
     while queue:
         url = queue.pop(0)
         if url in visited:
@@ -268,11 +299,34 @@ def _run_crawl_loop(
         if config.max_pages is not None and len(visited) > config.max_pages:
             break
         if len(visited) % checkpoint_interval == 0:
+            now = time.monotonic()
+            interval_pages = len(visited) - last_progress_visited
+            interval_elapsed = now - last_progress_time
+            recent_rate = interval_pages / interval_elapsed if interval_elapsed > 0 else 0.0
+            overall_rate = len(visited) / (now - crawl_start_time) if now > crawl_start_time else 0.0
+            # queue is the current best estimate of remaining work, not a
+            # fixed total -- discovering a type's Members page can enqueue
+            # new member pages faster than the loop drains it, so this (and
+            # therefore the ETA) can grow between progress lines rather than
+            # monotonically shrinking. That's an accurate reflection of a
+            # crawl whose full scope isn't known upfront, not a bug.
+            eta_seconds = len(queue) / recent_rate if recent_rate > 0 else None
             logger.info(
-                "progress: %d pages fetched, %d queued, %d parsed, %d failed",
+                "progress: %d pages fetched, %d queued, %d parsed, %d failed -- "
+                "%.2f pages/s (recent), %.2f pages/s (overall), ETA %s",
                 len(visited), len(queue), len(pages), len(failed_urls),
+                recent_rate, overall_rate, _format_duration(eta_seconds),
             )
-            if checkpoint is not None and time.monotonic() - last_checkpoint_time >= checkpoint_min_interval_seconds:
+            last_progress_time = now
+            last_progress_visited = len(visited)
+            # Reuses `now` (just captured above for the progress log) rather
+            # than taking a fresh reading -- the log call itself is fast
+            # enough not to matter, and a second reading here would throw
+            # off tests (and, in principle, real cooldown accounting) that
+            # count time.monotonic() calls/deltas precisely. checkpoint()
+            # itself, below, is the genuinely slow operation and still gets
+            # a fresh post-call reading.
+            if checkpoint is not None and now - last_checkpoint_time >= checkpoint_min_interval_seconds:
                 checkpoint(pages, failed_urls, False)
                 # Measured *after* checkpoint() returns, not before: a slow
                 # export (the case this rate limit exists to protect --

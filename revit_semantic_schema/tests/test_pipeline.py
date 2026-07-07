@@ -344,6 +344,71 @@ def test_checkpoint_cooldown_starts_after_export_finishes_not_before(tmp_path, m
     assert len(calls) == 1
 
 
+def test_progress_log_reports_recent_rate_and_eta(tmp_path, monkeypatch, caplog):
+    """The periodic progress log should report a rate/ETA computed from
+    *recent* throughput (since the previous progress line), not the
+    cumulative average since the crawl started -- some pages really are
+    faster than others (a cache hit vs. a fresh throttled fetch, a small
+    property page vs. a large members-index page), so an ETA based on a
+    single running average would lag behind how fast the crawl is actually
+    going right now.
+    """
+
+    class FakeClock:
+        def __init__(self):
+            self.now = 0.0
+
+        def monotonic(self):
+            self.now += 1.0  # every call simulates 1s of wall-clock passing
+            return self.now
+
+    monkeypatch.setattr(pipeline_module.time, "monotonic", FakeClock().monotonic)
+
+    output_dir = tmp_path / "output"
+    config = CrawlConfig(version="2024", namespace_prefix="Autodesk.Revit.DB", cache_dir=output_dir / "cache")
+    crawler = Crawler(config)
+
+    _prime_cache(crawler, crawler.namespace_json_url(), json.dumps(_WIDGET_NAMESPACE_TREE))
+    _prime_cache(crawler, "https://www.revitapidocs.com/2024/widget-class.htm", _CLASS_HTML)
+    _prime_cache(crawler, "https://www.revitapidocs.com/2024/widget-properties.htm", _PROPERTIES_INDEX_HTML)
+    _prime_cache(crawler, "https://www.revitapidocs.com/2024/symbol-property.htm", _PROPERTY_HTML)
+
+    entries, _ = crawler.discover_via_namespace_json()
+    by_url = {e["url"]: e for e in entries}
+
+    with caplog.at_level("INFO", logger="revit_schema_mapper.pipeline"):
+        _crawl_and_parse(crawler, config, by_url, checkpoint=None, checkpoint_interval=1)
+
+    progress_lines = [m for m in caplog.messages if m.startswith("progress:")]
+    assert len(progress_lines) == 3  # 3 total pages (class, properties-index, property), checkpoint_interval=1
+
+    # Every fetch is a cache hit under the fake clock (no throttling), so the
+    # simulated rate is a deterministic, constant 1 page/s throughout --
+    # letting the ETA at each line be checked exactly against the queue
+    # length remaining at that point (3, then 2, then 1 -> 2s, 1s, 0s).
+    assert "2 queued" in progress_lines[0]
+    assert "1.00 pages/s (recent)" in progress_lines[0]
+    assert "1.00 pages/s (overall)" in progress_lines[0]
+    assert "ETA 2s" in progress_lines[0]
+
+    assert "1 queued" in progress_lines[1]
+    assert "ETA 1s" in progress_lines[1]
+
+    assert "0 queued" in progress_lines[2]
+    assert "ETA 0s" in progress_lines[2]
+
+
+def test_format_duration_reports_unknown_for_non_finite_or_negative():
+    from revit_schema_mapper.pipeline import _format_duration
+
+    assert _format_duration(None) == "unknown"
+    assert _format_duration(float("inf")) == "unknown"
+    assert _format_duration(-1.0) == "unknown"
+    assert _format_duration(45.0) == "45s"
+    assert _format_duration(125.0) == "2m05s"
+    assert _format_duration(7384.0) == "2h03m"
+
+
 def test_crawl_and_parse_writes_final_checkpoint_on_interrupt(tmp_path, monkeypatch):
     """A KeyboardInterrupt (or any BaseException) that escapes the crawl loop
     must trigger one last checkpoint call reflecting whatever was parsed so
