@@ -407,7 +407,11 @@ def render_html(data: SemanticRelationshipMap, *, revit_version: str) -> str:
     triples = data.sankey
     heatmap = data.heatmap
 
-    W, H = 1680, 940
+    # Height is derived from the actual role/relationship/heatmap row counts,
+    # not a constant -- a fixed viewBox clipped role rows past the 13th and
+    # heatmap rows past the 18th on a real crawl (up to 21 roles), silently
+    # hiding part of the aggregate rather than just looking cramped.
+    W = 1680
     left_x, rel_x, right_x = 85, 680, 1165
     row_h = 43
     top_y = 150
@@ -416,6 +420,21 @@ def render_html(data: SemanticRelationshipMap, *, revit_version: str) -> str:
 
     role_y = {r: top_y + i * row_h for i, r in enumerate(roles)}
     rel_y = {r: top_y + i * row_h for i, r in enumerate(rels)}
+
+    families: list[str] = []
+    for rel in rels:
+        fam = relation_family(rel)
+        if fam not in families:
+            families.append(fam)
+    legend_families = families[:8]
+
+    sankey_bottom = top_y + max(len(roles), len(rels), 1) * row_h + 35
+    content_y = sankey_bottom + 90
+    cell_h = 18
+    heatmap_bottom = content_y + max(len(roles), 1) * cell_h
+    legend_rows = math.ceil(len(legend_families) / 2) if legend_families else 1
+    legend_bottom = content_y + 60 + legend_rows * 28
+    H = max(940, heatmap_bottom + 70, legend_bottom + 40)
 
     max_w = max([t.weight for t in triples] or [1])
 
@@ -479,9 +498,8 @@ def render_html(data: SemanticRelationshipMap, *, revit_version: str) -> str:
 
     hm = {(c.source_role, c.relationship): c.weight for c in heatmap}
     hm_max = max(hm.values() or [1])
-    hm_x, hm_y = 700, 710
+    hm_x, hm_y = 700, content_y
     cell_w = min(62, (W - hm_x - 70) / max(1, len(rels)))
-    cell_h = 18
     row_label_w = 92
     heat_svg = [
         f'<text x="{hm_x}" y="{hm_y-48}" class="section-title">RELATIONSHIP MATRIX HEATMAP</text>',
@@ -512,15 +530,10 @@ def render_html(data: SemanticRelationshipMap, *, revit_version: str) -> str:
             )
 
     legend_svg = []
-    lx, ly = 85, 720
-    legend_svg.append(f'<rect x="{lx}" y="{ly}" width="555" height="165" rx="12" class="panel" />')
+    lx, ly = 85, content_y
+    legend_svg.append(f'<rect x="{lx}" y="{ly}" width="555" height="{60 + legend_rows * 28 + 20}" rx="12" class="panel" />')
     legend_svg.append(f'<text x="{lx+20}" y="{ly+30}" class="section-title">LEGEND</text>')
-    families: list[str] = []
-    for rel in rels:
-        fam = relation_family(rel)
-        if fam not in families:
-            families.append(fam)
-    for i, fam in enumerate(families[:8]):
+    for i, fam in enumerate(legend_families):
         x = lx + 22 + (i % 2) * 260
         y = ly + 60 + (i // 2) * 28
         legend_svg.append(
@@ -620,7 +633,7 @@ def render_html(data: SemanticRelationshipMap, *, revit_version: str) -> str:
   <g id="legend">{''.join(legend_svg)}</g>
   <g id="heatmap">{''.join(heat_svg)}</g>
 
-  <text x="32" y="916" class="muted">Candidate semantic lens over graph_core.json (confidence_tier: core only) -- not verified against live Revit runtime behavior. Showing {displayed_rel_types} of {total_rel_types} relationship types ({_fmt(data.included_edge_count)} of {_fmt(data.total_edge_count)} core edges).</text>
+  <text x="32" y="{H-24}" class="muted">Candidate semantic lens over graph_core.json (confidence_tier: core only) -- not verified against live Revit runtime behavior. Showing {displayed_rel_types} of {total_rel_types} relationship types ({_fmt(data.included_edge_count)} of {_fmt(data.total_edge_count)} core edges).</text>
 </svg>
 </div>
 

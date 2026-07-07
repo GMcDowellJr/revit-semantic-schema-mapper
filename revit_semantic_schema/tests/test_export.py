@@ -1,6 +1,11 @@
 import json
+import shutil
+import subprocess
+
+import pytest
 
 from revit_schema_mapper import export, graph
+from revit_schema_mapper.export import _GRAPH_VIEWER_TEMPLATE_PATH
 from revit_schema_mapper.models import (
     ApiPage,
     ClassRole,
@@ -306,6 +311,47 @@ def test_write_graph_html_escapes_stray_script_close_sequences(tmp_path):
     html = (tmp_path / "graph.html").read_text()
     script_body = html.split("<script>", 1)[1].rsplit("</script>", 1)[0]
     assert "</script" not in script_body
+
+
+def test_graph_html_viewer_keeps_self_loop_edges_visible(tmp_path):
+    """A self-loop (factory/getter method returning its own declaring type)
+    must still show up in graph.html's edge count/node degree/connections
+    list -- not be silently dropped the way the original 's === t' guard
+    did. Extracts and actually executes the node/edge-construction JS
+    (via Node) against synthetic DATA rather than trusting the diff, since
+    this is client-side behavior no Python-level test can observe.
+    """
+    node_bin = shutil.which("node")
+    if node_bin is None:
+        pytest.skip("node not available in this environment")
+
+    template = _GRAPH_VIEWER_TEMPLATE_PATH.read_text(encoding="utf-8")
+    start = template.index("const nodesById = new Map();")
+    push_pos = template.index("edges.push(rec);", template.index("const edges = [];"))
+    end = template.index("\n}\n", push_pos) + len("\n}\n")
+    js_block = template[start:end]
+
+    harness = f"""
+const DATA = {{
+  nodes: [{{ id: "A", short_name: "A", external: false, community_id: null, source_url: "" }}],
+  edges: [{{ source: "A", target: "A", member_name: "Duplicate", edge_type: "TYPE_OF", confidence: "direct_return_type", source_url: "" }}],
+}};
+{js_block}
+console.log(JSON.stringify({{
+  edgeCount: edges.length,
+  degree: nodes[0].degree,
+  outCount: nodes[0].out.length,
+  inCount: nodes[0].in.length,
+}}));
+"""
+    result = subprocess.run([node_bin, "-e", harness], capture_output=True, text=True, timeout=10)
+    assert result.returncode == 0, result.stderr
+    data = json.loads(result.stdout)
+
+    assert data["edgeCount"] == 1
+    assert data["degree"] == 1
+    assert data["outCount"] == 1
+    assert data["inCount"] == 0
 
 
 def test_write_semantic_relationship_map_produces_standalone_html(tmp_path):

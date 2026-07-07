@@ -166,3 +166,42 @@ def test_render_html_is_a_complete_standalone_document():
     assert "<head>" in html and "</head>" in html
     assert "<body>" in html and "</body>" in html
     assert "2024" in html
+
+
+def test_render_html_viewbox_grows_to_fit_every_role_and_heatmap_row():
+    """A fixed viewBox height clipped role rows past the 13th and heatmap
+    rows past the 18th on a real crawl (up to 21 distinct roles) -- the
+    viewBox must always be tall enough for every role/relationship row and
+    every heatmap row this specific aggregate actually has.
+    """
+    n_roles = 21
+    roles = [
+        semantic_roles.RoleSummary(role=f"Role{i}", source_weight=1, target_weight=1, weight=2, color="#000000")
+        for i in range(n_roles)
+    ]
+    relationships = [semantic_roles.RelationshipSummary(relationship="HAS_PARAMETER", weight=n_roles, family="Data / Definition", color="#000000")]
+    data = semantic_roles.SemanticRelationshipMap(
+        roles=roles,
+        relationships=relationships,
+        sankey=[],
+        heatmap=[],
+        drilldown={},
+        role_order=[r.role for r in roles],
+        relationship_order=["HAS_PARAMETER"],
+        relationship_counts_total={"HAS_PARAMETER": n_roles},
+        included_edge_count=n_roles,
+        total_edge_count=n_roles,
+    )
+
+    html = semantic_roles.render_html(data, revit_version="2024")
+
+    import re
+
+    m = re.search(r'viewBox="0 0 (\d+) (\d+)"', html)
+    assert m is not None
+    H = int(m.group(2))
+
+    role_rows_bottom = 150 + n_roles * 43 + 35
+    heatmap_bottom = role_rows_bottom + 90 + n_roles * 18
+    assert H >= heatmap_bottom
+    assert H > 940  # this case must actually exceed the old fixed constant

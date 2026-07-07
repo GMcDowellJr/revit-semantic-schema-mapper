@@ -407,11 +407,20 @@ const edges = [];
 for (const e of DATA.edges) {
   const s = nodesById.get(e.source);
   const t = e.target ? nodesById.get(e.target) : null;
-  if (!s || !t || s === t) continue;
+  if (!s || !t) continue;
   const rec = { source: s, target: t, memberName: e.member_name, edgeType: e.edge_type, confidence: e.confidence, sourceUrl: e.source_url || "" };
+  // A self-loop (e.g. a factory/getter method returning its own declaring
+  // type) is a real relationship -- keep it in edges/degree/connections so
+  // the footer count and node inspector agree with graph_core.json, even
+  // though it draws as a zero-length (invisible) line and contributes no
+  // net force in the simulation. Only count/list it once, not twice.
+  s.degree++;
+  s.out.push(rec);
+  if (t !== s) {
+    t.degree++;
+    t.in.push(rec);
+  }
   edges.push(rec);
-  s.degree++; t.degree++;
-  s.out.push(rec); t.in.push(rec);
 }
 
 const maxDegree = Math.max(1, ...nodes.map((n) => n.degree));

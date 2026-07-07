@@ -23,31 +23,31 @@
 - 8415
 
 ## 8. Top 25 highest-confidence candidate edges
-- `Autodesk.Revit.DB.ACADExportOptions.HatchBackgroundColor` -> **UNKNOWN_DB_OBJECT_REFERENCE** -> `Autodesk.Revit.DB.Color` (`direct_return_type`; return type `Color`)
-- `Autodesk.Revit.DB.AdaptiveComponentInstanceUtils.CreateAdaptiveComponentInstance` -> **UNKNOWN_DB_OBJECT_REFERENCE** -> `Autodesk.Revit.DB.FamilyInstance` (`direct_return_type`; return type `FamilyInstance`)
-- `Autodesk.Revit.DB.AngularDimension.Create` -> **UNKNOWN_DB_OBJECT_REFERENCE** -> `Autodesk.Revit.DB.AngularDimension` (`direct_return_type`; return type `AngularDimension`)
-- `Autodesk.Revit.DB.AnnotationSymbol.duplicate` -> **UNKNOWN_DB_OBJECT_REFERENCE** -> `Autodesk.Revit.DB.AnnotationSymbol` (`direct_return_type`; return type `AnnotationSymbol`)
-- `Autodesk.Revit.DB.AnnotationSymbol.AnnotationSymbolType` -> **UNKNOWN_DB_OBJECT_REFERENCE** -> `Autodesk.Revit.DB.AnnotationSymbolType` (`direct_return_type`; return type `AnnotationSymbolType`)
-- `Autodesk.Revit.DB.AppearanceAssetElement.Create` -> **UNKNOWN_DB_OBJECT_REFERENCE** -> `Autodesk.Revit.DB.AppearanceAssetElement` (`direct_return_type`; return type `AppearanceAssetElement`)
-- `Autodesk.Revit.DB.AppearanceAssetElement.Duplicate` -> **UNKNOWN_DB_OBJECT_REFERENCE** -> `Autodesk.Revit.DB.AppearanceAssetElement` (`direct_return_type`; return type `AppearanceAssetElement`)
-- `Autodesk.Revit.DB.AppearanceAssetElement.GetAppearanceAssetElementByName` -> **UNKNOWN_DB_OBJECT_REFERENCE** -> `Autodesk.Revit.DB.AppearanceAssetElement` (`direct_return_type`; return type `AppearanceAssetElement`)
-- `Autodesk.Revit.DB.AppearanceAssetElement.GetRenderingAsset` -> **UNKNOWN_DB_OBJECT_REFERENCE** -> `Autodesk.Revit.DB.Asset` (`direct_return_type`; return type `Asset`)
-- `Autodesk.Revit.DB.Arc.Create` -> **UNKNOWN_DB_OBJECT_REFERENCE** -> `Autodesk.Revit.DB.Arc` (`direct_return_type`; return type `Arc`)
-- `Autodesk.Revit.DB.Arc.Create` -> **UNKNOWN_DB_OBJECT_REFERENCE** -> `Autodesk.Revit.DB.Arc` (`direct_return_type`; return type `Arc`)
-- `Autodesk.Revit.DB.Arc.Create` -> **UNKNOWN_DB_OBJECT_REFERENCE** -> `Autodesk.Revit.DB.Arc` (`direct_return_type`; return type `Arc`)
-- `Autodesk.Revit.DB.Area.AreaScheme` -> **UNKNOWN_DB_OBJECT_REFERENCE** -> `Autodesk.Revit.DB.AreaScheme` (`direct_return_type`; return type `AreaScheme`)
-- `Autodesk.Revit.DB.AreaTag.Area` -> **UNKNOWN_DB_OBJECT_REFERENCE** -> `Autodesk.Revit.DB.Area` (`direct_return_type`; return type `Area`)
 - `Autodesk.Revit.DB.AreaTag.AreaTagType` -> **TAGS_ELEMENT** -> `Autodesk.Revit.DB.AreaTagType` (`direct_return_type`; return type `AreaTagType`)
-- `Autodesk.Revit.DB.AreaVolumeSettings.GetAreaVolumeSettings` -> **UNKNOWN_DB_OBJECT_REFERENCE** -> `Autodesk.Revit.DB.AreaVolumeSettings` (`direct_return_type`; return type `AreaVolumeSettings`)
 - `Autodesk.Revit.DB.AssemblyCodeTable.GetAssemblyCodeTable` -> **MEMBER_OF_ASSEMBLY** -> `Autodesk.Revit.DB.AssemblyCodeTable` (`direct_return_type`; return type `AssemblyCodeTable`)
-- `Autodesk.Revit.DB.AssemblyDifferenceMemberDifference.MemberDifference` -> **UNKNOWN_DB_OBJECT_REFERENCE** -> `Autodesk.Revit.DB.AssemblyMemberDifference` (`direct_return_type`; return type `AssemblyMemberDifference`)
 - `Autodesk.Revit.DB.AssemblyInstance.CompareAssemblyInstances` -> **MEMBER_OF_ASSEMBLY** -> `Autodesk.Revit.DB.AssemblyDifference` (`direct_return_type`; return type `AssemblyDifference`)
-- `Autodesk.Revit.DB.AssemblyInstance.Create` -> **UNKNOWN_DB_OBJECT_REFERENCE** -> `Autodesk.Revit.DB.AssemblyInstance` (`direct_return_type`; return type `AssemblyInstance`)
-- `Autodesk.Revit.DB.AssemblyInstance.GetTransform` -> **UNKNOWN_DB_OBJECT_REFERENCE** -> `Autodesk.Revit.DB.Transform` (`direct_return_type`; return type `Transform`)
-- `Autodesk.Revit.DB.AssemblyInstance.PlaceInstance` -> **UNKNOWN_DB_OBJECT_REFERENCE** -> `Autodesk.Revit.DB.AssemblyInstance` (`direct_return_type`; return type `AssemblyInstance`)
-- `Autodesk.Revit.DB.AssemblyInstance.Location` -> **UNKNOWN_DB_OBJECT_REFERENCE** -> `Autodesk.Revit.DB.Location` (`direct_return_type`; return type `Location`)
-- `Autodesk.Revit.DB.AssemblyViewUtils.Create3DOrthographic` -> **UNKNOWN_DB_OBJECT_REFERENCE** -> `Autodesk.Revit.DB.View3D` (`direct_return_type`; return type `View3D`)
-- `Autodesk.Revit.DB.AssemblyViewUtils.Create3DOrthographic` -> **UNKNOWN_DB_OBJECT_REFERENCE** -> `Autodesk.Revit.DB.View3D` (`direct_return_type`; return type `View3D`)
+- `Autodesk.Revit.DB.AssemblyViewUtils.CreateMaterialTakeoff` -> **USES_MATERIAL** -> `Autodesk.Revit.DB.ViewSchedule` (`direct_return_type`; return type `ViewSchedule`)
+- `Autodesk.Revit.DB.AssemblyViewUtils.CreateMaterialTakeoff` -> **USES_MATERIAL** -> `Autodesk.Revit.DB.ViewSchedule` (`direct_return_type`; return type `ViewSchedule`)
+- `Autodesk.Revit.DB.AssemblyViewUtils.CreateSheet` -> **PLACED_ON_SHEET** -> `Autodesk.Revit.DB.ViewSheet` (`direct_return_type`; return type `ViewSheet`)
+- `Autodesk.Revit.DB.AssemblyViewUtils.CreateSingleCategorySchedule` -> **HAS_CATEGORY** -> `Autodesk.Revit.DB.ViewSchedule` (`direct_return_type`; return type `ViewSchedule`)
+- `Autodesk.Revit.DB.AssemblyViewUtils.CreateSingleCategorySchedule` -> **HAS_CATEGORY** -> `Autodesk.Revit.DB.ViewSchedule` (`direct_return_type`; return type `ViewSchedule`)
+- `Autodesk.Revit.DB.BeamSystem.Level` -> **ASSIGNED_TO_LEVEL** -> `Autodesk.Revit.DB.Level` (`direct_return_type`; return type `Level`)
+- `Autodesk.Revit.DB.BrowserOrganization.GetCurrentBrowserOrganizationForSheets` -> **PLACED_ON_SHEET** -> `Autodesk.Revit.DB.BrowserOrganization` (`direct_return_type`; return type `BrowserOrganization`)
+- `Autodesk.Revit.DB.BuiltInFailures.AnalyticalModelFailures.HighestAssociatedLevelBelowLowestAssociatedLevel` -> **ASSIGNED_TO_LEVEL** -> `Autodesk.Revit.DB.FailureDefinitionId` (`direct_return_type`; return type `FailureDefinitionId`)
+- `Autodesk.Revit.DB.BuiltInFailures.AnalyticalModelFailures.LowestAssociatedLevelAboveHighestAssociatedLevel` -> **ASSIGNED_TO_LEVEL** -> `Autodesk.Revit.DB.FailureDefinitionId` (`direct_return_type`; return type `FailureDefinitionId`)
+- `Autodesk.Revit.DB.BuiltInFailures.ArrayFailures.CannotCreateArraySelectionIsGrouped` -> **MEMBER_OF_GROUP** -> `Autodesk.Revit.DB.FailureDefinitionId` (`direct_return_type`; return type `FailureDefinitionId`)
+- `Autodesk.Revit.DB.BuiltInFailures.ArrayFailures.CouldntFindNewHostsForElements` -> **HOSTED_BY** -> `Autodesk.Revit.DB.FailureDefinitionId` (`direct_return_type`; return type `FailureDefinitionId`)
+- `Autodesk.Revit.DB.BuiltInFailures.AssemblyFailures.AddedElementsNotSamePhaseAsAssembly` -> **ASSIGNED_TO_PHASE** -> `Autodesk.Revit.DB.FailureDefinitionId` (`direct_return_type`; return type `FailureDefinitionId`)
+- `Autodesk.Revit.DB.BuiltInFailures.AssemblyFailures.AssemblyDeleteTypeWarn` -> **MEMBER_OF_ASSEMBLY** -> `Autodesk.Revit.DB.FailureDefinitionId` (`direct_return_type`; return type `FailureDefinitionId`)
+- `Autodesk.Revit.DB.BuiltInFailures.AssemblyFailures.AssemblyDidNotMatchRequestedTypeWarn` -> **MEMBER_OF_ASSEMBLY** -> `Autodesk.Revit.DB.FailureDefinitionId` (`direct_return_type`; return type `FailureDefinitionId`)
+- `Autodesk.Revit.DB.BuiltInFailures.AssemblyFailures.AssemblyDisassembleInstanceWarn` -> **MEMBER_OF_ASSEMBLY** -> `Autodesk.Revit.DB.FailureDefinitionId` (`direct_return_type`; return type `FailureDefinitionId`)
+- `Autodesk.Revit.DB.BuiltInFailures.AssemblyFailures.AssemblyInheritTypeWarn` -> **MEMBER_OF_ASSEMBLY** -> `Autodesk.Revit.DB.FailureDefinitionId` (`direct_return_type`; return type `FailureDefinitionId`)
+- `Autodesk.Revit.DB.BuiltInFailures.AssemblyFailures.AssemblyInvalidMember` -> **MEMBER_OF_ASSEMBLY** -> `Autodesk.Revit.DB.FailureDefinitionId` (`direct_return_type`; return type `FailureDefinitionId`)
+- `Autodesk.Revit.DB.BuiltInFailures.AssemblyFailures.AssemblyNewTypeWarn` -> **MEMBER_OF_ASSEMBLY** -> `Autodesk.Revit.DB.FailureDefinitionId` (`direct_return_type`; return type `FailureDefinitionId`)
+- `Autodesk.Revit.DB.BuiltInFailures.AssemblyFailures.AssemblyRenameTypeWarn` -> **MEMBER_OF_ASSEMBLY** -> `Autodesk.Revit.DB.FailureDefinitionId` (`direct_return_type`; return type `FailureDefinitionId`)
+- `Autodesk.Revit.DB.BuiltInFailures.AssemblyFailures.CouldNotAcquireAssemblyViews` -> **MEMBER_OF_ASSEMBLY** -> `Autodesk.Revit.DB.FailureDefinitionId` (`direct_return_type`; return type `FailureDefinitionId`)
+- `Autodesk.Revit.DB.BuiltInFailures.AssemblyFailures.CouldNotChangeTypeOfAssembly` -> **MEMBER_OF_ASSEMBLY** -> `Autodesk.Revit.DB.FailureDefinitionId` (`direct_return_type`; return type `FailureDefinitionId`)
+- `Autodesk.Revit.DB.BuiltInFailures.AssemblyFailures.DeleteAssemblyInstWithViewsWarn` -> **MEMBER_OF_ASSEMBLY** -> `Autodesk.Revit.DB.FailureDefinitionId` (`direct_return_type`; return type `FailureDefinitionId`)
 
 ## 9. Top 25 uncertain candidates needing review
 - `Autodesk.Revit.DB.AlphanumericRevisionSettings.GetSequence` -> **UNKNOWN_DB_OBJECT_REFERENCE** -> `Autodesk.Revit.DB.string` (`needs_runtime_validation`; return type `IList < string >`)
@@ -76,7 +76,27 @@
 - `Autodesk.Revit.DB.DGNExportOptions.GetPredefinedSetupNames` -> **UNKNOWN_DB_OBJECT_REFERENCE** -> `Autodesk.Revit.DB.string` (`needs_runtime_validation`; return type `IList < string >`)
 - `Autodesk.Revit.DB.DimensionType.GetEqualityFormula` -> **UNKNOWN_DB_OBJECT_REFERENCE** -> `Autodesk.Revit.DB.DimensionEqualityLabelFormatting` (`needs_runtime_validation`; return type `IList < DimensionEqualityLabelFormatting >`)
 
-## 10. Room / Room Number / Room Name findings
+## 10. Unknown-reference target type breakdown
+Both UNKNOWN_* edge types mean 'definitely a reference, but no keyword/docs evidence identifies which specific relationship' -- per docs/edge_taxonomy_v0.md, that's the conservative, honest label, not a bug to fix by guessing a specific type. This breakdown exists so a concentration in a few target types (e.g. a generic identifier type referenced from all over the API) is visible here instead of only discoverable by querying candidate_edges.json directly.
+- 8578 total UNKNOWN_* edges, 781 distinct target type(s)
+  - `Autodesk.Revit.DB.ForgeTypeId`: 4031 (47%)
+  - `Autodesk.Revit.DB.FailureDefinitionId`: 2067 (24%)
+  - `(none)`: 366 (4%)
+  - `Autodesk.Revit.DB.Curve`: 65 (1%)
+  - `Autodesk.Revit.DB.Color`: 52 (1%)
+  - `Autodesk.Revit.DB.Transform`: 49 (1%)
+  - `Autodesk.Revit.DB.Reference`: 46 (1%)
+  - `Autodesk.Revit.DB.ExternalServiceId`: 46 (1%)
+  - `Autodesk.Revit.DB.CurveLoop`: 35 (0%)
+  - `Autodesk.Revit.DB.XYZ`: 32 (0%)
+  - `Autodesk.Revit.DB.FilterRule`: 32 (0%)
+  - `Autodesk.Revit.DB.IFCAnyHandle`: 27 (0%)
+  - `Autodesk.Revit.DB.string`: 22 (0%)
+  - `Autodesk.Revit.DB.Solid`: 22 (0%)
+  - `Autodesk.Revit.DB.Element`: 22 (0%)
+  - ...and 766 more target type(s)
+
+## 11. Room / Room Number / Room Name findings
 ## Room / Room Number / Room Name investigation
 
 Source: https://www.revitapidocs.com/2024/80cd8f7f-bb92-6442-ac78-0ed17376844f.htm
@@ -107,13 +127,13 @@ Source: https://www.revitapidocs.com/2024/e6b482cd-2466-0bc0-77ca-c40d2adaa3c7.h
 Members seen on Room page: ['Room']
 - `Name` not found directly on Room; likely inherited from `Element.Name` (not re-declared).
 
-## 11. Limitations
+## 12. Limitations
 - Edge classification is a static, docs-only heuristic; no candidate edge has been validated against a live Revit document (see confidence label needs_runtime_validation).
 - Member pages reachable only via a type's members table are discovered incrementally during parsing; a partial/interrupted crawl can under-count members for the last few types processed.
 - Name-keyword-to-edge-type mapping (classify.py) is heuristic and English-name-based; it will misclassify or under-classify members whose names don't match the documented keyword list.
-- 138 page(s) failed to fetch or parse: ['https://www.revitapidocs.com/2024/93d26466-11de-842c-f089-6b15b839e6af.htm', 'https://www.revitapidocs.com/2024/8f200255-a515-0c02-656b-b241e0011228.htm', 'https://www.revitapidocs.com/2024/8d74cf02-9271-3c6c-00f5-bc7b48d52c56.htm', 'https://www.revitapidocs.com/2024/77aa9939-8f41-1725-80dc-864ca1f7a49c.htm', 'https://www.revitapidocs.com/2024/2f482b62-410e-2db9-b6b9-c64abedcbc4c.htm', 'https://www.revitapidocs.com/2024/7ace570d-870f-be20-e493-e80ffa27f454.htm', 'https://www.revitapidocs.com/2024/26a118b5-c583-a9b2-c935-c11b270e140e.htm', 'https://www.revitapidocs.com/2024/e46e0d8f-5bcb-46bf-5def-03af68327b9e.htm', 'https://www.revitapidocs.com/2024/ace39293-a976-d22b-4798-42bb8e82b307.htm', 'https://www.revitapidocs.com/2024/941de0b6-a0f9-eb5a-5f25-9aa4d9da699a.htm'] ...
+- 138 page(s) failed to fetch or parse during the original crawl (not re-derived here -- failed_urls isn't persisted to disk by the pipeline; see the original crawl's console output).
 
-## 12. Recommended next steps
+## 13. Recommended next steps
 - Run against a live revitapidocs.com session and diff parser_notes across all pages to find and fix selector assumptions that didn't hold (see docs/crawl_notes.md).
 - Expand the name-keyword edge taxonomy with additional evidence gathered from real docs text (docs_semantic_hint) rather than name matching alone.
 - Cross-check high-confidence candidate edges (direct_return_type, elementid_with_strong_name) against a small number of real Revit documents to promote them out of 'candidate' status.
@@ -122,20 +142,20 @@ Members seen on Room page: ['Room']
 ## 14. Knowledge graph materialization
 
 `graph.json`/`graph_core.json` resolve each edge's `candidate_target_type` string against the crawled node set (see graph.py) instead of leaving it as a loose type name.
-- 2426 total nodes (5 external -- referenced by an edge but never crawled/classified)
+- 2441 total nodes (20 external -- referenced by an edge but never crawled/classified)
 - 10697 total edges
 - Target resolution: exact=9017, external=69, none=965, short_name_fallback=646
 - Confidence tier breakdown: core=1241, likely=623, needs_validation=368, unverified_reference=8465
-- `graph_core.json` (confidence_tier=core only): 330 nodes, 1241 edges
+- `graph_core.json` (confidence_tier=core only): 289 nodes, 1148 edges
 - 53 communities detected over the core subgraph (heuristic=53 labels)
 - Largest communities:
   - `FailureDefinitionId · BuiltInFailures.GroupFailures · BuiltInFailures.FamilyFailures` (72 nodes)
-  - `Category · ConceptualSurfaceType · Family` (26 nodes)
-  - `Material · MassSurfaceData · TopographySurface` (19 nodes)
+  - `Category · ConceptualSurfaceType · ConceptualConstructionType` (26 nodes)
+  - `Material · MassSurfaceData · EnergyAnalysisConstruction` (19 nodes)
   - `Level · MultistoryStairs · Railing` (17 nodes)
   - `ViewSheet · FabricArea · FabricSheetType` (8 nodes)
   - `ForgeTypeId · ParameterTypeId · InternalDefinition` (8 nodes)
-  - `Reference · DividedSurface · RebarConstraint` (7 nodes)
+  - `Reference · RebarConstraint · DividedSurface` (7 nodes)
   - `Element · Parameter · ChangeType` (6 nodes)
   - `Phase · EnergyDataSettings · PlanTopology` (5 nodes)
   - `FillPatternElement · MEPSystemType · ColorFillSchemeEntry` (4 nodes)

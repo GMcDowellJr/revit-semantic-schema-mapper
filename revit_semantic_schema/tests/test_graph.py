@@ -218,3 +218,53 @@ def test_apply_communities_with_no_core_edges_produces_no_communities():
 
     assert result.communities == []
     assert all(n.community_id is None for n in result.nodes)
+
+
+def test_filter_core_excludes_core_tier_edges_with_no_target():
+    """A method like GetDependentElements matches a relationship keyword
+    (core-tier confidence) but ElementId erases which type it points at, so
+    candidate_target_type is None -- classify.py never had a target to
+    record. graph.json should still say "high-confidence, target unknown,"
+    but graph_core.json promises a loadable node/edge graph, so an edge
+    with no target at all must not appear in it.
+    """
+    nodes = [_node("Autodesk.Revit.DB.AssemblyInstance")]
+    edges = [
+        _edge("Autodesk.Revit.DB.AssemblyInstance", None, EdgeType.MEMBER_OF_GROUP, ConfidenceLabel.ELEMENTID_COLLECTION_WITH_STRONG_NAME),
+    ]
+
+    result = graph.build_graph(nodes, edges)
+
+    assert result.edges[0].confidence_tier is ConfidenceTier.CORE
+    core_nodes, core_edges = graph.filter_core(result)
+    assert core_edges == []
+    assert core_nodes == []
+
+
+def test_filter_core_keeps_core_edges_that_do_have_a_target():
+    nodes = [_node("Autodesk.Revit.DB.FamilyInstance"), _node("Autodesk.Revit.DB.FamilySymbol")]
+    edges = [_edge("Autodesk.Revit.DB.FamilyInstance", "Autodesk.Revit.DB.FamilySymbol", EdgeType.INSTANCE_OF, ConfidenceLabel.DIRECT_RETURN_TYPE)]
+
+    result = graph.build_graph(nodes, edges)
+    core_nodes, core_edges = graph.filter_core(result)
+
+    assert len(core_edges) == 1
+    assert {n.id for n in core_nodes} == {"Autodesk.Revit.DB.FamilyInstance", "Autodesk.Revit.DB.FamilySymbol"}
+
+
+def test_missing_source_does_not_fall_back_to_an_unrelated_same_named_node():
+    """If Autodesk.Revit.DB.Architecture.Room's own class page failed to
+    crawl (so it's absent from node_candidates), but some unrelated type
+    also happens to be named 'Room', a missing source must become an
+    external stub -- not get its edges silently rewritten onto that
+    unrelated node. The short-name fallback is only safe for targets, where
+    classify.py already confirmed the name refers to a real type.
+    """
+    nodes = [_node("Autodesk.Revit.DB.Mechanical.Room", short_name="Room")]
+    edges = [_edge("Autodesk.Revit.DB.Architecture.Room", None, EdgeType.HAS_PARAMETER, ConfidenceLabel.NAME_ONLY_CANDIDATE)]
+
+    result = graph.build_graph(nodes, edges)
+
+    assert result.edges[0].source == "Autodesk.Revit.DB.Architecture.Room"
+    external_ids = {n.id for n in result.nodes if n.external}
+    assert "Autodesk.Revit.DB.Architecture.Room" in external_ids

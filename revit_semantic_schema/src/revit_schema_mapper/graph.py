@@ -101,16 +101,27 @@ class _Resolver:
         self._unambiguous_by_short = {short: names[0] for short, names in by_short.items() if len(names) == 1}
         self._external_ids: dict[str, GraphNode] = {}
 
-    def resolve(self, type_name: str | None) -> tuple[str | None, TargetResolution]:
+    def resolve(self, type_name: str | None, *, allow_short_name_fallback: bool = True) -> tuple[str | None, TargetResolution]:
+        """``allow_short_name_fallback=False`` is for resolving an edge's
+        *source*: the fallback is only justified for a target, where we
+        independently know (from classify.py's return-type parsing) that
+        the name really does refer to a specific real type and we're just
+        correcting a namespace mismatch. A source string with no exact node
+        match usually just means that type's own page failed to crawl/parse
+        -- falling back to *any* unrelated node that happens to share its
+        short name would silently rewrite that node's edges onto the wrong
+        type instead of correctly marking it external.
+        """
         if not type_name:
             return None, TargetResolution.NONE
         if type_name in self._by_full_name:
             return type_name, TargetResolution.EXACT
 
         short = type_name.rsplit(".", 1)[-1]
-        fallback = self._unambiguous_by_short.get(short)
-        if fallback is not None:
-            return fallback, TargetResolution.SHORT_NAME_FALLBACK
+        if allow_short_name_fallback:
+            fallback = self._unambiguous_by_short.get(short)
+            if fallback is not None:
+                return fallback, TargetResolution.SHORT_NAME_FALLBACK
 
         if type_name not in self._external_ids:
             self._external_ids[type_name] = GraphNode(
@@ -136,9 +147,10 @@ def build_graph(node_candidates: list[NodeCandidate], edge_candidates: list[Edge
         # EdgeCandidate's source_type comes from a class/struct/interface
         # page's own members -- see classify.build_edge_candidates), but a
         # truncated/partial crawl can still leave one dangling; resolving it
-        # the same way as a target keeps every edge endpoint backed by some
-        # node rather than a silently broken reference.
-        source_id, _ = resolver.resolve(edge.source_type)
+        # keeps every edge endpoint backed by some node rather than a
+        # silently broken reference. Unlike a target, an unresolved source
+        # never falls back to a same-named node -- see _Resolver.resolve.
+        source_id, _ = resolver.resolve(edge.source_type, allow_short_name_fallback=False)
         target_id, target_resolution = resolver.resolve(edge.candidate_target_type)
         resolution_counts[target_resolution.value] += 1
 
@@ -185,9 +197,19 @@ def filter_core(result: GraphBuildResult) -> tuple[list[GraphNode], list[GraphEd
     actually reference (as source or target) -- not the full node set, so
     this stays a small, genuinely-trustworthy slice rather than the full
     crawl's node list with most edges missing.
+
+    An edge can be tiered CORE (a high-confidence return type or strongly-
+    named ElementId/collection) while still having no resolvable
+    ``candidate_target_type`` at all -- e.g. ``GetDependentElements``, where
+    the name matches a relationship keyword but ``ElementId`` erases which
+    type it points at, so classify.py never had one to record. That's a
+    legitimate thing for ``graph.json`` to say ("this is a confident
+    relationship, target unknown"), but it isn't a graph edge -- excluded
+    here so a consumer can treat ``graph_core.json`` as a genuinely loadable
+    node/edge graph, with every edge in it pointing somewhere real.
     """
-    core_edges = [e for e in result.edges if e.confidence_tier is ConfidenceTier.CORE]
-    referenced_ids = {e.source for e in core_edges} | {e.target for e in core_edges if e.target is not None}
+    core_edges = [e for e in result.edges if e.confidence_tier is ConfidenceTier.CORE and e.target is not None]
+    referenced_ids = {e.source for e in core_edges} | {e.target for e in core_edges}
     core_nodes = [n for n in result.nodes if n.id in referenced_ids]
     return core_nodes, core_edges
 
