@@ -232,7 +232,12 @@ def _crawl_and_parse(crawler: Crawler, config: CrawlConfig, by_url: dict[str, di
     return pages, failed_urls
 
 
-def run_pipeline(config: CrawlConfig, output_dir: Path, fallback_reason: str | None = None) -> PipelineResult:
+def run_pipeline(
+    config: CrawlConfig,
+    output_dir: Path,
+    fallback_reason: str | None = None,
+    include_doc_text: bool = False,
+) -> PipelineResult:
     crawler = Crawler(config)
     output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -249,7 +254,7 @@ def run_pipeline(config: CrawlConfig, output_dir: Path, fallback_reason: str | N
     raw_index_entries = list(by_url.values())
 
     export.write_raw_index(output_dir, raw_index_entries)
-    export.write_api_pages(output_dir, in_scope_pages)
+    export.write_api_pages(output_dir, in_scope_pages, include_doc_text=include_doc_text)
     export.write_node_candidates(output_dir, node_candidates)
     export.write_edge_candidates(output_dir, edge_candidates)
     export.write_enum_catalogs(output_dir, in_scope_pages)
@@ -522,6 +527,7 @@ def run_targeted_pipeline(
     output_dir: Path,
     target_full_type_names: list[str] | None = None,
     known_edge_checks: list[tuple[str, str]] | None = None,
+    include_doc_text: bool = False,
 ) -> TargetedPipelineResult:
     """Scoped validation crawl: fetch only the target classes' pages (class,
     Members, Methods/Properties, and every linked property/method page) via
@@ -555,7 +561,7 @@ def run_targeted_pipeline(
     known_edge_report = _build_known_edge_report(pages, edge_candidates, node_candidates, known_edge_checks)
 
     export.write_raw_index(output_dir, raw_index_entries)
-    export.write_api_pages(output_dir, pages)
+    export.write_api_pages(output_dir, pages, include_doc_text=include_doc_text)
     export.write_node_candidates(output_dir, node_candidates)
     export.write_edge_candidates(output_dir, edge_candidates)
     export.write_enum_catalogs(output_dir, pages)

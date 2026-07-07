@@ -45,9 +45,10 @@ import logging
 import re
 import time
 from dataclasses import dataclass, field
-from xml.etree import ElementTree
 from pathlib import Path
 from urllib.parse import urljoin, urlparse
+from urllib.robotparser import RobotFileParser
+from xml.etree import ElementTree
 
 try:
     from bs4 import BeautifulSoup
@@ -66,7 +67,7 @@ USER_AGENT = (
     "polite, throttled, caches locally)"
 )
 
-DEFAULT_THROTTLE_SECONDS = 1.5
+DEFAULT_THROTTLE_SECONDS = 2.0
 ALLOWED_HOST = "www.revitapidocs.com"
 # CDN host serving the client-side namespace/TOC JSON (see discover_via_namespace_json).
 NAMESPACE_JSON_HOST = "d24b2zsrnzhmgb.cloudfront.net"
@@ -88,6 +89,10 @@ class OutOfScopeURLError(ValueError):
     """Raised when the crawler is asked to fetch a URL outside revitapidocs.com."""
 
 
+class RobotsDisallowedError(ValueError):
+    """Raised when robots.txt disallows fetching a URL for our user-agent."""
+
+
 class Crawler:
     def __init__(self, config: CrawlConfig):
         self.config = config
@@ -95,6 +100,11 @@ class Crawler:
         self.client = HttpClient({"User-Agent": USER_AGENT})
         self._last_request_time: float = 0.0
         self.last_discovery_errors: list[str] = []
+        # Lazily loaded on the first real (non-cached) fetch of ALLOWED_HOST,
+        # not here in __init__ -- so constructing a Crawler in a test that
+        # primes every URL it touches in the cache never makes a real
+        # network call just to check robots.txt.
+        self._robots: RobotFileParser | None = None
 
     # -- low-level fetch -------------------------------------------------
 
@@ -112,11 +122,60 @@ class Crawler:
         if wait > 0:
             time.sleep(wait)
 
+    def _parse_robots_text(self, text: str) -> None:
+        parser = RobotFileParser()
+        parser.parse(text.splitlines())
+        # parser.parse() alone leaves last_checked at 0; can_fetch()
+        # unconditionally returns False until it's set (that's normally
+        # read()'s job, but read() does its own urllib.request fetch,
+        # bypassing our HttpClient backend/proxy handling -- so we fetch via
+        # self.client and parse the text ourselves instead, and must set
+        # this flag by hand to get functional can_fetch() behavior).
+        parser.last_checked = time.time()
+        delay = parser.crawl_delay(USER_AGENT)
+        if delay is not None and float(delay) > self.config.throttle_seconds:
+            logger.info(
+                "robots.txt: crawl-delay %.1fs exceeds configured throttle_seconds=%.1fs -- honoring the larger value",
+                delay, self.config.throttle_seconds,
+            )
+            self.config.throttle_seconds = float(delay)
+        self._robots = parser
+
+    def _ensure_robots_loaded(self) -> None:
+        """Fetch and parse ``robots.txt`` for ``ALLOWED_HOST`` on first use.
+
+        Not routed through ``fetch()`` (and not cached to disk): robots.txt
+        is small, cheap, and should reflect the site's *current* rules each
+        run rather than a stale cached copy. A fetch failure is treated as
+        "no restrictions" -- the conventional interpretation when robots.txt
+        is unreachable (as opposed to an explicit 401/403, which would mean
+        "disallow all"; ``HttpClient`` doesn't currently distinguish that
+        case from other failures, so both are treated the same, permissive
+        way here).
+        """
+        if self._robots is not None:
+            return
+        robots_url = urljoin(self.config.base_url, "/robots.txt")
+        try:
+            self._throttle()
+            result = self.client.get(robots_url, timeout=30)
+            self._last_request_time = time.monotonic()
+        except Exception as exc:  # noqa: BLE001 - see docstring
+            logger.info("robots.txt: could not fetch %s (%r) -- proceeding as if unrestricted", robots_url, exc)
+            parser = RobotFileParser()
+            parser.allow_all = True  # can_fetch() short-circuits to True on this, unlike an unparsed/empty parser
+            self._robots = parser
+            return
+        logger.info("robots.txt: loaded from %s", robots_url)
+        self._parse_robots_text(result.text)
+
     def fetch(self, url: str) -> str:
         """Fetch a URL, using the on-disk cache when available.
 
         Raises OutOfScopeURLError if the URL is not on revitapidocs.com, so a
         bug in link discovery cannot accidentally crawl the wider internet.
+        Raises RobotsDisallowedError if ALLOWED_HOST's robots.txt disallows
+        this path for our user-agent.
         """
         host = urlparse(url).netloc
         if host not in ALLOWED_HOSTS:
@@ -125,6 +184,11 @@ class Crawler:
         cache_path = self._cache_path(url)
         if cache_path.exists() and not self.config.force_refresh:
             return cache_path.read_text(encoding="utf-8", errors="replace")
+
+        if host == ALLOWED_HOST:
+            self._ensure_robots_loaded()
+            if self._robots is not None and not self._robots.can_fetch(USER_AGENT, url):
+                raise RobotsDisallowedError(f"robots.txt disallows fetching {url!r} for user-agent {USER_AGENT!r}")
 
         self._throttle()
         result = self.client.get(url, timeout=30)

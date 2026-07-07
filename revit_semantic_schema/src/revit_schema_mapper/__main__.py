@@ -56,6 +56,13 @@ def main(argv: list[str] | None = None) -> int:
         help="Only run page discovery and report how many pages a full run would need to fetch -- "
         "does not fetch/parse individual pages or write anything but raw_index.json",
     )
+    parser.add_argument(
+        "--include-doc-text",
+        action="store_true",
+        help="Include full summary/remarks/code-example text (copied from the docs site) in "
+        "api_pages.json. Omitted by default -- these are prose/code, not derived facts -- "
+        "so only opt in for local debugging, and don't republish the result.",
+    )
     parser.add_argument("-v", "--verbose", action="store_true")
     args = parser.parse_args(argv)
 
@@ -94,7 +101,13 @@ def main(argv: list[str] | None = None) -> int:
 
     if targeted:
         target_classes = [t.strip() for t in args.target_classes.split(",") if t.strip()] if args.target_classes else DEFAULT_TARGET_CLASSES
-        result = run_targeted_pipeline(config, output_dir, target_full_type_names=target_classes, known_edge_checks=DEFAULT_KNOWN_EDGE_CHECKS)
+        result = run_targeted_pipeline(
+            config,
+            output_dir,
+            target_full_type_names=target_classes,
+            known_edge_checks=DEFAULT_KNOWN_EDGE_CHECKS,
+            include_doc_text=args.include_doc_text,
+        )
 
         targets_found = sum(1 for t in result.target_report if t.found_in_namespace_json)
         targets_parsed = sum(1 for t in result.target_report if t.class_page_parsed)
@@ -109,7 +122,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"Outputs written to: {output_dir} (see validation_summary.md)")
         return 0
 
-    result = run_pipeline(config, output_dir, fallback_reason=args.fallback_reason)
+    result = run_pipeline(config, output_dir, fallback_reason=args.fallback_reason, include_doc_text=args.include_doc_text)
 
     print(f"Pages discovered: {len(result.raw_index_entries)}")
     print(f"Pages parsed:     {len(result.pages)}")
