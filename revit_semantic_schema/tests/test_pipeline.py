@@ -212,3 +212,90 @@ def test_run_targeted_pipeline_reports_found_and_missing_targets_and_known_edges
     assert (output_dir / "target_report.json").exists()
     assert (output_dir / "known_edge_report.json").exists()
     assert (output_dir / "validation_summary.md").exists()
+
+
+_WALL_CLASS_HTML_NO_INLINE_TABLE = """
+<html><body>
+<h1 id="PageHeader">Wall Class</h1>
+<div id="TopicPathClassic"><a href="/2024/ns_db.htm">Autodesk.Revit.DB</a> Namespace</div>
+<div class="syntax"><pre class="typeSignature">public class Wall : HostObject</pre></div>
+</body></html>
+"""
+
+_WALL_MEMBERS_HTML_WITH_INHERITED_ROW = """
+<html><body>
+<div id="TopicPathClassic"><a href="/2024/ns_db.htm">Autodesk.Revit.DB</a> Namespace</div>
+<h4 id="api-title" class="truncate"> Wall Members </h4>
+<div id="mainBody">
+<h1 class="heading">Methods</h1>
+<table class="members" id="memberList">
+<tr><th>Icon</th><th>Name</th><th>Description</th></tr>
+<tr data="public;inherited;notNetfw;"><td><img></td><td><a href="arephasesmodifiable.htm">ArePhasesModifiable</a></td><td>Returns true if... (Inherited from <a href="element.htm">Element</a>.)</td></tr>
+</table>
+</div>
+</body></html>
+"""
+
+_ARE_PHASES_MODIFIABLE_PROPERTY_HTML = """
+<html><body>
+<h4 id="api-title" class="truncate"> ArePhasesModifiable Method </h4>
+<div id="mainBody">
+<div class="summary"><p>Returns true if the properties CreatedPhaseId and DemolishedPhaseId can be modified.</p></div>
+<div class="syntax"><pre class="typeSignature">public bool ArePhasesModifiable()</pre></div>
+</div>
+</body></html>
+"""
+
+
+def test_targeted_crawl_of_wall_alone_attributes_inherited_member_to_element(tmp_path):
+    """Regression test for the exact scenario described in review: a Wall
+    Members page lists an inherited method (ArePhasesModifiable, inherited
+    from Element per the real data="...;inherited;..." markup), but the
+    crawl's target list (or a --max-pages-truncated namespace_json result)
+    does not include Element at all. The inherited member's page must still
+    be attributed to Element, not falsely emitted as
+    Autodesk.Revit.DB.Wall.ArePhasesModifiable.
+    """
+    output_dir = tmp_path / "output"
+    config = CrawlConfig(version="2024", namespace_prefix="Autodesk.Revit.DB", cache_dir=output_dir / "cache")
+    crawler = Crawler(config)
+
+    # Only Wall is in the namespace_json tree -- Element is deliberately
+    # absent, as if truncated by --max-pages or simply out of scope for this
+    # targeted crawl.
+    tree = [
+        {
+            "title": "Namespaces",
+            "children": [
+                {
+                    "title": "Autodesk.Revit.DB Namespace",
+                    "tag": "Namespace",
+                    "children": [
+                        {
+                            "title": "Wall Class",
+                            "href": "wall-class.htm",
+                            "tag": "Class",
+                            "children": [
+                                {"title": "Wall Members", "href": "wall-members.htm", "tag": "Members"},
+                            ],
+                        },
+                    ],
+                },
+            ],
+        }
+    ]
+
+    _prime_cache(crawler, crawler.namespace_json_url(), json.dumps(tree))
+    _prime_cache(crawler, "https://www.revitapidocs.com/2024/wall-class.htm", _WALL_CLASS_HTML_NO_INLINE_TABLE)
+    _prime_cache(crawler, "https://www.revitapidocs.com/2024/wall-members.htm", _WALL_MEMBERS_HTML_WITH_INHERITED_ROW)
+    _prime_cache(crawler, "https://www.revitapidocs.com/2024/arephasesmodifiable.htm", _ARE_PHASES_MODIFIABLE_PROPERTY_HTML)
+
+    result = run_targeted_pipeline(config, output_dir, target_full_type_names=["Autodesk.Revit.DB.Wall"], known_edge_checks=[])
+
+    are_phases_pages = [p for p in result.pages if p.full_type_name.endswith(".ArePhasesModifiable")]
+    assert len(are_phases_pages) == 1
+    assert are_phases_pages[0].declaring_type == "Autodesk.Revit.DB.Element"
+    assert are_phases_pages[0].full_type_name != "Autodesk.Revit.DB.Wall.ArePhasesModifiable"
+
+    # No edge/node output should ever claim Wall declares this method.
+    assert not any(e.source_type == "Autodesk.Revit.DB.Wall" and e.member_name == "ArePhasesModifiable" for e in result.edge_candidates)

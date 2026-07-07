@@ -16,6 +16,37 @@ target list (`pipeline.DEFAULT_TARGET_CLASSES`) and known-edge checks
 reading `validation_summary.md` is the next real validation step -- treat its
 definition-of-done checklist (section 7) as the thing to check first.
 
+### Two bugs found and fixed by code review before any live run
+
+1. **Interfaces mis-tagged `utility_class`.** `build_node_candidates` includes `Kind.INTERFACE`
+   pages, and `classify_class_role`'s "every member is a method, no properties" heuristic is
+   exactly the normal shape of an interface (a contract), not a static helper bag. Any
+   method-only interface (there are many in `Autodesk.Revit.DB`) would have been mis-tagged.
+   Fixed: the utility-class checks (both the name-suffix and all-methods-no-properties ones)
+   are now skipped entirely for `Kind.INTERFACE`, which falls through to `unknown` instead.
+   Covered by `test_class_role_interface_with_only_methods_is_not_utility_class` and
+   `test_class_role_interface_with_utils_like_name_is_not_utility_class`.
+2. **Inherited members were mis-attributed to the wrong declaring type.** A real Members page
+   lists both members declared on the type itself and members inherited from a base type (e.g.
+   the real `Wall Members` page fixture lists `ArePhasesModifiable`, inherited from `Element`,
+   with `data="public;inherited;notNetfw;"` and "(Inherited from Element.)" in its description
+   cell). `parse_members_index_page`/`extract_member_links` previously ignored this and always
+   returned the *current* type as the link's declaring type, which `pipeline.py` used verbatim
+   whenever the inherited member's URL wasn't already known (e.g. a `--max-pages`-truncated
+   smoke crawl, or a targeted crawl of `Wall` alone that never reaches `Element`) --
+   fabricating false pages/edges like `Autodesk.Revit.DB.Wall.ArePhasesModifiable`. In a full
+   crawl covering both types this was usually masked (whichever type's Members page was
+   processed *first* won the URL in `by_url`), which is why it wasn't caught earlier. Fixed:
+   both functions now check each row's `data` attribute for `inherited` and, when set, resolve
+   the real owner from the row's own "(Inherited from X.)" text (regex `_row_inherited_from`),
+   emitting a `declaring_type_hint` that `pipeline.py`'s `enqueue_member_links` now prefers over
+   the caller-supplied type name. A row that's inherited but has no parseable owner text is
+   skipped entirely rather than guessed. Covered by
+   `test_parse_members_index_page_resolves_full_namespace_for_inherited_row`,
+   `test_extract_member_links_preserves_inherited_ownership`, and an end-to-end regression test,
+   `test_targeted_crawl_of_wall_alone_attributes_inherited_member_to_element` (verified to fail
+   with the exact false attribution before the fix, pass after).
+
 ## Target version: 2027, with a documented fallback
 
 The brief asks to start with Revit 2027 docs on revitapidocs.com and fall back to 2026

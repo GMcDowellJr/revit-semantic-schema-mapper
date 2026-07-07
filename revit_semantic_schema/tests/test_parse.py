@@ -35,6 +35,34 @@ def test_extract_member_links(load_fixture):
     assert symbol_link["url"].endswith("property_familyinstance_symbol.htm")
 
 
+_INLINE_TABLE_CLASS_PAGE_WITH_INHERITED_ROWS = """
+<html><body>
+<h1 id="PageHeader">Wall Class</h1>
+<div id="TopicPathClassic"><a href="/2024/ns_db.htm">Autodesk.Revit.DB</a> Namespace</div>
+<div class="syntax"><pre class="typeSignature">public class Wall : HostObject</pre></div>
+<table class="members" id="memberList">
+<tr><th>Icon</th><th>Name</th><th>Description</th></tr>
+<tr data="public;inherited;notNetfw;"><td><img></td><td><a href="arephasesmodifiable.htm">ArePhasesModifiable</a></td><td>Returns true if... (Inherited from <a href="element.htm">Element</a>.)</td></tr>
+<tr data="public;declared;notNetfw;"><td><img></td><td><a href="flip.htm">Flip</a></td><td>Flips the wall.</td></tr>
+<tr data="public;inherited;notNetfw;"><td><img></td><td><a href="mystery.htm">MysteryInherited</a></td><td>No parseable owner text here.</td></tr>
+</table>
+</body></html>
+"""
+
+
+def test_extract_member_links_preserves_inherited_ownership():
+    links = extract_member_links(
+        _INLINE_TABLE_CLASS_PAGE_WITH_INHERITED_ROWS,
+        "https://www.revitapidocs.com/2024/wall-class.htm",
+    )
+    by_name = {link["name"]: link for link in links}
+
+    assert by_name["ArePhasesModifiable"]["declaring_type_hint"] == "Autodesk.Revit.DB.Element"
+    assert "declaring_type_hint" not in by_name["Flip"]
+    # Inherited but with no parseable owner: don't guess Wall, drop the row.
+    assert "MysteryInherited" not in by_name
+
+
 def test_parse_property_page_direct_return_type(load_fixture):
     html = load_fixture("property_familyinstance_symbol.htm")
     page = parse_member_page(
@@ -121,6 +149,52 @@ def test_parse_members_index_page_splits_methods_and_properties(load_fixture):
     # Inherited Object members with no page of their own (e.g. Equals) must
     # be omitted, not crawled as if they had a URL.
     assert "Equals" not in by_name
+
+    # ArePhasesModifiable is real markup inherited from Element (data=
+    # "public;inherited;notNetfw;"), not declared on Wall -- it must carry
+    # Element as its declaring type, not Wall, so pipeline.py doesn't
+    # attribute it to the wrong type. This fixture has no embedded namespace
+    # JSON, so only the short name resolves here (see
+    # test_parse_members_index_page_resolves_full_namespace_for_inherited_row
+    # for the fully-qualified case).
+    assert by_name["ArePhasesModifiable"]["declaring_type_hint"] == "Element"
+    # Declared-on-Wall members must NOT get a declaring_type_hint override --
+    # the caller's default (the current type) is correct for them.
+    assert "declaring_type_hint" not in by_name["CrossSection"]
+    assert "declaring_type_hint" not in by_name["Width"]
+
+
+_MEMBERS_PAGE_WITH_NAMESPACE_AND_INHERITED_ROWS = """
+<html><body>
+<div id="TopicPathClassic"><a href="/2024/ns_db.htm">Autodesk.Revit.DB</a> Namespace</div>
+<h4 id="api-title" class="truncate"> Wall Members </h4>
+<div id="mainBody">
+<h1 class="heading">Methods</h1>
+<table class="members" id="memberList">
+<tr><th>Icon</th><th>Name</th><th>Description</th></tr>
+<tr data="public;inherited;notNetfw;"><td><img></td><td><a href="arephasesmodifiable.htm">ArePhasesModifiable</a></td><td>Returns true if... (Inherited from <a href="element.htm">Element</a>.)</td></tr>
+<tr data="public;declared;notNetfw;"><td><img></td><td><a href="flip.htm">Flip</a></td><td>Flips the wall.</td></tr>
+<tr data="public;inherited;notNetfw;"><td><img></td><td><a href="mystery.htm">MysteryInherited</a></td><td>No parseable owner text here.</td></tr>
+</table>
+</div>
+</body></html>
+"""
+
+
+def test_parse_members_index_page_resolves_full_namespace_for_inherited_row():
+    links, notes = parse_members_index_page(
+        _MEMBERS_PAGE_WITH_NAMESPACE_AND_INHERITED_ROWS,
+        "https://www.revitapidocs.com/2024/wall-members.htm",
+    )
+    by_name = {link["name"]: link for link in links}
+
+    assert by_name["ArePhasesModifiable"]["declaring_type_hint"] == "Autodesk.Revit.DB.Element"
+    assert "declaring_type_hint" not in by_name["Flip"]
+
+    # Inherited but with no parseable "(Inherited from X.)" text: better to
+    # drop the row than mis-attribute it to Wall.
+    assert "MysteryInherited" not in by_name
+    assert notes == []
 
 
 def test_find_members_page_link(load_fixture):

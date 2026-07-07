@@ -264,6 +264,32 @@ def _member_name_cell(cells: list) -> "Tag | None":
     return None
 
 
+_INHERITED_FROM_RE = re.compile(r"Inherited from\s+([A-Za-z_]\w*)")
+
+
+def _row_is_inherited(row: Tag) -> bool:
+    """Confirmed live layout: a member row's ``data`` attribute is a
+    semicolon-separated flag list, e.g. ``public;inherited;notNetfw;`` for a
+    member declared on a base type vs. ``public;declared;notNetfw;`` for one
+    declared directly on this type.
+    """
+    data_attr = row.get("data", "") or ""
+    return "inherited" in [part.strip() for part in data_attr.split(";")]
+
+
+def _row_inherited_from(cells: list) -> str | None:
+    """Best-effort short name of the type an inherited row's member is
+    actually declared on, from the description cell's trailing "(Inherited
+    from <a>Element</a>.)" (or ``<span class=nolink>Object</span>`` for
+    universal .NET Object members). Returns None if that text isn't found,
+    so the caller can decide not to guess.
+    """
+    if not cells:
+        return None
+    match = _INHERITED_FROM_RE.search(cells[-1].get_text(" ", strip=True))
+    return match.group(1) if match else None
+
+
 def _parse_see_also(soup: BeautifulSoup) -> list[str]:
     container = _first_match(soup, _SEE_ALSO_SELECTORS)
     if container is None:
@@ -482,10 +508,20 @@ def extract_member_links(html: str, base_url: str) -> list[dict]:
     members table usually isn't on the type page itself (see
     ``find_members_page_link``/``parse_members_index_page``); this is kept as
     a defensive fallback for pages/years that do inline it.
+
+    A row inherited from a base type (e.g. ``ArePhasesModifiable`` inherited
+    from ``Element`` on a ``Wall`` page) is *not* declared on this type --
+    including it here with this page's own type as declaring type would
+    mis-attribute it (e.g. a false ``Wall.ArePhasesModifiable``). Such rows
+    get a ``declaring_type_hint`` resolved from the row's own "(Inherited
+    from X.)" text instead of the caller's default, or are skipped entirely
+    if that text can't be parsed (better to lose the row than mis-attribute
+    it).
     """
     from urllib.parse import urljoin
 
     soup = BeautifulSoup(html, "html.parser")
+    namespace, _ = _parse_namespace(soup, html)
     table = _first_match(soup, _MEMBERS_TABLE_SELECTORS)
     if table is None:
         return []
@@ -500,7 +536,13 @@ def extract_member_links(html: str, base_url: str) -> list[dict]:
         anchor = name_cell.find("a", href=True)
         if anchor is None:
             continue
-        links.append({"name": anchor.get_text(strip=True), "url": urljoin(base_url, anchor["href"])})
+        link = {"name": anchor.get_text(strip=True), "url": urljoin(base_url, anchor["href"])}
+        if _row_is_inherited(row):
+            inherited_from = _row_inherited_from(cells)
+            if inherited_from is None:
+                continue  # inherited but from an unknown type -- don't guess
+            link["declaring_type_hint"] = f"{namespace}.{inherited_from}" if namespace else inherited_from
+        links.append(link)
     return links
 
 
@@ -545,11 +587,21 @@ def parse_members_index_page(html: str, base_url: str) -> tuple[list[dict], list
     section heading wasn't recognized). Entries with no link (e.g. inherited
     `Object` members like ``Equals``/``GetHashCode``, which have no page of
     their own) are omitted.
+
+    A row inherited from a base type (e.g. ``ArePhasesModifiable`` inherited
+    from ``Element`` on the real ``Wall`` page -- ``data="...;inherited;..."``)
+    is *not* declared on this type; including it with this page's own type
+    as declaring type would mis-attribute it (e.g. a false
+    ``Wall.ArePhasesModifiable``). Such rows carry a ``declaring_type_hint``
+    resolved from the row's own "(Inherited from X.)" text instead, or are
+    skipped entirely if that text can't be parsed (better to lose the row
+    than mis-attribute it).
     """
     from urllib.parse import urljoin
 
     notes: list[str] = []
     soup = BeautifulSoup(html, "html.parser")
+    namespace, _ = _parse_namespace(soup, html)
     container = soup.find(id="mainBody") or soup.find(id="mainSection") or soup
 
     links: list[dict] = []
@@ -581,13 +633,17 @@ def parse_members_index_page(html: str, base_url: str) -> tuple[list[dict], list
             anchor = name_cell.find("a", href=True)
             if anchor is None:
                 continue  # no page of its own (e.g. inherited Object.Equals)
-            links.append(
-                {
-                    "name": anchor.get_text(strip=True),
-                    "url": urljoin(base_url, anchor["href"]),
-                    "member_kind": member_kind,
-                }
-            )
+            link = {
+                "name": anchor.get_text(strip=True),
+                "url": urljoin(base_url, anchor["href"]),
+                "member_kind": member_kind,
+            }
+            if _row_is_inherited(row):
+                inherited_from = _row_inherited_from(cells)
+                if inherited_from is None:
+                    continue  # inherited but from an unknown type -- don't guess
+                link["declaring_type_hint"] = f"{namespace}.{inherited_from}" if namespace else inherited_from
+            links.append(link)
     if not links:
         notes.append("no member rows with links found on members index page")
     return links, notes

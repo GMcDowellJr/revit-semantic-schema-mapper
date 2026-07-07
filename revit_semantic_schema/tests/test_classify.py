@@ -70,6 +70,19 @@ def test_class_role_utility_class_by_all_static_methods_no_properties():
     assert classify_class_role(page, IsElementCandidate.FALSE) is ClassRole.UTILITY_CLASS
 
 
+def test_class_role_interface_with_only_methods_is_not_utility_class():
+    # A method-only interface is the normal shape for an interface (a
+    # contract), not a static helper bag -- must not be mis-tagged
+    # utility_class just because build_node_candidates includes interfaces.
+    page = _page("IFailuresPreprocessor", kind=Kind.INTERFACE, members=[_method("PreprocessFailures")])
+    assert classify_class_role(page, IsElementCandidate.FALSE) is ClassRole.UNKNOWN
+
+
+def test_class_role_interface_with_utils_like_name_is_not_utility_class():
+    page = _page("IWallUtils", kind=Kind.INTERFACE, members=[_method("DoThing")])
+    assert classify_class_role(page, IsElementCandidate.FALSE) is ClassRole.UNKNOWN
+
+
 def test_class_role_unknown_when_nothing_matches():
     page = _page("SomeDataHolder", members=[_property("Foo"), _method("DoThing")])
     assert classify_class_role(page, IsElementCandidate.FALSE) is ClassRole.UNKNOWN

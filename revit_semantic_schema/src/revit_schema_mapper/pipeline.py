@@ -69,13 +69,21 @@ def _crawl_and_parse(crawler: Crawler, config: CrawlConfig, by_url: dict[str, di
                 # ToString) out to MSDN instead of rendering them as plain text;
                 # out of scope by design, not a fetch failure.
                 continue
+            # A row inherited from a base type (e.g. ArePhasesModifiable on
+            # Wall, inherited from Element) carries its own resolved
+            # declaring_type_hint (see parse.py's inherited-row handling) --
+            # use that instead of this type's own name, so the member isn't
+            # mis-attributed to the type whose Members page it happened to be
+            # listed on.
+            declaring_type = link.get("declaring_type_hint") or declaring_full_type_name
             if url not in visited and url not in by_url:
                 by_url[url] = {
                     "url": url,
                     "link_text": link["name"],
-                    "discovered_via": f"{discovered_via_prefix}:{declaring_full_type_name}",
+                    "discovered_via": f"{discovered_via_prefix}:{declaring_type}",
+                    "declaring_type_hint": declaring_type,
                 }
-                member_queue.append((url, declaring_full_type_name))
+                member_queue.append((url, declaring_type))
                 queue.append(url)
 
     queue = list(by_url.keys())

@@ -174,7 +174,12 @@ def classify_class_role(page: ApiPage, is_element: IsElementCandidate) -> ClassR
        as deriving from Element/ElementType.
     6. ``utility_class`` -- name ends in Utils/Utility/Utilities, or every
        member is a method with no properties at all (a static helper bag).
-    7. ``unknown`` -- none of the above matched.
+       Interfaces are excluded from this check: an interface with only
+       method members (the normal shape for an interface) is a contract,
+       not a static helper class, and ``build_node_candidates`` includes
+       ``Kind.INTERFACE`` pages here.
+    7. ``unknown`` -- none of the above matched (including any interface
+       that didn't match an earlier, kind-agnostic rule).
     """
     if page.kind is Kind.ENUM:
         return ClassRole.ENUM
@@ -190,10 +195,11 @@ def classify_class_role(page: ApiPage, is_element: IsElementCandidate) -> ClassR
     if is_element is IsElementCandidate.TRUE:
         return ClassRole.ELEMENT_SUBTYPE
 
-    if short_name.endswith(_UTILITY_NAME_SUFFIXES):
-        return ClassRole.UTILITY_CLASS
-    if page.members and all(m.kind is MemberKind.METHOD for m in page.members):
-        return ClassRole.UTILITY_CLASS
+    if page.kind is not Kind.INTERFACE:
+        if short_name.endswith(_UTILITY_NAME_SUFFIXES):
+            return ClassRole.UTILITY_CLASS
+        if page.members and all(m.kind is MemberKind.METHOD for m in page.members):
+            return ClassRole.UTILITY_CLASS
 
     return ClassRole.UNKNOWN
 
