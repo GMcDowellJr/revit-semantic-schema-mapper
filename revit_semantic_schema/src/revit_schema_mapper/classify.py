@@ -14,12 +14,14 @@ from dataclasses import replace
 
 from .models import (
     ApiPage,
+    ClassRole,
     ConfidenceLabel,
     EdgeCandidate,
     EdgeType,
     IsElementCandidate,
     Kind,
     MemberInfo,
+    MemberKind,
     NodeCandidate,
 )
 
@@ -152,6 +154,50 @@ def _resolve_inheritance_chain(full_type_name: str, base_map: dict[str, str], sh
     return chain, (IsElementCandidate.UNKNOWN if not resolved_fully else IsElementCandidate.FALSE)
 
 
+_UTILITY_NAME_SUFFIXES = ("Utils", "Utility", "Utilities")
+_ELEMENT_TYPE_SHORT_NAMES = {"Element", "ElementType"}
+
+
+def classify_class_role(page: ApiPage, is_element: IsElementCandidate) -> ClassRole:
+    """Coarse structural classification, orthogonal to ``is_element_candidate``.
+
+    Deliberately name/kind-based (not runtime-verified) -- treat as a
+    starting hypothesis for grouping candidates, same spirit as the rest of
+    this module's confidence labels. Precedence (first match wins):
+
+    1. ``enum`` -- an enum page can't be anything else.
+    2. ``value_object`` -- a struct (.NET value type; a data holder, not an
+       Element).
+    3. ``options_class`` -- name ends in "Options" (e.g. ACADExportOptions).
+    4. ``element_type`` -- literally ``Element``/``ElementType`` themselves.
+    5. ``element_subtype`` -- anything else the inheritance chain resolves
+       as deriving from Element/ElementType.
+    6. ``utility_class`` -- name ends in Utils/Utility/Utilities, or every
+       member is a method with no properties at all (a static helper bag).
+    7. ``unknown`` -- none of the above matched.
+    """
+    if page.kind is Kind.ENUM:
+        return ClassRole.ENUM
+    if page.kind is Kind.STRUCT:
+        return ClassRole.VALUE_OBJECT
+
+    short_name = page.type_name
+    if short_name.endswith("Options"):
+        return ClassRole.OPTIONS_CLASS
+
+    if short_name in _ELEMENT_TYPE_SHORT_NAMES:
+        return ClassRole.ELEMENT_TYPE
+    if is_element is IsElementCandidate.TRUE:
+        return ClassRole.ELEMENT_SUBTYPE
+
+    if short_name.endswith(_UTILITY_NAME_SUFFIXES):
+        return ClassRole.UTILITY_CLASS
+    if page.members and all(m.kind is MemberKind.METHOD for m in page.members):
+        return ClassRole.UTILITY_CLASS
+
+    return ClassRole.UNKNOWN
+
+
 def build_node_candidates(pages: list[ApiPage]) -> list[NodeCandidate]:
     type_pages = [p for p in pages if p.kind in (Kind.CLASS, Kind.STRUCT, Kind.ENUM, Kind.INTERFACE)]
     base_map = _resolve_base_type_map(type_pages)
@@ -178,6 +224,7 @@ def build_node_candidates(pages: list[ApiPage]) -> list[NodeCandidate]:
                 base_type=page.base_type,
                 inheritance_chain=chain,
                 is_element_candidate=is_element,
+                class_role=classify_class_role(page, is_element),
                 evidence=evidence,
                 source_url=page.source_url,
             )

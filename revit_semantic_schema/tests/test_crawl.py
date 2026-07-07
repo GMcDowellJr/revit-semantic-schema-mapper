@@ -129,6 +129,51 @@ def test_discover_via_namespace_json_no_matching_namespace(tmp_path):
     assert "no namespace node" in notes[0]
 
 
+def test_discover_targeted_finds_classes_across_namespaces_and_reports_missing(tmp_path):
+    config = CrawlConfig(version="2024", namespace_prefix="Autodesk.Revit.DB", cache_dir=tmp_path / "cache")
+    crawler = Crawler(config)
+    _prime_cache(crawler, crawler.namespace_json_url(), json.dumps(_namespace_tree()))
+
+    targets = [
+        "Autodesk.Revit.ApplicationServices.Application",  # different namespace entirely
+        "Autodesk.Revit.DB.Wall",
+        "Autodesk.Revit.DB.Architecture.Room",  # sub-namespace
+        "Autodesk.Revit.DB.DoesNotExist",  # deliberately missing
+    ]
+
+    entries, found, notes = crawler.discover_targeted(targets)
+
+    assert found == {
+        "Autodesk.Revit.ApplicationServices.Application": True,
+        "Autodesk.Revit.DB.Wall": True,
+        "Autodesk.Revit.DB.Architecture.Room": True,
+        "Autodesk.Revit.DB.DoesNotExist": False,
+    }
+    assert len(notes) == 1
+    assert "Autodesk.Revit.DB.DoesNotExist" in notes[0]
+
+    urls = {e["url"] for e in entries}
+    assert "https://www.revitapidocs.com/2024/app-class.htm" in urls
+    assert "https://www.revitapidocs.com/2024/wall-class.htm" in urls
+    assert "https://www.revitapidocs.com/2024/wall-members.htm" in urls
+    assert "https://www.revitapidocs.com/2024/room-class.htm" in urls
+
+    by_url = {e["url"]: e for e in entries}
+    assert by_url["https://www.revitapidocs.com/2024/wall-properties.htm"]["declaring_type_hint"] == "Autodesk.Revit.DB.Wall"
+
+
+def test_discover_targeted_all_missing(tmp_path):
+    config = CrawlConfig(version="2024", namespace_prefix="Autodesk.Revit.DB", cache_dir=tmp_path / "cache")
+    crawler = Crawler(config)
+    _prime_cache(crawler, crawler.namespace_json_url(), json.dumps(_namespace_tree()))
+
+    entries, found, notes = crawler.discover_targeted(["Autodesk.Revit.DB.Nope"])
+
+    assert entries == []
+    assert found == {"Autodesk.Revit.DB.Nope": False}
+    assert any("not found" in n for n in notes)
+
+
 def test_discover_index_merges_namespace_json_results(tmp_path):
     config = CrawlConfig(version="2024", namespace_prefix="Autodesk.Revit.DB", cache_dir=tmp_path / "cache")
     crawler = Crawler(config)

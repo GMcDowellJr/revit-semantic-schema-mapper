@@ -1,5 +1,21 @@
 # Crawl notes
 
+## Targeted validation crawl (`--targeted-validation`)
+
+Built on `claude/targeted-validation-crawl` (branched off the crawler/parser fix work in PR #1)
+in a session that again had no live network access to revitapidocs.com or its CDN (confirmed
+blocked, same as the "Network access limitation" section below). Everything --
+`Crawler.discover_targeted`, the `TargetReportEntry`/`KnownEdgeCheckResult` reporting,
+`classify.classify_class_role`, `run_targeted_pipeline`, and `validation_summary.md` -- is
+unit-tested against synthetic namespace-JSON trees and HTML fixtures modeled on the real
+markup confirmed earlier in this file, but **has not yet been run against the live site**. The
+target list (`pipeline.DEFAULT_TARGET_CLASSES`) and known-edge checks
+(`pipeline.DEFAULT_KNOWN_EDGE_CHECKS`) are exactly what the brief specified; running
+`python -m revit_schema_mapper --version 2024 --targeted-validation --verbose` (with
+`REVIT_SCHEMA_MAPPER_RELAX_TLS_STRICT=1` if needed) against a network-enabled environment and
+reading `validation_summary.md` is the next real validation step -- treat its
+definition-of-done checklist (section 7) as the thing to check first.
+
 ## Target version: 2027, with a documented fallback
 
 The brief asks to start with Revit 2027 docs on revitapidocs.com and fall back to 2026

@@ -34,6 +34,21 @@ class IsElementCandidate(str, Enum):
     UNKNOWN = "unknown"
 
 
+class ClassRole(str, Enum):
+    """A coarse structural classification of a type, orthogonal to
+    ``is_element_candidate`` -- see ``classify.classify_class_role`` for the
+    heuristics and docs/edge_taxonomy_v0.md for how this is used downstream.
+    """
+
+    ELEMENT_TYPE = "element_type"
+    ELEMENT_SUBTYPE = "element_subtype"
+    UTILITY_CLASS = "utility_class"
+    OPTIONS_CLASS = "options_class"
+    ENUM = "enum"
+    VALUE_OBJECT = "value_object"
+    UNKNOWN = "unknown"
+
+
 class ConfidenceLabel(str, Enum):
     """See docs/confidence_model_v0.md for the definition of each label."""
 
@@ -138,6 +153,7 @@ class NodeCandidate:
     base_type: Optional[str]
     inheritance_chain: list[str]
     is_element_candidate: IsElementCandidate
+    class_role: ClassRole
     evidence: list[str]
     source_url: str
 

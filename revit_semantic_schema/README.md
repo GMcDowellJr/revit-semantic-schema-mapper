@@ -61,11 +61,45 @@ crawl.py    -- polite, cached, resumable HTTP fetching + link discovery, scoped 
                www.revitapidocs.com
 parse.py    -- turns one page's HTML into an ApiPage (class/struct/enum/property/method)
 classify.py -- turns parsed members into NodeCandidate / EdgeCandidate objects, each with
-               a candidate_edge_type (docs/edge_taxonomy_v0.md) and edge_confidence
-               (docs/confidence_model_v0.md)
+               a candidate_edge_type (docs/edge_taxonomy_v0.md), edge_confidence
+               (docs/confidence_model_v0.md), and (for node candidates) a class_role
 export.py   -- writes all outputs/revit_<version>/*.json + summary.md
 pipeline.py -- wires the above into the single command in __main__.py
 ```
+
+## Targeted validation crawl
+
+`python -m revit_schema_mapper --targeted-validation` runs a small, scoped crawl against a
+fixed list of well-understood classes (`Element`, `View`, `FamilyInstance`, `Room`, etc. --
+see `pipeline.DEFAULT_TARGET_CLASSES`) instead of the full `Autodesk.Revit.DB` namespace.
+Use this to validate the crawler/parser/classifier quickly against real pages before trusting
+a full run, or after changing a selector/heuristic. It writes everything a full run does, plus:
+
+- `target_report.json` / section 5 of `validation_summary.md` -- for each target class,
+  whether it was found in the site's namespace index, whether its class page actually parsed,
+  and how many of its member pages parsed; missing/incomplete targets carry an explicit reason.
+- `known_edge_report.json` / section 6 of `validation_summary.md` -- a fixed list of specific
+  expected relationships (`View.ViewTemplateId`, `FamilyInstance.Symbol`,
+  `Room.Number` -- see `pipeline.DEFAULT_KNOWN_EDGE_CHECKS`), each reported as found/missing,
+  and (if found) exactly what `candidate_edge_type`/confidence `classify.py` assigned. Not
+  every check is expected to produce an edge -- `Room.Number` is a plain value property by
+  design (see "Room / Room Number / Room Name" below) and is reported as such rather than as a
+  failure.
+- `validation_summary.md` explicitly separates **crawler coverage** (were pages found/fetched),
+  **parser success** (did `parse.py` extract structured data), and **classifier confidence**
+  (what `classify.py` concluded and how confident it is) into distinct sections, since a low
+  number in one doesn't imply a problem in the others.
+
+Override the target list with `--target-classes "Autodesk.Revit.DB.View,Autodesk.Revit.DB.Wall"`.
+Output defaults to `outputs/revit_<version>_targeted/` (separate from a full run's
+`outputs/revit_<version>/`, so the two don't overwrite each other).
+
+### class_role
+
+Every `NodeCandidate` now also carries a `class_role` (`element_type`, `element_subtype`,
+`utility_class`, `options_class`, `enum`, `value_object`, or `unknown`) -- a coarse structural
+classification, orthogonal to `is_element_candidate`, based on kind/name/member-shape
+heuristics. See `classify.classify_class_role`'s docstring for the precedence rules.
 
 ### Example candidate edges this is designed to surface
 

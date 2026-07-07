@@ -15,7 +15,7 @@ from pathlib import Path
 
 from .crawl import CrawlConfig
 from .http_compat import HAVE_REQUESTS
-from .pipeline import run_pipeline
+from .pipeline import DEFAULT_KNOWN_EDGE_CHECKS, DEFAULT_TARGET_CLASSES, run_pipeline, run_targeted_pipeline
 
 try:
     import bs4 as _bs4  # noqa: F401
@@ -40,6 +40,16 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--max-pages", type=int, default=None, help="Cap on total pages fetched (useful for smoke tests)")
     parser.add_argument("--force-refresh", action="store_true", help="Re-fetch pages even if already cached")
     parser.add_argument("--fallback-reason", default=None, help="If set, records why this run is a documented fallback (e.g. from 2027 to 2026)")
+    parser.add_argument(
+        "--targeted-validation",
+        action="store_true",
+        help="Run a scoped validation crawl against a fixed list of target classes plus a known-edge test report, instead of a full namespace crawl",
+    )
+    parser.add_argument(
+        "--target-classes",
+        default=None,
+        help="Comma-separated fully-qualified class names to use with --targeted-validation, overriding the default list",
+    )
     parser.add_argument("-v", "--verbose", action="store_true")
     args = parser.parse_args(argv)
 
@@ -49,7 +59,10 @@ def main(argv: list[str] | None = None) -> int:
     log.info("HTTP backend: %s", "requests" if HAVE_REQUESTS else "urllib.request (stdlib fallback -- requests not installed)")
     log.info("HTML backend: %s", "beautifulsoup4" if HAVE_BS4 else "html_compat (stdlib fallback -- beautifulsoup4 not installed)")
 
-    output_dir = Path(args.output_dir) if args.output_dir else Path(f"outputs/revit_{args.version}")
+    targeted = args.targeted_validation or args.target_classes is not None
+
+    default_output_name = f"revit_{args.version}_targeted" if targeted else f"revit_{args.version}"
+    output_dir = Path(args.output_dir) if args.output_dir else Path(f"outputs/{default_output_name}")
     cache_dir = Path(args.cache_dir) if args.cache_dir else output_dir / "cache"
 
     config = CrawlConfig(
@@ -60,6 +73,23 @@ def main(argv: list[str] | None = None) -> int:
         max_pages=args.max_pages,
         force_refresh=args.force_refresh,
     )
+
+    if targeted:
+        target_classes = [t.strip() for t in args.target_classes.split(",") if t.strip()] if args.target_classes else DEFAULT_TARGET_CLASSES
+        result = run_targeted_pipeline(config, output_dir, target_full_type_names=target_classes, known_edge_checks=DEFAULT_KNOWN_EDGE_CHECKS)
+
+        targets_found = sum(1 for t in result.target_report if t.found_in_namespace_json)
+        targets_parsed = sum(1 for t in result.target_report if t.class_page_parsed)
+        edges_found = sum(1 for k in result.known_edge_report if k.edge_produced)
+        print(f"Target classes:      {len(target_classes)} ({targets_found} found in index, {targets_parsed} parsed)")
+        print(f"Known-edge checks:   {len(result.known_edge_report)} ({edges_found} produced an edge)")
+        print(f"Pages discovered:    {len(result.raw_index_entries)}")
+        print(f"Pages parsed:        {len(result.pages)}")
+        print(f"Node candidates:     {len(result.node_candidates)}")
+        print(f"Edge candidates:     {len(result.edge_candidates)}")
+        print(f"Failed pages:        {len(result.failed_urls)}")
+        print(f"Outputs written to: {output_dir} (see validation_summary.md)")
+        return 0
 
     result = run_pipeline(config, output_dir, fallback_reason=args.fallback_reason)
 
