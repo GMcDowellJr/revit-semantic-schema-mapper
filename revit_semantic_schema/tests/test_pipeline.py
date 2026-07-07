@@ -345,13 +345,14 @@ def test_checkpoint_cooldown_starts_after_export_finishes_not_before(tmp_path, m
 
 
 def test_progress_log_reports_recent_rate_and_eta(tmp_path, monkeypatch, caplog):
-    """The periodic progress log should report a rate/ETA computed from
-    *recent* throughput (since the previous progress line), not the
-    cumulative average since the crawl started -- some pages really are
+    """The periodic progress log should report a rate/ETA computed from a
+    trailing window of recent throughput (the last few progress lines), not
+    the cumulative average since the crawl started -- some pages really are
     faster than others (a cache hit vs. a fresh throttled fetch, a small
     property page vs. a large members-index page), so an ETA based on a
     single running average would lag behind how fast the crawl is actually
-    going right now.
+    going right now. See test_progress_rate_tracker_smooths_a_single_slow_interval
+    for the windowing/smoothing behavior itself, isolated from a real crawl.
     """
 
     class FakeClock:
@@ -387,7 +388,7 @@ def test_progress_log_reports_recent_rate_and_eta(tmp_path, monkeypatch, caplog)
     # letting the ETA at each line be checked exactly against the queue
     # length remaining at that point (3, then 2, then 1 -> 2s, 1s, 0s).
     assert "2 queued" in progress_lines[0]
-    assert "1.00 pages/s (recent)" in progress_lines[0]
+    assert "1.00 pages/s (recent avg)" in progress_lines[0]
     assert "1.00 pages/s (overall)" in progress_lines[0]
     assert "ETA 2s" in progress_lines[0]
 
@@ -396,6 +397,37 @@ def test_progress_log_reports_recent_rate_and_eta(tmp_path, monkeypatch, caplog)
 
     assert "0 queued" in progress_lines[2]
     assert "ETA 0s" in progress_lines[2]
+
+
+def test_progress_rate_tracker_smooths_a_single_slow_interval():
+    """Regression test for the exact complaint that motivated the trailing
+    window: a plain single-interval rate whipsaws the ETA (e.g. 40min one
+    progress line, 7 hours the next) whenever one batch happens to be much
+    slower/faster than its neighbor. A window of 3 is used here (instead of
+    the real _PROGRESS_RATE_WINDOW=5) purely to keep the sample count small
+    and the arithmetic easy to check by hand; the behavior being tested --
+    a slow interval keeps dragging the rate down for `window` more samples,
+    then the rate recovers once that sample ages out of the window -- is the
+    same regardless of window size.
+    """
+    from revit_schema_mapper.pipeline import _ProgressRateTracker
+
+    tracker = _ProgressRateTracker(window=3, start_time=0.0)
+
+    # One page took 100s (e.g. a slow, uncached first fetch) -- rate crashes.
+    assert tracker.record(now=100.0, visited=1) == pytest.approx(1 / 100)
+    # Genuinely fast pages follow (1 page/s each), but the slow sample is
+    # still inside the window (maxlen = window + 1 = 4 samples, and it isn't
+    # exceeded until the 5th .record() call below), so the reported rate
+    # stays well below the pages' *actual* current speed for a few samples...
+    assert tracker.record(now=101.0, visited=2) == pytest.approx(2 / 101)
+    assert tracker.record(now=102.0, visited=3) == pytest.approx(3 / 102)
+    assert tracker.record(now=103.0, visited=4) == pytest.approx(4 / 103)
+    # ...until the slow sample finally ages out of the window -- at which
+    # point the rate jumps straight to the true, current 1 page/s instead of
+    # creeping up gradually, and stays there for later fast samples too.
+    assert tracker.record(now=104.0, visited=5) == pytest.approx(1.0)
+    assert tracker.record(now=105.0, visited=6) == pytest.approx(1.0)
 
 
 def test_format_duration_reports_unknown_for_non_finite_or_negative():

@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import logging
 import time
+from collections import deque
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
@@ -244,6 +245,44 @@ def _crawl_and_parse(
     return pages, failed_urls
 
 
+# Number of trailing progress-log intervals (checkpoint_interval pages
+# each, 25 by default) averaged together for the ETA's "recent avg" rate.
+# A single interval's rate swings wildly page-to-page (a batch that happens
+# to include a large members-index page, or several fresh throttled fetches
+# instead of cache hits, looks nothing like the next one) -- averaging over
+# several intervals dilutes any one anomalous batch instead of letting it
+# single-handedly swing the ETA (e.g. 40min one line, 7 hours the next).
+_PROGRESS_RATE_WINDOW = 5
+
+
+class _ProgressRateTracker:
+    """Trailing-window pages/s estimator for the crawl progress log's ETA.
+
+    Keeps the last ``window + 1`` ``(time, cumulative_pages_visited)``
+    samples and reports the rate between the oldest kept sample and the
+    newest one, rather than either a single noisy interval (whipsaws with
+    every batch) or a whole-crawl cumulative average (never recovers from a
+    slow start, and stays sluggish to react even hours into a long crawl).
+    Early on, with fewer than ``window`` samples recorded, the "oldest kept
+    sample" is still the crawl's start -- so the rate naturally behaves like
+    a cumulative average until there's enough history to fill the window,
+    then settles into a proper trailing average once it does.
+    """
+
+    def __init__(self, window: int, start_time: float):
+        self._samples: deque[tuple[float, int]] = deque(maxlen=window + 1)
+        self._samples.append((start_time, 0))
+
+    def record(self, now: float, visited: int) -> float:
+        """Record a new sample and return the trailing-window pages/s rate
+        from the oldest sample still in the window through this one."""
+        oldest_time, oldest_visited = self._samples[0]
+        elapsed = now - oldest_time
+        rate = (visited - oldest_visited) / elapsed if elapsed > 0 else 0.0
+        self._samples.append((now, visited))
+        return rate
+
+
 def _format_duration(seconds: float | None) -> str:
     """Human-readable duration for a progress-log ETA (e.g. ``"2h15m"``,
     ``"45s"``). Returns ``"unknown"`` for ``None``/negative/infinite input --
@@ -279,18 +318,7 @@ def _run_crawl_loop(
 ) -> None:
     crawl_start_time = time.monotonic()
     last_checkpoint_time = crawl_start_time
-    # Tracked separately from last_checkpoint_time (which gates the
-    # expensive export call, not logging): the ETA uses the *recent*
-    # fetch rate between one progress line and the next, not the
-    # cumulative average since the crawl started, so it reflects the
-    # current mix of page types/cache hits rather than being dragged down
-    # by, say, a slow start (robots.txt, namespace JSON) or a since-resolved
-    # slow patch -- some pages really are faster than others (a cache hit or
-    # a small property page vs. an unthrottled first fetch of a large
-    # members-index page), and a single-average rate would understate how
-    # fast the crawl is going *right now*.
-    last_progress_time = crawl_start_time
-    last_progress_visited = 0
+    rate_tracker = _ProgressRateTracker(_PROGRESS_RATE_WINDOW, crawl_start_time)
     while queue:
         url = queue.pop(0)
         if url in visited:
@@ -300,9 +328,7 @@ def _run_crawl_loop(
             break
         if len(visited) % checkpoint_interval == 0:
             now = time.monotonic()
-            interval_pages = len(visited) - last_progress_visited
-            interval_elapsed = now - last_progress_time
-            recent_rate = interval_pages / interval_elapsed if interval_elapsed > 0 else 0.0
+            recent_rate = rate_tracker.record(now, len(visited))
             overall_rate = len(visited) / (now - crawl_start_time) if now > crawl_start_time else 0.0
             # queue is the current best estimate of remaining work, not a
             # fixed total -- discovering a type's Members page can enqueue
@@ -313,12 +339,10 @@ def _run_crawl_loop(
             eta_seconds = len(queue) / recent_rate if recent_rate > 0 else None
             logger.info(
                 "progress: %d pages fetched, %d queued, %d parsed, %d failed -- "
-                "%.2f pages/s (recent), %.2f pages/s (overall), ETA %s",
+                "%.2f pages/s (recent avg), %.2f pages/s (overall), ETA %s",
                 len(visited), len(queue), len(pages), len(failed_urls),
                 recent_rate, overall_rate, _format_duration(eta_seconds),
             )
-            last_progress_time = now
-            last_progress_visited = len(visited)
             # Reuses `now` (just captured above for the progress log) rather
             # than taking a fresh reading -- the log call itself is fast
             # enough not to matter, and a second reading here would throw
