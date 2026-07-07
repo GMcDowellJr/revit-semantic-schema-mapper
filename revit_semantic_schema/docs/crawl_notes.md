@@ -326,6 +326,34 @@ None of this has been re-validated against a full real crawl yet (only against p
 source) -- treat the next full `--version 2024`/`2027` run as the next validation checkpoint,
 per "What to check on the first real run" above.
 
+## Confirmed findings from a real 2025 run (2026-07, user-provided page source)
+
+A real `--version 2025 --verbose` run (Raspberry Pi) logged `members table found under
+unrecognized section heading None` on every "<Type> Members"/"<Type> Properties" page it
+parsed. Not crawl-breaking (`0 failed`, since `parse_member_page` independently re-derives each
+member's own `MemberKind` from its own page later), but a real 2025 markup change nonetheless:
+the user pasted a real cached page (`ACADExportOptions Properties`, from the run's own
+`outputs/revit_2025/cache/` -- every fetched page is cached locally keyed by
+`sha256(url)`, so pulling the exact page a log line complained about needs no re-fetch).
+
+**2025 dropped the 2024 `h1.heading` section marker.** Each Methods/Properties section is now a
+collapsible region instead: `<div class=collapsibleAreaRegion><span
+class=collapsibleRegionTitle tabindex=0><img class=collapseToggle
+src='.../sectionexpanded.png'> Properties</span></div><div class=collapsibleSection
+id=IDADASection><table class=members>...</table></div>` (attribute values unquoted, consistent
+with the unquoted-attribute finding from the 2024 run above). The section name is the `<span
+class=collapsibleRegionTitle>`'s trailing text after its icon `<img>` (which has no text of its
+own). Fixed: `parse_members_index_page` now also recognizes
+`<span class=collapsibleRegionTitle>` as a section-heading marker, in addition to (not instead
+of) `h1.heading` -- 2025's markup change doesn't necessarily mean every still-cached older year
+uses the new form. Covered by
+`test_parse_members_index_page_recognizes_2025_collapsible_region_headings`, modeled on the
+real pasted snippet (methods + properties collapsible regions in one page).
+
+Everything else confirmed on this page matched the 2024 findings unchanged: `h4#api-title` for
+the title, unquoted attributes, `[icon, name, description]` row shape via `_member_name_cell`,
+and the "Top"/"See Also" nav following the last table.
+
 ## Politeness / resumability design
 
 - Custom `User-Agent` (see `crawl.USER_AGENT`) identifies the bot and its purpose.

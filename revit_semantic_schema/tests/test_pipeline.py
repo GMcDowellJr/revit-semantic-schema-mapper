@@ -1,4 +1,5 @@
 import json
+import re
 
 import pytest
 
@@ -342,6 +343,222 @@ def test_checkpoint_cooldown_starts_after_export_finishes_not_before(tmp_path, m
     # boundary immediately after the slow export must not re-fire just
     # because the export's own duration was mistakenly counted as cooldown.
     assert len(calls) == 1
+
+
+def test_progress_log_reports_recent_and_overall_rate(tmp_path, monkeypatch, caplog):
+    """The periodic progress log should report a pages/s rate computed from
+    a trailing window of recent throughput (the last few progress lines),
+    alongside the whole-crawl cumulative average -- some pages really are
+    faster than others (a cache hit vs. a fresh throttled fetch, a small
+    property page vs. a large members-index page), so a rate based on a
+    single running average would lag behind how fast the crawl is actually
+    going right now. See test_progress_rate_tracker_smooths_a_single_slow_interval
+    for the windowing/smoothing behavior itself, isolated from a real crawl,
+    and test_fetch_floor_eta_reflects_uncached_queue_count for the ETA
+    (which is deliberately *not* derived from this rate -- see
+    _fetch_floor_eta_seconds's docstring for why).
+    """
+
+    class FakeClock:
+        def __init__(self):
+            self.now = 0.0
+
+        def monotonic(self):
+            self.now += 1.0  # every call simulates 1s of wall-clock passing
+            return self.now
+
+    monkeypatch.setattr(pipeline_module.time, "monotonic", FakeClock().monotonic)
+
+    output_dir = tmp_path / "output"
+    config = CrawlConfig(version="2024", namespace_prefix="Autodesk.Revit.DB", cache_dir=output_dir / "cache")
+    crawler = Crawler(config)
+
+    _prime_cache(crawler, crawler.namespace_json_url(), json.dumps(_WIDGET_NAMESPACE_TREE))
+    _prime_cache(crawler, "https://www.revitapidocs.com/2024/widget-class.htm", _CLASS_HTML)
+    _prime_cache(crawler, "https://www.revitapidocs.com/2024/widget-properties.htm", _PROPERTIES_INDEX_HTML)
+    _prime_cache(crawler, "https://www.revitapidocs.com/2024/symbol-property.htm", _PROPERTY_HTML)
+
+    entries, _ = crawler.discover_via_namespace_json()
+    by_url = {e["url"]: e for e in entries}
+
+    with caplog.at_level("INFO", logger="revit_schema_mapper.pipeline"):
+        _crawl_and_parse(crawler, config, by_url, checkpoint=None, checkpoint_interval=1)
+
+    progress_lines = [m for m in caplog.messages if m.startswith("progress:")]
+    assert len(progress_lines) == 3  # 3 total pages (class, properties-index, property), checkpoint_interval=1
+
+    # Every fetch is a cache hit under the fake clock (no throttling), so the
+    # simulated rate is a deterministic, constant 1 page/s throughout.
+    assert "2 queued" in progress_lines[0]
+    assert "1.00 pages/s (recent avg)" in progress_lines[0]
+    assert "1.00 pages/s (overall)" in progress_lines[0]
+
+    assert "1 queued" in progress_lines[1]
+    assert "0 queued" in progress_lines[2]
+
+    # All 3 URLs were pre-cached before the crawl even started (see
+    # _prime_cache calls above), so the fetch-floor ETA -- which only counts
+    # queued URLs *without* a cached copy on disk -- is 0 throughout,
+    # regardless of the (irrelevant to it) simulated rate above. No fetch
+    # was ever genuinely uncached either, so _FetchDurationTracker never
+    # recorded a real sample and reports its fallback: CrawlConfig's default
+    # throttle_seconds (2.0), unchanged by this config not overriding it.
+    for line in progress_lines:
+        assert "(0 uncached)" in line
+        assert "ETA 0s (observed floor, ~2.00s/fetch)" in line
+
+
+def test_progress_rate_tracker_smooths_a_single_slow_interval():
+    """Regression test for the exact complaint that motivated the trailing
+    window: a plain single-interval rate whipsaws the ETA (e.g. 40min one
+    progress line, 7 hours the next) whenever one batch happens to be much
+    slower/faster than its neighbor. A window of 3 is used here (instead of
+    the real _PROGRESS_RATE_WINDOW=5) purely to keep the sample count small
+    and the arithmetic easy to check by hand; the behavior being tested --
+    a slow interval keeps dragging the rate down for `window` more samples,
+    then the rate recovers once that sample ages out of the window -- is the
+    same regardless of window size.
+    """
+    from revit_schema_mapper.pipeline import _ProgressRateTracker
+
+    tracker = _ProgressRateTracker(window=3, start_time=0.0)
+
+    # One page took 100s (e.g. a slow, uncached first fetch) -- rate crashes.
+    assert tracker.record(now=100.0, visited=1) == pytest.approx(1 / 100)
+    # Genuinely fast pages follow (1 page/s each), but the slow sample is
+    # still inside the window (maxlen = window + 1 = 4 samples, and it isn't
+    # exceeded until the 5th .record() call below), so the reported rate
+    # stays well below the pages' *actual* current speed for a few samples...
+    assert tracker.record(now=101.0, visited=2) == pytest.approx(2 / 101)
+    assert tracker.record(now=102.0, visited=3) == pytest.approx(3 / 102)
+    assert tracker.record(now=103.0, visited=4) == pytest.approx(4 / 103)
+    # ...until the slow sample finally ages out of the window -- at which
+    # point the rate jumps straight to the true, current 1 page/s instead of
+    # creeping up gradually, and stays there for later fast samples too.
+    assert tracker.record(now=104.0, visited=5) == pytest.approx(1.0)
+    assert tracker.record(now=105.0, visited=6) == pytest.approx(1.0)
+
+
+def test_fetch_floor_eta_reflects_uncached_queue_count(tmp_path):
+    """The fetch-floor ETA counts only queued URLs without a cached copy on
+    disk (each of those costs a real network fetch -- see
+    _fetch_floor_eta_seconds's docstring) and ignores cached ones (a cache
+    hit is effectively free). Confirmed on a real run: this is what lets
+    the ETA react immediately to a resumed crawl exhausting its
+    already-cached pages and hitting the network for real, instead of
+    lagging for several progress lines like an empirical rate average does.
+
+    ``avg_fetch_seconds`` here is an arbitrary observed value (2.3), not
+    ``--throttle-seconds`` -- see test_fetch_duration_tracker_averages_only_genuine_fetches
+    for why the two aren't the same thing.
+    """
+    from revit_schema_mapper.pipeline import _count_uncached, _fetch_floor_eta_seconds
+
+    config = CrawlConfig(version="2024", namespace_prefix="Autodesk.Revit.DB", cache_dir=tmp_path / "cache")
+    crawler = Crawler(config)
+
+    cached_urls = [f"https://www.revitapidocs.com/2024/cached-{i}.htm" for i in range(3)]
+    uncached_urls = [f"https://www.revitapidocs.com/2024/uncached-{i}.htm" for i in range(4)]
+    for url in cached_urls:
+        _prime_cache(crawler, url, "<html></html>")
+
+    queue = cached_urls + uncached_urls
+    not_cached = _count_uncached(queue, crawler)
+
+    assert not_cached == 4  # only the never-fetched URLs
+    assert _fetch_floor_eta_seconds(not_cached, avg_fetch_seconds=2.3) == pytest.approx(4 * 2.3)
+
+
+def test_fetch_duration_tracker_uses_fallback_until_a_real_sample_recorded():
+    """_FetchDurationTracker must average real, recorded durations only --
+    and fall back to the configured value (--throttle-seconds, in
+    _run_crawl_loop's actual usage) until at least one has been recorded,
+    since there's nothing else to base an estimate on yet.
+    """
+    from revit_schema_mapper.pipeline import _FetchDurationTracker
+
+    tracker = _FetchDurationTracker(window=3, fallback_seconds=99.0)
+    assert tracker.average_seconds == 99.0  # nothing recorded yet
+
+    tracker.record(2.0)
+    assert tracker.average_seconds == pytest.approx(2.0)
+
+    tracker.record(4.0)
+    assert tracker.average_seconds == pytest.approx(3.0)  # mean of 2.0, 4.0
+
+    # window=3: a 4th sample evicts the oldest (2.0), not just appends.
+    tracker.record(3.0)
+    tracker.record(9.0)
+    assert tracker.average_seconds == pytest.approx((4.0 + 3.0 + 9.0) / 3)
+
+
+def test_avg_fetch_seconds_includes_parse_time_not_just_the_http_fetch(tmp_path, monkeypatch, caplog):
+    """The observed per-page duration recorded for the ETA must include
+    parsing time, not just the raw HTTP fetch -- real per-page parsing cost
+    is non-trivial on constrained hardware (a Raspberry Pi) and a
+    fetch-only measurement would miss it entirely, making the floor
+    optimistic in exactly the way that motivated measuring real fetch time
+    in the first place (see _FetchDurationTracker's docstring).
+
+    Drives one genuinely-uncached URL through the real crawl loop (a faked
+    HTTP client -- no real network) with an artificial delay injected into
+    parse_member_page, using the real (unmocked) clock, and checks the
+    logged ~s/fetch reflects that delay -- proving it was measured *after*
+    parsing finished, not right after the fetch call returned.
+    """
+    from revit_schema_mapper.http_compat import FetchResult
+
+    output_dir = tmp_path / "output"
+    config = CrawlConfig(version="2024", namespace_prefix="Autodesk.Revit.DB", cache_dir=output_dir / "cache")
+    crawler = Crawler(config)
+    crawler._robots = None
+    monkeypatch.setattr(crawler, "_ensure_robots_loaded", lambda: None)
+    monkeypatch.setattr(crawler.client, "get", lambda url, timeout=30: FetchResult(text=_PROPERTY_HTML, status_code=200))
+
+    real_parse_member_page = pipeline_module.parse_member_page
+
+    def slow_parse_member_page(*args, **kwargs):
+        import time as real_time
+
+        real_time.sleep(0.1)
+        return real_parse_member_page(*args, **kwargs)
+
+    monkeypatch.setattr(pipeline_module, "parse_member_page", slow_parse_member_page)
+
+    url = "https://www.revitapidocs.com/2024/symbol-property.htm"
+    by_url = {
+        url: {
+            "url": url,
+            "link_text": "Symbol",
+            "discovered_via": "test",
+            "declaring_type_hint": "Autodesk.Revit.DB.Widget",
+        }
+    }
+
+    with caplog.at_level("INFO", logger="revit_schema_mapper.pipeline"):
+        _crawl_and_parse(crawler, config, by_url, checkpoint=None, checkpoint_interval=1)
+
+    progress_lines = [m for m in caplog.messages if m.startswith("progress:")]
+    assert len(progress_lines) == 1
+
+    match = re.search(r"~([\d.]+)s/fetch", progress_lines[0])
+    assert match is not None
+    observed_seconds = float(match.group(1))
+    # Comfortably above the fetch-only cost (the faked HTTP client returns
+    # near-instantly) -- only explainable if the 0.1s parse delay above was
+    # included in what got measured and recorded.
+    assert observed_seconds >= 0.08
+
+
+def test_format_duration_reports_unknown_for_non_finite_or_negative():
+    from revit_schema_mapper.pipeline import _format_duration
+
+    assert _format_duration(None) == "unknown"
+    assert _format_duration(float("inf")) == "unknown"
+    assert _format_duration(-1.0) == "unknown"
+    assert _format_duration(45.0) == "45s"
+    assert _format_duration(125.0) == "2m05s"
+    assert _format_duration(7384.0) == "2h03m"
 
 
 def test_crawl_and_parse_writes_final_checkpoint_on_interrupt(tmp_path, monkeypatch):

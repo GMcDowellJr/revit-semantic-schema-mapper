@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import logging
 import time
+from collections import deque
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
@@ -244,6 +245,150 @@ def _crawl_and_parse(
     return pages, failed_urls
 
 
+# Number of trailing progress-log intervals (checkpoint_interval pages
+# each, 25 by default) averaged together for the ETA's "recent avg" rate.
+# A single interval's rate swings wildly page-to-page (a batch that happens
+# to include a large members-index page, or several fresh throttled fetches
+# instead of cache hits, looks nothing like the next one) -- averaging over
+# several intervals dilutes any one anomalous batch instead of letting it
+# single-handedly swing the ETA (e.g. 40min one line, 7 hours the next).
+_PROGRESS_RATE_WINDOW = 5
+
+
+class _ProgressRateTracker:
+    """Trailing-window pages/s estimator for the crawl progress log's ETA.
+
+    Keeps the last ``window + 1`` ``(time, cumulative_pages_visited)``
+    samples and reports the rate between the oldest kept sample and the
+    newest one, rather than either a single noisy interval (whipsaws with
+    every batch) or a whole-crawl cumulative average (never recovers from a
+    slow start, and stays sluggish to react even hours into a long crawl).
+    Early on, with fewer than ``window`` samples recorded, the "oldest kept
+    sample" is still the crawl's start -- so the rate naturally behaves like
+    a cumulative average until there's enough history to fill the window,
+    then settles into a proper trailing average once it does.
+    """
+
+    def __init__(self, window: int, start_time: float):
+        self._samples: deque[tuple[float, int]] = deque(maxlen=window + 1)
+        self._samples.append((start_time, 0))
+
+    def record(self, now: float, visited: int) -> float:
+        """Record a new sample and return the trailing-window pages/s rate
+        from the oldest sample still in the window through this one."""
+        oldest_time, oldest_visited = self._samples[0]
+        elapsed = now - oldest_time
+        rate = (visited - oldest_visited) / elapsed if elapsed > 0 else 0.0
+        self._samples.append((now, visited))
+        return rate
+
+
+def _count_uncached(urls: list[str], crawler: Crawler) -> int:
+    """How many of ``urls`` have no cached copy on disk yet -- the ones a
+    real crawl still has to spend an actual network fetch on (see
+    ``_fetch_floor_eta_seconds``'s docstring for why this, not an empirical
+    rate average blending in near-instant cache hits, drives the progress
+    log's ETA).
+    """
+    return sum(1 for url in urls if not crawler.is_cached(url))
+
+
+# Number of trailing *individual fresh fetches* (not progress intervals --
+# these land far more often, one per uncached page rather than one per
+# checkpoint_interval pages) averaged for _FetchDurationTracker. Large
+# enough to smooth out one slow request without taking too long to react
+# if the real per-fetch cost genuinely shifts (e.g. the site or network
+# gets slower partway through a multi-hour crawl).
+_FETCH_DURATION_WINDOW = 50
+
+
+class _FetchDurationTracker:
+    """Trailing average of how long a genuinely-fresh (not-already-cached)
+    page actually takes -- fetch *and* parse together (see
+    ``_run_crawl_loop``'s ``fetch_start``/``finally``) -- used to ground the
+    ETA in the real per-page cost instead of assuming ``--throttle-seconds``
+    alone is that cost.
+
+    Two separate reasons ``throttle_seconds`` alone understates the true
+    per-page cost, potentially by a large margin (confirmed on a real run:
+    actual per-page time ran roughly double a 1.0s throttle): (1)
+    ``Crawler._throttle`` only ever adds a *sleep* when a request finishes
+    faster than ``throttle_seconds`` -- if the real round trip (network
+    latency, TLS) already takes longer than that on its own, the throttle
+    never intervenes at all; and (2) HTML parsing happens *after* the
+    throttled fetch returns and is invisible to it entirely, even though
+    it's real wall-clock time (non-trivial on constrained hardware).
+    Averaging only over pages that weren't already cached is what matters
+    here -- mixing in cache hits (near-instant) would silently pull this
+    average back down toward whatever fraction of recent pages happened to
+    be cached, the same dilution problem that made a blended pages/s rate a
+    bad basis for the ETA in the first place (see ``_ProgressRateTracker``/
+    ``_count_uncached``).
+    """
+
+    def __init__(self, window: int, fallback_seconds: float):
+        self._durations: deque[float] = deque(maxlen=window)
+        self._fallback_seconds = fallback_seconds
+
+    def record(self, duration_seconds: float) -> None:
+        self._durations.append(duration_seconds)
+
+    @property
+    def average_seconds(self) -> float:
+        """The fallback (``--throttle-seconds``) until at least one real,
+        not-already-cached fetch has actually been measured -- there's
+        nothing else to base an estimate on yet, and throttle_seconds is
+        at least a documented, deliberate lower bound rather than a guess.
+        """
+        if not self._durations:
+            return self._fallback_seconds
+        return sum(self._durations) / len(self._durations)
+
+
+def _fetch_floor_eta_seconds(not_cached_remaining: int, avg_fetch_seconds: float) -> float:
+    """ETA given how many queued URLs still need a real fetch, at
+    ``avg_fetch_seconds`` each (see ``_FetchDurationTracker``) -- an
+    already-cached queued URL costs effectively nothing here, since a cache
+    hit returns before any network call happens at all. Still a *floor*,
+    not a full prediction, in one remaining respect: pages not yet
+    discovered (the crawl can enqueue new URLs as it parses class/members
+    pages) obviously aren't counted, which can only push the true remaining
+    time above this number, never below it.
+
+    Deliberately not derived from a blended pages/s average across *all*
+    visited pages (see ``_ProgressRateTracker``, used only for the
+    informational "pages/s" figures logged alongside this): confirmed on a
+    real run, a resumed crawl that starts out mostly replaying
+    already-cached pages (fast) and then transitions into genuinely new,
+    network-bound territory shows a sustained multi-line drop in any such
+    blended average as it slowly catches up to the new reality -- that's
+    not noise a wider window can smooth away, it's a real regime change a
+    blended average necessarily lags behind. This floor has no such lag:
+    it's grounded in which URLs are actually on disk *right now* and how
+    long *actual* fresh pages (fetch and parse) have actually been taking,
+    not recent history blended with cache hits.
+    """
+    return not_cached_remaining * avg_fetch_seconds
+
+
+def _format_duration(seconds: float | None) -> str:
+    """Human-readable duration for a progress-log ETA (e.g. ``"2h15m"``,
+    ``"45s"``). Returns ``"unknown"`` for ``None``/negative/infinite input --
+    the recent-throughput-was-zero and not-yet-measurable-first-interval
+    cases -- rather than printing ``"inf"`` or a negative number.
+    """
+    if seconds is None or seconds == float("inf") or seconds < 0:
+        return "unknown"
+    total_seconds = int(seconds)
+    hours, remainder = divmod(total_seconds, 3600)
+    minutes, secs = divmod(remainder, 60)
+    if hours:
+        return f"{hours}h{minutes:02d}m"
+    if minutes:
+        return f"{minutes}m{secs:02d}s"
+    return f"{secs}s"
+
+
 def _run_crawl_loop(
     *,
     crawler: Crawler,
@@ -259,7 +404,10 @@ def _run_crawl_loop(
     checkpoint_interval: int,
     checkpoint_min_interval_seconds: float,
 ) -> None:
-    last_checkpoint_time = time.monotonic()
+    crawl_start_time = time.monotonic()
+    last_checkpoint_time = crawl_start_time
+    rate_tracker = _ProgressRateTracker(_PROGRESS_RATE_WINDOW, crawl_start_time)
+    fetch_duration_tracker = _FetchDurationTracker(_FETCH_DURATION_WINDOW, config.throttle_seconds)
     while queue:
         url = queue.pop(0)
         if url in visited:
@@ -268,11 +416,33 @@ def _run_crawl_loop(
         if config.max_pages is not None and len(visited) > config.max_pages:
             break
         if len(visited) % checkpoint_interval == 0:
+            now = time.monotonic()
+            recent_rate = rate_tracker.record(now, len(visited))
+            overall_rate = len(visited) / (now - crawl_start_time) if now > crawl_start_time else 0.0
+            # queue is the current best estimate of remaining work, not a
+            # fixed total -- discovering a type's Members page can enqueue
+            # new member pages faster than the loop drains it, so this (and
+            # the uncached count/ETA below) can grow between progress lines
+            # rather than monotonically shrinking. That's an accurate
+            # reflection of a crawl whose full scope isn't known upfront,
+            # not a bug.
+            not_cached_remaining = _count_uncached(queue, crawler)
+            avg_fetch_seconds = fetch_duration_tracker.average_seconds
+            eta_seconds = _fetch_floor_eta_seconds(not_cached_remaining, avg_fetch_seconds)
             logger.info(
-                "progress: %d pages fetched, %d queued, %d parsed, %d failed",
-                len(visited), len(queue), len(pages), len(failed_urls),
+                "progress: %d pages fetched, %d queued (%d uncached), %d parsed, %d failed -- "
+                "%.2f pages/s (recent avg), %.2f pages/s (overall), ETA %s (observed floor, ~%.2fs/fetch)",
+                len(visited), len(queue), not_cached_remaining, len(pages), len(failed_urls),
+                recent_rate, overall_rate, _format_duration(eta_seconds), avg_fetch_seconds,
             )
-            if checkpoint is not None and time.monotonic() - last_checkpoint_time >= checkpoint_min_interval_seconds:
+            # Reuses `now` (just captured above for the progress log) rather
+            # than taking a fresh reading -- the log call itself is fast
+            # enough not to matter, and a second reading here would throw
+            # off tests (and, in principle, real cooldown accounting) that
+            # count time.monotonic() calls/deltas precisely. checkpoint()
+            # itself, below, is the genuinely slow operation and still gets
+            # a fresh post-call reading.
+            if checkpoint is not None and now - last_checkpoint_time >= checkpoint_min_interval_seconds:
                 checkpoint(pages, failed_urls, False)
                 # Measured *after* checkpoint() returns, not before: a slow
                 # export (the case this rate limit exists to protect --
@@ -293,6 +463,16 @@ def _run_crawl_loop(
             # seeded via the namespace JSON either -- fall back to whatever
             # enqueue_member_links recorded at enqueue time.
             declaring_type_hint = next((dt for u, dt in member_queue if u == url), None)
+
+        # Measured from before the fetch to after this url is fully parsed
+        # below (see the `finally`) -- not just the raw HTTP fetch -- so
+        # fetch_duration_tracker reflects real per-page wall-clock cost,
+        # including HTML parsing (non-trivial on constrained hardware) and
+        # any nested Members-page fetch+parse a class page triggers below.
+        # None (not timed at all) for an already-cached url -- see
+        # _FetchDurationTracker's docstring for why a near-instant cache hit
+        # must never factor into this average.
+        fetch_start = None if crawler.is_cached(url) else time.monotonic()
 
         try:
             html = crawler.fetch(url)
@@ -352,6 +532,14 @@ def _run_crawl_loop(
         except Exception as exc:  # noqa: BLE001
             logger.warning("failed to parse %s: %r", url, exc)
             failed_urls.append(url)
+        finally:
+            # Fires even on the early `continue` above (a `finally` always
+            # runs when its `try` is exited, `continue`/`break`/exception
+            # included) -- that iteration still genuinely spent this much
+            # wall-clock time fetching/attempting to parse, so it belongs in
+            # the average regardless of whether parsing itself succeeded.
+            if fetch_start is not None:
+                fetch_duration_tracker.record(time.monotonic() - fetch_start)
 
 
 def run_pipeline(
