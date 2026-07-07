@@ -2,7 +2,7 @@ import json
 
 from revit_schema_mapper.crawl import CrawlConfig, Crawler
 from revit_schema_mapper.models import ApiPage, ClassRole, IsElementCandidate, Kind, MemberInfo, MemberKind, NodeCandidate
-from revit_schema_mapper.pipeline import _build_known_edge_report, run_pipeline, run_targeted_pipeline
+from revit_schema_mapper.pipeline import _build_known_edge_report, run_discovery, run_pipeline, run_targeted_pipeline
 
 _CLASS_HTML = """
 <html><body>
@@ -43,6 +43,64 @@ _PROPERTY_HTML = """
 def _prime_cache(crawler: Crawler, url: str, content: str) -> None:
     crawler.config.cache_dir.mkdir(parents=True, exist_ok=True)
     crawler._cache_path(url).write_text(content, encoding="utf-8")
+
+
+def test_run_discovery_reports_page_count_without_fetching_pages(tmp_path):
+    """run_discovery should report the full page count discover_index finds
+    (e.g. so a user can gauge a full run's scale up front) without fetching
+    any of the individual class/property/method pages themselves.
+    """
+    output_dir = tmp_path / "output"
+    config = CrawlConfig(version="2024", namespace_prefix="Autodesk.Revit.DB", cache_dir=output_dir / "cache")
+    crawler = Crawler(config)
+
+    tree = [
+        {
+            "title": "Namespaces",
+            "children": [
+                {
+                    "title": "Autodesk.Revit.DB Namespace",
+                    "tag": "Namespace",
+                    "children": [
+                        {
+                            "title": "Widget Class",
+                            "href": "widget-class.htm",
+                            "tag": "Class",
+                            "children": [
+                                {
+                                    "title": "Widget Properties",
+                                    "href": "widget-properties.htm",
+                                    "tag": "Properties",
+                                    "children": [
+                                        {"title": "Symbol Property", "href": "symbol-property.htm", "tag": "Property"},
+                                    ],
+                                },
+                            ],
+                        },
+                    ],
+                },
+            ],
+        }
+    ]
+    _prime_cache(crawler, crawler.namespace_json_url(), json.dumps(tree))
+    root_url = crawler.version_root_url()
+    _prime_cache(crawler, root_url, "<html><body></body></html>")
+    for toc_name in ("toc.js", "webtoc.xml", "toc.json", "toc.html"):
+        _prime_cache(crawler, root_url + toc_name, "")
+    _prime_cache(crawler, "https://www.revitapidocs.com/sitemap.xml", "")
+    # Deliberately do NOT prime widget-class.htm/widget-properties.htm/
+    # symbol-property.htm -- discovery must not need to fetch them.
+
+    result = run_discovery(config, output_dir)
+
+    urls = {e["url"] for e in result.raw_index_entries}
+    assert urls == {
+        "https://www.revitapidocs.com/2024/widget-class.htm",
+        "https://www.revitapidocs.com/2024/widget-properties.htm",
+        "https://www.revitapidocs.com/2024/symbol-property.htm",
+    }
+    assert result.counts_by_source["namespace_json"] == 3
+    assert (output_dir / "raw_index.json").exists()
 
 
 def test_property_discovered_only_via_namespace_json_gets_declaring_type(tmp_path):

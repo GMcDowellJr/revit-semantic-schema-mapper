@@ -45,6 +45,42 @@ class PipelineResult:
     failed_urls: list[str]
 
 
+@dataclass
+class DiscoveryResult:
+    raw_index_entries: list[dict]
+    discovery_errors: list[str]
+    counts_by_source: dict[str, int]
+
+
+def run_discovery(config: CrawlConfig, output_dir: Path | None = None) -> DiscoveryResult:
+    """Run just page discovery (``Crawler.discover_index``) and report how
+    many pages a full ``run_pipeline``/``run_targeted_pipeline`` call would
+    need to fetch, without actually fetching/parsing any of them.
+
+    This costs only the handful of requests discover_index itself makes
+    (namespace JSON, root page, a few TOC file probes, sitemap.xml) --
+    letting you check a full run's scale up front instead of discovering it
+    partway through a multi-hour crawl.
+    """
+    crawler = Crawler(config)
+    raw_index_entries = crawler.discover_index()
+
+    counts_by_source: dict[str, int] = {}
+    for entry in raw_index_entries:
+        source = entry.get("discovered_via", "unknown").split(":", 1)[0]
+        counts_by_source[source] = counts_by_source.get(source, 0) + 1
+
+    if output_dir is not None:
+        output_dir.mkdir(parents=True, exist_ok=True)
+        export.write_raw_index(output_dir, raw_index_entries)
+
+    return DiscoveryResult(
+        raw_index_entries=raw_index_entries,
+        discovery_errors=crawler.last_discovery_errors,
+        counts_by_source=counts_by_source,
+    )
+
+
 def _crawl_and_parse(crawler: Crawler, config: CrawlConfig, by_url: dict[str, dict]) -> tuple[list[ApiPage], list[str]]:
     """Fetch/sniff/parse every URL in ``by_url``, following class ->
     Members-page links and enqueueing newly-discovered member pages as it

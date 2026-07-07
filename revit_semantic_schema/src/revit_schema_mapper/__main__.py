@@ -15,7 +15,7 @@ from pathlib import Path
 
 from .crawl import CrawlConfig
 from .http_compat import HAVE_REQUESTS
-from .pipeline import DEFAULT_KNOWN_EDGE_CHECKS, DEFAULT_TARGET_CLASSES, run_pipeline, run_targeted_pipeline
+from .pipeline import DEFAULT_KNOWN_EDGE_CHECKS, DEFAULT_TARGET_CLASSES, run_discovery, run_pipeline, run_targeted_pipeline
 
 try:
     import bs4 as _bs4  # noqa: F401
@@ -50,6 +50,12 @@ def main(argv: list[str] | None = None) -> int:
         default=None,
         help="Comma-separated fully-qualified class names to use with --targeted-validation, overriding the default list",
     )
+    parser.add_argument(
+        "--discover-only",
+        action="store_true",
+        help="Only run page discovery and report how many pages a full run would need to fetch -- "
+        "does not fetch/parse individual pages or write anything but raw_index.json",
+    )
     parser.add_argument("-v", "--verbose", action="store_true")
     args = parser.parse_args(argv)
 
@@ -73,6 +79,18 @@ def main(argv: list[str] | None = None) -> int:
         max_pages=args.max_pages,
         force_refresh=args.force_refresh,
     )
+
+    if args.discover_only:
+        result = run_discovery(config, output_dir)
+        print(f"Pages discovered: {len(result.raw_index_entries)}")
+        for source, count in sorted(result.counts_by_source.items(), key=lambda kv: -kv[1]):
+            print(f"  {source}: {count}")
+        if result.discovery_errors:
+            print(f"Discovery errors ({len(result.discovery_errors)}):")
+            for err in result.discovery_errors:
+                print(f"  {err}")
+        print(f"Raw index written to: {output_dir / 'raw_index.json'}")
+        return 0
 
     if targeted:
         target_classes = [t.strip() for t in args.target_classes.split(",") if t.strip()] if args.target_classes else DEFAULT_TARGET_CLASSES
