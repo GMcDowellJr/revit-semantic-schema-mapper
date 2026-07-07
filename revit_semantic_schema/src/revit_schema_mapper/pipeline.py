@@ -283,6 +283,41 @@ class _ProgressRateTracker:
         return rate
 
 
+def _count_uncached(urls: list[str], crawler: Crawler) -> int:
+    """How many of ``urls`` have no cached copy on disk yet -- the ones a
+    real crawl still has to spend a throttled network request on (see
+    ``_throttle_floor_eta_seconds``'s docstring for why this, not an
+    empirical rate average, drives the progress log's ETA).
+    """
+    return sum(1 for url in urls if not crawler.is_cached(url))
+
+
+def _throttle_floor_eta_seconds(not_cached_remaining: int, throttle_seconds: float) -> float:
+    """Lower-bound ETA given how many queued URLs still need a real fetch:
+    ``throttle_seconds`` each, since that's the hard minimum gap
+    ``Crawler.fetch`` enforces between real network requests -- a cache hit
+    returns before any throttling/network call happens at all, so an
+    already-cached queued URL costs effectively nothing here. This is a
+    *floor*, not a full prediction: a real fetch/parse also costs some
+    non-throttle time (network latency, HTML parsing), and pages not yet
+    discovered obviously aren't counted -- both only push the true
+    remaining time above this number, never below it.
+
+    Deliberately not derived from an empirical rate average (see
+    ``_ProgressRateTracker`` for that, used for the "pages/s" figures
+    logged alongside this): confirmed on a real run, a resumed crawl that
+    starts out mostly replaying already-cached pages (fast) and then
+    transitions into genuinely new, network-throttled territory shows a
+    sustained multi-line drop in the empirical rate as the average slowly
+    catches up to the new reality -- that's not noise a wider window can
+    smooth away, it's a real regime change an average necessarily lags
+    behind. This floor has no such lag: it's grounded in which URLs are
+    actually on disk *right now*, not recent history, so it's accurate
+    immediately on both sides of that transition.
+    """
+    return not_cached_remaining * throttle_seconds
+
+
 def _format_duration(seconds: float | None) -> str:
     """Human-readable duration for a progress-log ETA (e.g. ``"2h15m"``,
     ``"45s"``). Returns ``"unknown"`` for ``None``/negative/infinite input --
@@ -333,14 +368,16 @@ def _run_crawl_loop(
             # queue is the current best estimate of remaining work, not a
             # fixed total -- discovering a type's Members page can enqueue
             # new member pages faster than the loop drains it, so this (and
-            # therefore the ETA) can grow between progress lines rather than
-            # monotonically shrinking. That's an accurate reflection of a
-            # crawl whose full scope isn't known upfront, not a bug.
-            eta_seconds = len(queue) / recent_rate if recent_rate > 0 else None
+            # the uncached count/ETA below) can grow between progress lines
+            # rather than monotonically shrinking. That's an accurate
+            # reflection of a crawl whose full scope isn't known upfront,
+            # not a bug.
+            not_cached_remaining = _count_uncached(queue, crawler)
+            eta_seconds = _throttle_floor_eta_seconds(not_cached_remaining, config.throttle_seconds)
             logger.info(
-                "progress: %d pages fetched, %d queued, %d parsed, %d failed -- "
-                "%.2f pages/s (recent avg), %.2f pages/s (overall), ETA %s",
-                len(visited), len(queue), len(pages), len(failed_urls),
+                "progress: %d pages fetched, %d queued (%d uncached), %d parsed, %d failed -- "
+                "%.2f pages/s (recent avg), %.2f pages/s (overall), ETA %s (throttle floor)",
+                len(visited), len(queue), not_cached_remaining, len(pages), len(failed_urls),
                 recent_rate, overall_rate, _format_duration(eta_seconds),
             )
             # Reuses `now` (just captured above for the progress log) rather
