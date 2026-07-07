@@ -14,7 +14,15 @@ import sys
 from pathlib import Path
 
 from .crawl import CrawlConfig
+from .http_compat import HAVE_REQUESTS
 from .pipeline import run_pipeline
+
+try:
+    import bs4 as _bs4  # noqa: F401
+
+    HAVE_BS4 = True
+except ImportError:
+    HAVE_BS4 = False
 
 KNOWN_FALLBACK_REASON = (
     "Revit 2027 API docs were not confirmed reachable/structurally consistent at build time; "
@@ -36,6 +44,10 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     logging.basicConfig(level=logging.INFO if args.verbose else logging.WARNING, format="%(levelname)s %(name)s: %(message)s")
+
+    log = logging.getLogger(__name__)
+    log.info("HTTP backend: %s", "requests" if HAVE_REQUESTS else "urllib.request (stdlib fallback -- requests not installed)")
+    log.info("HTML backend: %s", "beautifulsoup4" if HAVE_BS4 else "html_compat (stdlib fallback -- beautifulsoup4 not installed)")
 
     output_dir = Path(args.output_dir) if args.output_dir else Path(f"outputs/revit_{args.version}")
     cache_dir = Path(args.cache_dir) if args.cache_dir else output_dir / "cache"

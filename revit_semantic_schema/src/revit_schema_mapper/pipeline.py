@@ -9,11 +9,21 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 from pathlib import Path
+from urllib.parse import urlparse
 
 from . import classify, export
-from .crawl import CrawlConfig, Crawler
+from .crawl import ALLOWED_HOST, CrawlConfig, Crawler
 from .models import ApiPage, Kind
-from .parse import extract_member_links, parse_enum_page, parse_member_page, parse_type_page, sniff_kind
+from .parse import (
+    extract_member_links,
+    find_members_page_link,
+    parse_enum_page,
+    parse_member_page,
+    parse_members_index_page,
+    parse_type_page,
+    resolve_type_name_from_members_index,
+    sniff_kind,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -41,6 +51,23 @@ def run_pipeline(config: CrawlConfig, output_dir: Path, fallback_reason: str | N
     member_queue: list[tuple[str, str]] = []
     visited: set[str] = set()
 
+    def enqueue_member_links(links: list[dict], declaring_full_type_name: str, discovered_via_prefix: str) -> None:
+        for link in links:
+            url = link["url"]
+            if urlparse(url).netloc != ALLOWED_HOST:
+                # Some pages link inherited Object members (Equals, GetHashCode,
+                # ToString) out to MSDN instead of rendering them as plain text;
+                # out of scope by design, not a fetch failure.
+                continue
+            if url not in visited and url not in by_url:
+                by_url[url] = {
+                    "url": url,
+                    "link_text": link["name"],
+                    "discovered_via": f"{discovered_via_prefix}:{declaring_full_type_name}",
+                }
+                member_queue.append((url, declaring_full_type_name))
+                queue.append(url)
+
     queue = list(by_url.keys())
     while queue:
         url = queue.pop(0)
@@ -51,6 +78,12 @@ def run_pipeline(config: CrawlConfig, output_dir: Path, fallback_reason: str | N
             break
 
         declaring_type_hint = next((dt for u, dt in member_queue if u == url), None)
+        if declaring_type_hint is None:
+            # Not reached by following a class's Members-page link -- e.g.
+            # discovered directly via the namespace JSON, which carries its
+            # own declaring_type_hint computed at flatten time (see
+            # Crawler._flatten_namespace_node).
+            declaring_type_hint = by_url.get(url, {}).get("declaring_type_hint")
 
         try:
             html = crawler.fetch(url)
@@ -64,15 +97,32 @@ def run_pipeline(config: CrawlConfig, output_dir: Path, fallback_reason: str | N
             if kind in (Kind.CLASS, Kind.STRUCT, Kind.INTERFACE):
                 page = parse_type_page(html, url, config.version)
                 pages.append(page)
-                for link in extract_member_links(html, url):
-                    if link["url"] not in visited and link["url"] not in by_url:
-                        by_url[link["url"]] = {
-                            "url": link["url"],
-                            "link_text": link["name"],
-                            "discovered_via": f"members_table_of:{page.full_type_name}",
-                        }
-                        member_queue.append((link["url"], page.full_type_name))
-                        queue.append(link["url"])
+                # Defensive fallback: some pages/years may inline the table.
+                enqueue_member_links(extract_member_links(html, url), page.full_type_name, "members_table_of")
+
+                # The live site's usual layout: the class page links out to a
+                # separate "<Type> Members" page rather than embedding the
+                # table (see parse.find_members_page_link's docstring).
+                members_url = find_members_page_link(html, url)
+                if members_url and members_url not in visited:
+                    try:
+                        members_html = crawler.fetch(members_url)
+                    except Exception as exc:  # noqa: BLE001
+                        logger.warning("failed to fetch members index page %s: %r", members_url, exc)
+                    else:
+                        visited.add(members_url)
+                        member_links, member_notes = parse_members_index_page(members_html, members_url)
+                        for note in member_notes:
+                            logger.info("members index page %s: %s", members_url, note)
+                        enqueue_member_links(member_links, page.full_type_name, "members_index_page_of")
+            elif kind is Kind.MEMBERS_INDEX:
+                # Reached independently (not via its class page) -- derive the
+                # owning type name from this page itself rather than skipping.
+                declaring_full_type_name = resolve_type_name_from_members_index(html)
+                member_links, member_notes = parse_members_index_page(html, url)
+                for note in member_notes:
+                    logger.info("members index page %s: %s", url, note)
+                enqueue_member_links(member_links, declaring_full_type_name, "members_index_page_direct")
             elif kind is Kind.ENUM:
                 pages.append(parse_enum_page(html, url, config.version))
             elif kind in (Kind.PROPERTY, Kind.METHOD, Kind.CONSTRUCTOR):
@@ -114,6 +164,19 @@ def run_pipeline(config: CrawlConfig, output_dir: Path, fallback_reason: str | N
     ]
     if failed_urls:
         limitations.append(f"{len(failed_urls)} page(s) failed to fetch or parse: {failed_urls[:10]}{' ...' if len(failed_urls) > 10 else ''}")
+    if crawler.last_discovery_errors:
+        limitations.append(
+            f"discover_index encountered {len(crawler.last_discovery_errors)} error(s) while "
+            f"finding pages to crawl (see logs for full detail): {crawler.last_discovery_errors[:5]}"
+            f"{' ...' if len(crawler.last_discovery_errors) > 5 else ''}"
+        )
+    if not raw_index_entries and crawler.last_discovery_errors:
+        limitations.append(
+            "0 pages were discovered this run. This is not 'the site has nothing under this "
+            "namespace' -- discover_index's fetch attempts all failed (see the error(s) above), "
+            "which most commonly means a network/proxy/TLS/reachability problem, not a parser "
+            "bug."
+        )
 
     next_steps = [
         "Run against a live revitapidocs.com session and diff parser_notes across all pages to "

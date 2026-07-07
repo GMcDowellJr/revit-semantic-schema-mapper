@@ -7,12 +7,14 @@ name = "revit-schema-mapper"
 version = "0.1.0"
 description = "Docs-first crawler and parser producing a candidate semantic schema for Autodesk.Revit.DB"
 requires-python = ">=3.10"
-dependencies = [
-    "requests>=2.31",
-    "beautifulsoup4>=4.12",
-]
+dependencies = []
 
 [project.optional-dependencies]
+# Faster/more robust HTTP + HTML parsing. Not required: the package falls
+# back to urllib.request/html.parser (stdlib only) when these aren't
+# installed -- see http_compat.py / html_compat.py. Install this extra if
+# you're allowed to pull packages from PyPI; skip it otherwise.
+fast = ["requests>=2.31", "beautifulsoup4>=4.12"]
 dev = ["pytest>=7.4"]
 
 [tool.setuptools.packages.find]
