@@ -133,12 +133,21 @@ class Crawler:
         # this flag by hand to get functional can_fetch() behavior).
         parser.last_checked = time.time()
         delay = parser.crawl_delay(USER_AGENT)
-        if delay is not None and float(delay) > self.config.throttle_seconds:
-            logger.info(
-                "robots.txt: crawl-delay %.1fs exceeds configured throttle_seconds=%.1fs -- honoring the larger value",
-                delay, self.config.throttle_seconds,
-            )
-            self.config.throttle_seconds = float(delay)
+        if delay is not None:
+            logger.info("robots.txt: crawl-delay directive = %.1fs (for %r)", float(delay), USER_AGENT)
+            if float(delay) > self.config.throttle_seconds:
+                logger.info(
+                    "robots.txt: crawl-delay %.1fs exceeds configured throttle_seconds=%.1fs -- honoring the larger value",
+                    delay, self.config.throttle_seconds,
+                )
+                self.config.throttle_seconds = float(delay)
+        else:
+            logger.info("robots.txt: no crawl-delay directive found")
+        version_root = self.version_root_url()
+        logger.info(
+            "robots.txt: can_fetch(%r, %r) = %s",
+            USER_AGENT, version_root, parser.can_fetch(USER_AGENT, version_root),
+        )
         self._robots = parser
 
     def _ensure_robots_loaded(self) -> None:
@@ -167,6 +176,7 @@ class Crawler:
             self._robots = parser
             return
         logger.info("robots.txt: loaded from %s", robots_url)
+        logger.info("robots.txt: raw content --\n%s", result.text)
         self._parse_robots_text(result.text)
 
     def fetch(self, url: str) -> str:
