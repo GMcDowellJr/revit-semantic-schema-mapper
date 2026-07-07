@@ -413,6 +413,16 @@ for (const n of nodes) {
   n.radius = 3.2 + Math.sqrt(n.degree / maxDegree) * 10;
 }
 
+// Label policy: the graph should read first as topology, not as a word
+// cloud -- at overview zoom, only major hubs get labels; search/hover/
+// selection always label regardless of zoom.
+const LABEL_HUB_COUNT = 14;
+const degreeCutoffs = [...nodes.map((n) => n.degree)].sort((a, b) => b - a);
+const labelHubDegree = degreeCutoffs[Math.min(LABEL_HUB_COUNT - 1, degreeCutoffs.length - 1)] || Infinity;
+for (const n of nodes) {
+  n.isLabelHub = n.degree >= labelHubDegree && n.degree > 1;
+}
+
 // Communities are structurally detected (see community.py), not colored --
 // the categorical palette above is reserved for class_role (a fixed 8-slot
 // set); community count is unbounded, so identity here is the label text +
@@ -427,7 +437,13 @@ const activeGroups = new Set(communityOrder);
 
 // ---- force simulation (hand-rolled, d3-force-style cooling schedule) -------------
 let alpha = 1, alphaTarget = 0, alphaDecay = 1 - Math.pow(0.001, 1 / 240), alphaMin = 0.001;
-const CHARGE = 420, LINK_DIST = 46, LINK_STRENGTH = 0.5, CENTER_STRENGTH = 0.02;
+// A stronger charge/link-strength pair let high-degree nodes accumulate
+// enough velocity, frame over frame, to push coordinates to Infinity/NaN
+// once the layout cooled -- these softer forces plus a minimum repulsion
+// distance, more damping, and a hard speed cap keep the simulation stable
+// on real data (some nodes here have a few hundred connections).
+const CHARGE = 120, LINK_DIST = 58, LINK_STRENGTH = 0.06, CENTER_STRENGTH = 0.04;
+const MIN_DIST = 24, DAMPING = 0.76, MAX_SPEED = 18;
 
 function tick() {
   alpha += (alphaTarget - alpha) * alphaDecay;
@@ -440,8 +456,11 @@ function tick() {
       const b = nodes[j];
       let dx = a.x - b.x, dy = a.y - b.y;
       let distSq = dx * dx + dy * dy;
-      if (distSq < 0.01) { distSq = 0.01; dx = (Math.random() - 0.5) * 0.1; dy = (Math.random() - 0.5) * 0.1; }
-      const dist = Math.sqrt(distSq);
+      if (distSq < MIN_DIST * MIN_DIST) {
+        if (distSq < 0.01) { dx = (Math.random() - 0.5) * 0.1; dy = (Math.random() - 0.5) * 0.1; }
+        distSq = MIN_DIST * MIN_DIST;
+      }
+      const dist = Math.sqrt(dx * dx + dy * dy) || MIN_DIST;
       const force = (CHARGE * alpha) / distSq;
       const ux = dx / dist, uy = dy / dist;
       a.vx += ux * force; a.vy += uy * force;
@@ -465,8 +484,18 @@ function tick() {
   // integrate
   for (const n of nodes) {
     if (n.fx !== null) { n.x = n.fx; n.y = n.fy; n.vx = 0; n.vy = 0; continue; }
-    n.vx *= 0.86; n.vy *= 0.86;
+    n.vx *= DAMPING; n.vy *= DAMPING;
+    const speed = Math.hypot(n.vx, n.vy);
+    if (speed > MAX_SPEED) {
+      n.vx = (n.vx / speed) * MAX_SPEED;
+      n.vy = (n.vy / speed) * MAX_SPEED;
+    }
     n.x += n.vx; n.y += n.vy;
+    if (!Number.isFinite(n.x) || !Number.isFinite(n.y)) {
+      n.x = (Math.random() - 0.5) * 400;
+      n.y = (Math.random() - 0.5) * 400;
+      n.vx = 0; n.vy = 0;
+    }
   }
 }
 
@@ -574,11 +603,20 @@ function render() {
     }
     ctx.globalAlpha = 1;
 
-    if ((rad > 7 || isFocus) && !dimmed) {
+    const shouldLabel = !dimmed && (
+      isFocus ||
+      (searchQuery && matched) ||
+      (cam.k >= 1.0 && n.isLabelHub) ||
+      (cam.k >= 2.0 && rad > 7)
+    );
+    if (shouldLabel) {
+      const fontSize = isFocus ? 12 : (n.isLabelHub ? 10 : 9);
+      ctx.globalAlpha = isFocus ? 1 : (searchQuery ? 0.9 : 0.72);
       ctx.fillStyle = ink;
-      ctx.font = `${isFocus ? 600 : 400} 11px ui-sans-serif, system-ui, sans-serif`;
+      ctx.font = `${isFocus ? 600 : 400} ${fontSize}px ui-sans-serif, system-ui, sans-serif`;
       ctx.textBaseline = "middle";
       ctx.fillText(n.short, x + rad + 5, y);
+      ctx.globalAlpha = 1;
     }
   }
 

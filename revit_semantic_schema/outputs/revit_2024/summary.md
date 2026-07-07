@@ -125,6 +125,18 @@ Members seen on Room page: ['Room']
 - 2426 total nodes (5 external -- referenced by an edge but never crawled/classified)
 - 10697 total edges
 - Target resolution: exact=9017, external=69, none=965, short_name_fallback=646
-- Confidence tier breakdown: core=1260, likely=623, needs_validation=368, unverified_reference=8446
-- `graph_core.json` (confidence_tier=core only): 346 nodes, 1260 edges
+- Confidence tier breakdown: core=1241, likely=623, needs_validation=368, unverified_reference=8465
+- `graph_core.json` (confidence_tier=core only): 330 nodes, 1241 edges
+- 53 communities detected over the core subgraph (heuristic=53 labels)
+- Largest communities:
+  - `FailureDefinitionId · BuiltInFailures.GroupFailures · BuiltInFailures.FamilyFailures` (72 nodes)
+  - `Category · ConceptualSurfaceType · Family` (26 nodes)
+  - `Material · MassSurfaceData · TopographySurface` (19 nodes)
+  - `Level · MultistoryStairs · Railing` (17 nodes)
+  - `ViewSheet · FabricArea · FabricSheetType` (8 nodes)
+  - `ForgeTypeId · ParameterTypeId · InternalDefinition` (8 nodes)
+  - `Reference · DividedSurface · RebarConstraint` (7 nodes)
+  - `Element · Parameter · ChangeType` (6 nodes)
+  - `Phase · EnergyDataSettings · PlanTopology` (5 nodes)
+  - `FillPatternElement · MEPSystemType · ColorFillSchemeEntry` (4 nodes)
 
