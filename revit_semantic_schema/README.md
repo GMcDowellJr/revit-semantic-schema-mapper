@@ -62,7 +62,8 @@ hostname verification stay on) — see `http_compat.py`'s module docstring for d
 Outputs land in `outputs/revit_<version>/`: `raw_index.json`, `api_pages.json`,
 `node_type_candidates.json`, `property_relationship_candidates.json`,
 `method_relationship_candidates.json`, `enum_catalogs.json`, `candidate_edges.json`,
-`graph.json`, `graph_core.json`, `graph.html`, and a human-readable `summary.md`. Fetched
+`graph.json`, `graph_core.json`, `graph.html`, `semantic_relationship_map.html`, and a
+human-readable `summary.md`. Fetched
 HTML is cached under `outputs/revit_<version>/cache/` and is not re-fetched on subsequent
 runs unless `--force-refresh` is passed.
 
@@ -84,7 +85,7 @@ runs unless `--force-refresh` is passed.
 | `--targeted-validation` | off | Scoped crawl against `pipeline.DEFAULT_TARGET_CLASSES` + a known-edge report, instead of a full namespace crawl -- see "Targeted validation crawl" below |
 | `--target-classes "A,B,C"` | `DEFAULT_TARGET_CLASSES` | Comma-separated fully-qualified class names, overriding the default target list (implies `--targeted-validation`) |
 | `--discover-only` | off | Only run page discovery and report how many pages a full run would fetch; writes just `raw_index.json`, no fetching/parsing of individual pages |
-| `--graph-only` | off | Recompute `graph.json`/`graph_core.json`/`graph.html` (and refresh the summary's graph section) from an existing `--output-dir`'s already-written `node_type_candidates.json`/`candidate_edges.json`, without crawling or re-parsing anything -- see "Recomputing just the graph" below |
+| `--graph-only` | off | Recompute `graph.json`/`graph_core.json`/`graph.html`/`semantic_relationship_map.html` (and refresh the summary's graph section) from an existing `--output-dir`'s already-written `node_type_candidates.json`/`candidate_edges.json`, without crawling or re-parsing anything -- see "Recomputing just the graph" below |
 | `--include-doc-text` | off | Include full summary/remarks/code-example text (copied from the docs site) in `api_pages.json`; omitted by default since it's prose/code, not derived facts -- for local debugging only, don't republish the result |
 | `--label-communities-llm` | off | Upgrade community labels from the default free heuristic to a short OpenRouter-generated one -- see "Communities" below. Requires `OPENROUTER_API_KEY` in the environment; falls back to the heuristic with a warning if unset |
 | `--community-label-model MODEL` | `openai/gpt-4o-mini` | OpenRouter model id used with `--label-communities-llm` -- a suggested small/inexpensive default, not a guarantee (OpenRouter's catalog/pricing changes over time) |
@@ -126,7 +127,11 @@ graph.py    -- materializes node/edge candidates into an actual graph.json/graph
                (see "Knowledge graph output" below)
 community.py -- structural community detection + labeling over the core subgraph (see
                "Communities" below)
-export.py   -- writes all outputs/revit_<version>/*.json + summary.md + graph.html
+semantic_roles.py -- a coarser, domain-oriented lens (see "Semantic relationship map"
+               below) -- role classification, role/relationship aggregation, and its
+               own Sankey+heatmap HTML rendering
+export.py   -- writes all outputs/revit_<version>/*.json + summary.md + graph.html +
+               semantic_relationship_map.html
 pipeline.py -- wires the above into the single command in __main__.py
 ```
 
@@ -209,6 +214,46 @@ list. Node fill color is `class_role` (a fixed, validated 8-slot categorical pal
 communities are shown as a labeled filter list rather than colored, since community count is
 unbounded and can't be given its own validated hue per entry without cycling past that fixed
 set -- real communities already show up as visual clusters in the force layout on their own.
+Its hand-rolled physics uses a minimum repulsion distance, damping, and a hard speed cap --
+without those, a real hub node (one has degree 499 in the Revit 2024 core subgraph) can
+accumulate enough velocity, frame over frame, to push coordinates to Infinity/NaN once the
+layout cools. Labels are zoom- and importance-aware (top-14-degree hubs at overview zoom, more
+as you zoom in, search/selection always labeled) rather than a flat radius threshold -- at a
+few hundred nodes, labeling everything above a fixed size reads as a word cloud, not a graph.
+
+## Semantic relationship map
+
+`graph.html` answers "what does the raw type graph look like" -- which needs domain
+familiarity to get much out of, since 330 individual types is a lot to visually parse.
+`semantic_relationship_map.html` (`semantic_roles.py`) answers a different, coarser question:
+"how do the *categories* of the Revit API relate to each other." It reclassifies every core
+node into one of ~21 domain-recognizable **semantic roles** (`View`, `Family`, `Room / Space`,
+`Failures`, `Options / Settings`, ... -- see `semantic_roles.ROLE_ORDER`), independent of
+`class_role`, then aggregates edges into role -> relationship -> role triples, rendered as:
+
+- A **Sankey-style flow diagram**: source roles on the left, relationship types in the
+  middle, target roles on the right, band width/opacity scaled by edge count.
+- A **role x relationship-type heatmap** underneath, for scanning by row (source role).
+- **Click-to-drilldown** on any flow or heatmap cell shows the real underlying edges (member
+  name, confidence tier, a link to the source doc page) -- same "candidate schema, always
+  traceable to evidence" principle as `graph.html`'s node inspector, kept consistent here too.
+
+`classify_api_role` is a coarser heuristic than `class_role` -- and a lossy one in a few
+spots by design: e.g. `FamilyInstance` (a placed instance) and `Family`/`FamilySymbol`
+(family *definitions*) both land in the "Family" role, because the check is a plain name
+match. That's an intentional simplification for readability, not a claim that those are the
+same concept (see `test_classify_api_role_family_ambiguity_is_a_known_tradeoff`). Only the
+top 12 relationship types (by edge count) are shown by default (`--top-relationships` in the
+standalone script this was ported from; fixed at 12 in the pipeline for now) -- a full ~20-type
+diagram would be unreadable, so the rest aren't silently dropped, they're disclosed: the
+footer states exactly how many of the total relationship types/edges are shown, and
+`relationship_counts_total` in the underlying data always has the full breakdown.
+
+Role colors here are a supplementary/orienting channel, not the sole identity carrier --
+every role box is always direct-labeled with its name, same reasoning as `graph.html`'s
+communities panel: 21 roles is inherently beyond what a validated CVD-safe categorical set
+can distinctly cover (that set tops out around 8), so precise pairwise color separation
+isn't the accessibility mechanism here; the text labels are.
 
 ## Targeted validation crawl
 

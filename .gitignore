@@ -16,3 +16,4 @@ revit_semantic_schema/outputs/*/graph.json
 revit_semantic_schema/outputs/*/graph_core.json
 *.tar.gz
 revit_semantic_schema/outputs/*/graph.html
+revit_semantic_schema/outputs/*/semantic_relationship_map.html

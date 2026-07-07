@@ -112,6 +112,7 @@ def run_graph_only(
 
     export.write_graph(output_dir, result, revit_version=revit_version)
     export.write_graph_html(output_dir, result, revit_version=revit_version)
+    export.write_semantic_relationship_map(output_dir, result, revit_version=revit_version)
     # Try both -- a no-op for whichever summary filename isn't this
     # directory's kind (full run vs. --targeted-validation).
     export.refresh_graph_section_in_file(output_dir / "summary.md", result, section_number=14)
@@ -408,6 +409,7 @@ def run_pipeline(
         export.write_enum_catalogs(output_dir, in_scope_pages)
         export.write_graph(output_dir, graph_result, revit_version=config.version)
         export.write_graph_html(output_dir, graph_result, revit_version=config.version)
+        export.write_semantic_relationship_map(output_dir, graph_result, revit_version=config.version)
 
         limitations = [
             "Edge classification is a static, docs-only heuristic; no candidate edge has been "
@@ -738,6 +740,7 @@ def run_targeted_pipeline(
         export.write_enum_catalogs(output_dir, pages)
         export.write_graph(output_dir, graph_result, revit_version=config.version)
         export.write_graph_html(output_dir, graph_result, revit_version=config.version)
+        export.write_semantic_relationship_map(output_dir, graph_result, revit_version=config.version)
         export.write_target_report(output_dir, target_report)
         export.write_known_edge_report(output_dir, known_edge_report)
         export.write_validation_summary(

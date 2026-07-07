@@ -8,6 +8,7 @@ import re
 from enum import Enum
 from pathlib import Path
 
+from . import semantic_roles
 from .graph import GraphBuildResult, filter_core
 from .models import (
     ApiPage,
@@ -186,6 +187,31 @@ def write_graph_html(output_dir: Path, result: GraphBuildResult, *, revit_versio
     template = _GRAPH_VIEWER_TEMPLATE_PATH.read_text(encoding="utf-8")
     html = template.replace("__GRAPH_DATA__", payload).replace("__REVIT_VERSION__", revit_version)
     (output_dir / "graph.html").write_text(html, encoding="utf-8")
+
+
+def write_semantic_relationship_map(
+    output_dir: Path,
+    result: GraphBuildResult,
+    *,
+    revit_version: str,
+    top_relationships: int | None = 12,
+    min_weight: int = 1,
+    max_examples: int = 80,
+) -> None:
+    """Write ``semantic_relationship_map.html``: a coarser, domain-oriented
+    lens on the same core subgraph as ``graph.html`` -- role -> relationship
+    -> role Sankey bands plus a role x relationship-type heatmap, both with
+    click-to-drilldown back to the real underlying edges. See
+    ``semantic_roles.py``'s module docstring for what this answers that the
+    raw type-level graph doesn't, and the tradeoffs its role classification
+    makes.
+    """
+    core_nodes, core_edges = filter_core(result)
+    data = semantic_roles.aggregate_graph(
+        core_nodes, core_edges, top_relationships=top_relationships, min_weight=min_weight, max_examples=max_examples
+    )
+    html = semantic_roles.render_html(data, revit_version=revit_version)
+    (output_dir / "semantic_relationship_map.html").write_text(html, encoding="utf-8")
 
 
 def _graph_metadata(nodes: list, edges: list, *, revit_version: str) -> dict:

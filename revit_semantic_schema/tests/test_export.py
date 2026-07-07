@@ -306,3 +306,18 @@ def test_write_graph_html_escapes_stray_script_close_sequences(tmp_path):
     html = (tmp_path / "graph.html").read_text()
     script_body = html.split("<script>", 1)[1].rsplit("</script>", 1)[0]
     assert "</script" not in script_body
+
+
+def test_write_semantic_relationship_map_produces_standalone_html(tmp_path):
+    nodes = [_node("Autodesk.Revit.DB.FamilyInstance"), _node("Autodesk.Revit.DB.FamilySymbol")]
+    edges = [_edge("Symbol", EdgeType.INSTANCE_OF, ConfidenceLabel.DIRECT_RETURN_TYPE, "Autodesk.Revit.DB.FamilySymbol")]
+    for e in edges:
+        e.source_type = "Autodesk.Revit.DB.FamilyInstance"
+
+    result = graph.build_graph(nodes, edges)
+    export.write_semantic_relationship_map(tmp_path, result, revit_version="2024")
+
+    html = (tmp_path / "semantic_relationship_map.html").read_text()
+    assert html.strip().startswith("<!doctype html>")
+    assert "2024" in html
+    assert "Family" in html

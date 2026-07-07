@@ -129,7 +129,10 @@ def main(argv: list[str] | None = None) -> int:
         print(f"Edges:              {len(result.edges)}")
         print(f"Target resolution:  {result.target_resolution_counts}")
         print(f"Communities:        {len(result.communities)}")
-        print(f"Outputs written to: {output_dir / 'graph.json'} / {output_dir / 'graph_core.json'} / {output_dir / 'graph.html'}")
+        print(
+            f"Outputs written to: {output_dir / 'graph.json'} / {output_dir / 'graph_core.json'} / "
+            f"{output_dir / 'graph.html'} / {output_dir / 'semantic_relationship_map.html'}"
+        )
         return 0
 
     config = CrawlConfig(
