@@ -304,21 +304,25 @@ _FETCH_DURATION_WINDOW = 50
 
 class _FetchDurationTracker:
     """Trailing average of how long a genuinely-fresh (not-already-cached)
-    fetch actually takes, used to ground the ETA in the real per-page cost
-    instead of assuming ``--throttle-seconds`` alone is that cost.
+    page actually takes -- fetch *and* parse together (see
+    ``_run_crawl_loop``'s ``fetch_start``/``finally``) -- used to ground the
+    ETA in the real per-page cost instead of assuming ``--throttle-seconds``
+    alone is that cost.
 
+    Two separate reasons ``throttle_seconds`` alone understates the true
+    per-page cost, potentially by a large margin (confirmed on a real run:
+    actual per-page time ran roughly double a 1.0s throttle): (1)
     ``Crawler._throttle`` only ever adds a *sleep* when a request finishes
     faster than ``throttle_seconds`` -- if the real round trip (network
-    latency, TLS, then this process parsing the HTML) already takes longer
-    than that on its own, the throttle never intervenes at all, and
-    ``throttle_seconds`` understates the true per-page cost, potentially by
-    a large margin (confirmed: on a real run, actual per-fetch time was
-    roughly double a 1.0s throttle). Averaging only over fetches that
-    weren't already cached is what matters here -- mixing in cache hits
-    (near-instant) would silently pull this average back down toward
-    whatever fraction of recent pages happened to be cached, the same
-    dilution problem that made a blended pages/s rate a bad basis for the
-    ETA in the first place (see ``_ProgressRateTracker``/
+    latency, TLS) already takes longer than that on its own, the throttle
+    never intervenes at all; and (2) HTML parsing happens *after* the
+    throttled fetch returns and is invisible to it entirely, even though
+    it's real wall-clock time (non-trivial on constrained hardware).
+    Averaging only over pages that weren't already cached is what matters
+    here -- mixing in cache hits (near-instant) would silently pull this
+    average back down toward whatever fraction of recent pages happened to
+    be cached, the same dilution problem that made a blended pages/s rate a
+    bad basis for the ETA in the first place (see ``_ProgressRateTracker``/
     ``_count_uncached``).
     """
 
@@ -361,8 +365,8 @@ def _fetch_floor_eta_seconds(not_cached_remaining: int, avg_fetch_seconds: float
     not noise a wider window can smooth away, it's a real regime change a
     blended average necessarily lags behind. This floor has no such lag:
     it's grounded in which URLs are actually on disk *right now* and how
-    long *actual* fresh fetches have actually been taking, not recent
-    history blended with cache hits.
+    long *actual* fresh pages (fetch and parse) have actually been taking,
+    not recent history blended with cache hits.
     """
     return not_cached_remaining * avg_fetch_seconds
 
@@ -383,30 +387,6 @@ def _format_duration(seconds: float | None) -> str:
     if minutes:
         return f"{minutes}m{secs:02d}s"
     return f"{secs}s"
-
-
-def _fetch_and_track_duration(crawler: Crawler, url: str, tracker: _FetchDurationTracker) -> str:
-    """``crawler.fetch(url)``, recording how long it took into ``tracker`` --
-    but only when ``url`` wasn't already cached before this call, so a cache
-    hit (near-instant) never dilutes the tracked real-fetch average (see
-    ``_FetchDurationTracker``'s docstring). Whatever ``crawler.fetch``
-    raises propagates unchanged; callers handle a failed fetch the same way
-    regardless of whether it went through this wrapper.
-
-    Skips both ``time.monotonic()`` reads entirely for a cache hit rather
-    than taking them and simply not recording the result -- a cache hit is
-    the common case for most of a resumed crawl (see this module's other
-    docstrings on the cache-exhaustion transition), so two avoidable clock
-    reads per page would add up, and a real ``Crawler.fetch`` cache hit
-    itself skips any timing-relevant work for the same reason (see its
-    docstring).
-    """
-    if crawler.is_cached(url):
-        return crawler.fetch(url)
-    start = time.monotonic()
-    html = crawler.fetch(url)
-    tracker.record(time.monotonic() - start)
-    return html
 
 
 def _run_crawl_loop(
@@ -484,8 +464,18 @@ def _run_crawl_loop(
             # enqueue_member_links recorded at enqueue time.
             declaring_type_hint = next((dt for u, dt in member_queue if u == url), None)
 
+        # Measured from before the fetch to after this url is fully parsed
+        # below (see the `finally`) -- not just the raw HTTP fetch -- so
+        # fetch_duration_tracker reflects real per-page wall-clock cost,
+        # including HTML parsing (non-trivial on constrained hardware) and
+        # any nested Members-page fetch+parse a class page triggers below.
+        # None (not timed at all) for an already-cached url -- see
+        # _FetchDurationTracker's docstring for why a near-instant cache hit
+        # must never factor into this average.
+        fetch_start = None if crawler.is_cached(url) else time.monotonic()
+
         try:
-            html = _fetch_and_track_duration(crawler, url, fetch_duration_tracker)
+            html = crawler.fetch(url)
         except Exception as exc:  # noqa: BLE001
             logger.warning("failed to fetch %s: %r", url, exc)
             failed_urls.append(url)
@@ -505,7 +495,7 @@ def _run_crawl_loop(
                 members_url = find_members_page_link(html, url)
                 if members_url and members_url not in visited:
                     try:
-                        members_html = _fetch_and_track_duration(crawler, members_url, fetch_duration_tracker)
+                        members_html = crawler.fetch(members_url)
                     except Exception as exc:  # noqa: BLE001
                         logger.warning("failed to fetch members index page %s: %r", members_url, exc)
                     else:
@@ -542,6 +532,14 @@ def _run_crawl_loop(
         except Exception as exc:  # noqa: BLE001
             logger.warning("failed to parse %s: %r", url, exc)
             failed_urls.append(url)
+        finally:
+            # Fires even on the early `continue` above (a `finally` always
+            # runs when its `try` is exited, `continue`/`break`/exception
+            # included) -- that iteration still genuinely spent this much
+            # wall-clock time fetching/attempting to parse, so it belongs in
+            # the average regardless of whether parsing itself succeeded.
+            if fetch_start is not None:
+                fetch_duration_tracker.record(time.monotonic() - fetch_start)
 
 
 def run_pipeline(

@@ -1,4 +1,5 @@
 import json
+import re
 
 import pytest
 
@@ -468,61 +469,85 @@ def test_fetch_floor_eta_reflects_uncached_queue_count(tmp_path):
     assert _fetch_floor_eta_seconds(not_cached, avg_fetch_seconds=2.3) == pytest.approx(4 * 2.3)
 
 
-def test_fetch_duration_tracker_averages_only_genuine_fetches(monkeypatch):
-    """_FetchDurationTracker (and the _fetch_and_track_duration wrapper that
-    feeds it) must average real, not-already-cached fetch durations only --
-    a cache hit is near-instant and would otherwise silently pull the
-    average down, understating the true per-fetch cost the same way a
-    blended pages/s rate did (this is the exact bug this whole mechanism
-    replaces: confirmed on a real run, actual per-fetch time ran roughly
-    2x the configured --throttle-seconds once the throttle stopped being
-    the binding constraint, which a naive throttle_seconds-only ETA missed
-    entirely).
+def test_fetch_duration_tracker_uses_fallback_until_a_real_sample_recorded():
+    """_FetchDurationTracker must average real, recorded durations only --
+    and fall back to the configured value (--throttle-seconds, in
+    _run_crawl_loop's actual usage) until at least one has been recorded,
+    since there's nothing else to base an estimate on yet.
     """
-    from revit_schema_mapper.pipeline import _FetchDurationTracker, _fetch_and_track_duration
+    from revit_schema_mapper.pipeline import _FetchDurationTracker
 
-    class FakeClock:
-        def __init__(self):
-            self.now = 0.0
+    tracker = _FetchDurationTracker(window=3, fallback_seconds=99.0)
+    assert tracker.average_seconds == 99.0  # nothing recorded yet
 
-        def monotonic(self):
-            self.now += 1.0  # every call simulates 1s of wall-clock passing
-            return self.now
+    tracker.record(2.0)
+    assert tracker.average_seconds == pytest.approx(2.0)
 
-    monkeypatch.setattr(pipeline_module.time, "monotonic", FakeClock().monotonic)
+    tracker.record(4.0)
+    assert tracker.average_seconds == pytest.approx(3.0)  # mean of 2.0, 4.0
 
-    class _FakeCrawler:
-        """Duck-typed stand-in for Crawler -- only is_cached()/fetch() are
-        used by _fetch_and_track_duration, and a real Crawler would attempt
-        an actual network request for any URL not already in its on-disk
-        cache, which a unit test must not do.
-        """
+    # window=3: a 4th sample evicts the oldest (2.0), not just appends.
+    tracker.record(3.0)
+    tracker.record(9.0)
+    assert tracker.average_seconds == pytest.approx((4.0 + 3.0 + 9.0) / 3)
 
-        def __init__(self, cached_urls):
-            self._cached = set(cached_urls)
 
-        def is_cached(self, url):
-            return url in self._cached
+def test_avg_fetch_seconds_includes_parse_time_not_just_the_http_fetch(tmp_path, monkeypatch, caplog):
+    """The observed per-page duration recorded for the ETA must include
+    parsing time, not just the raw HTTP fetch -- real per-page parsing cost
+    is non-trivial on constrained hardware (a Raspberry Pi) and a
+    fetch-only measurement would miss it entirely, making the floor
+    optimistic in exactly the way that motivated measuring real fetch time
+    in the first place (see _FetchDurationTracker's docstring).
 
-        def fetch(self, url):
-            return f"<html>{url}</html>"
+    Drives one genuinely-uncached URL through the real crawl loop (a faked
+    HTTP client -- no real network) with an artificial delay injected into
+    parse_member_page, using the real (unmocked) clock, and checks the
+    logged ~s/fetch reflects that delay -- proving it was measured *after*
+    parsing finished, not right after the fetch call returned.
+    """
+    from revit_schema_mapper.http_compat import FetchResult
 
-    tracker = _FetchDurationTracker(window=10, fallback_seconds=99.0)
-    crawler = _FakeCrawler(cached_urls={"https://example.invalid/cached.htm"})
+    output_dir = tmp_path / "output"
+    config = CrawlConfig(version="2024", namespace_prefix="Autodesk.Revit.DB", cache_dir=output_dir / "cache")
+    crawler = Crawler(config)
+    crawler._robots = None
+    monkeypatch.setattr(crawler, "_ensure_robots_loaded", lambda: None)
+    monkeypatch.setattr(crawler.client, "get", lambda url, timeout=30: FetchResult(text=_PROPERTY_HTML, status_code=200))
 
-    # Fallback used until a genuine fetch has actually been measured.
-    assert tracker.average_seconds == 99.0
+    real_parse_member_page = pipeline_module.parse_member_page
 
-    # A cache hit: the wrapper skips reading the clock at all for this case
-    # (see its docstring), so nothing gets recorded either way.
-    html = _fetch_and_track_duration(crawler, "https://example.invalid/cached.htm", tracker)
-    assert html == "<html>https://example.invalid/cached.htm</html>"
-    assert tracker.average_seconds == 99.0  # unchanged -- still just the fallback
+    def slow_parse_member_page(*args, **kwargs):
+        import time as real_time
 
-    # A genuine fetch: this one must be recorded.
-    html = _fetch_and_track_duration(crawler, "https://example.invalid/fresh.htm", tracker)
-    assert html == "<html>https://example.invalid/fresh.htm</html>"
-    assert tracker.average_seconds == pytest.approx(1.0)  # one real 1s sample, fallback no longer used
+        real_time.sleep(0.1)
+        return real_parse_member_page(*args, **kwargs)
+
+    monkeypatch.setattr(pipeline_module, "parse_member_page", slow_parse_member_page)
+
+    url = "https://www.revitapidocs.com/2024/symbol-property.htm"
+    by_url = {
+        url: {
+            "url": url,
+            "link_text": "Symbol",
+            "discovered_via": "test",
+            "declaring_type_hint": "Autodesk.Revit.DB.Widget",
+        }
+    }
+
+    with caplog.at_level("INFO", logger="revit_schema_mapper.pipeline"):
+        _crawl_and_parse(crawler, config, by_url, checkpoint=None, checkpoint_interval=1)
+
+    progress_lines = [m for m in caplog.messages if m.startswith("progress:")]
+    assert len(progress_lines) == 1
+
+    match = re.search(r"~([\d.]+)s/fetch", progress_lines[0])
+    assert match is not None
+    observed_seconds = float(match.group(1))
+    # Comfortably above the fetch-only cost (the faked HTTP client returns
+    # near-instantly) -- only explainable if the 0.1s parse delay above was
+    # included in what got measured and recorded.
+    assert observed_seconds >= 0.08
 
 
 def test_format_duration_reports_unknown_for_non_finite_or_negative():
