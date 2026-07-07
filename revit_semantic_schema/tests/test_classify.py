@@ -120,6 +120,64 @@ def test_family_instance_symbol_classified_as_instance_of():
     assert candidate.candidate_target_type == "Autodesk.Revit.DB.FamilySymbol"
 
 
+def test_document_property_classified_as_references():
+    """known_type_short_names is deliberately empty here -- Document must get
+    direct_return_type confidence via KNOWN_REFERENCE_TYPES regardless of
+    whether the current crawl happened to independently crawl Document's own
+    type page. A scoped/targeted crawl using DEFAULT_TARGET_CLASSES never
+    includes Document itself, so relying on known_type_short_names alone
+    would silently degrade this to name_only_candidate for exactly that case
+    -- see the regression test below.
+    """
+    member = _member("Document", "Document", declaring_type="Autodesk.Revit.DB.Element")
+    candidate = classify_member(member, source_type="Autodesk.Revit.DB.Element", known_type_short_names=set())
+
+    assert candidate is not None
+    assert candidate.candidate_edge_type is EdgeType.REFERENCES
+    assert candidate.edge_confidence is ConfidenceLabel.DIRECT_RETURN_TYPE
+    assert candidate.candidate_target_type == "Autodesk.Revit.DB.Document"
+
+
+def test_get_document_method_classified_as_references():
+    member = _member("GetDocument", "Document", declaring_type="Autodesk.Revit.DB.FailuresAccessor")
+    candidate = classify_member(member, source_type="Autodesk.Revit.DB.FailuresAccessor", known_type_short_names=set())
+
+    assert candidate is not None
+    assert candidate.candidate_edge_type is EdgeType.REFERENCES
+    assert candidate.edge_confidence is ConfidenceLabel.DIRECT_RETURN_TYPE
+    assert candidate.candidate_target_type == "Autodesk.Revit.DB.Document"
+
+
+def test_document_reference_keeps_direct_return_type_confidence_in_scoped_crawl():
+    """Regression test: a targeted/scoped crawl (e.g. DEFAULT_TARGET_CLASSES,
+    none of which is Document itself) never adds 'Document' to
+    known_type_short_names. Before Document was added to
+    KNOWN_REFERENCE_TYPES, classify_member's direct-return branch required
+    the bare return type to be in known_type_short_names OR
+    KNOWN_REFERENCE_TYPES; with neither true, is_direct_db_object was False,
+    so the member fell through to the name-only branch and got
+    name_only_candidate confidence instead of direct_return_type -- silently
+    under-reporting confidence for exactly the live-crawl findings this rule
+    was added for.
+    """
+    member = _member("Document", "Document", declaring_type="Autodesk.Revit.DB.View")
+    candidate = classify_member(member, source_type="Autodesk.Revit.DB.View", known_type_short_names=set())
+
+    assert candidate is not None
+    assert candidate.edge_confidence is ConfidenceLabel.DIRECT_RETURN_TYPE
+    assert candidate.edge_confidence is not ConfidenceLabel.NAME_ONLY_CANDIDATE
+
+
+def test_documented_but_unrelated_member_name_is_not_matched_by_document_rule():
+    """The Document/GetDocument rule is an exact match, not a substring
+    search -- a member merely containing 'Document' (e.g. a hypothetical
+    DocumentVersion-style name) must not be swept up by it."""
+    member = _member("DocumentVersion", "int", declaring_type="Autodesk.Revit.DB.Element")
+    candidate = classify_member(member, source_type="Autodesk.Revit.DB.Element", known_type_short_names=set())
+
+    assert candidate is None
+
+
 def test_unknown_elementid_reference_preserved_when_name_gives_no_hint():
     member = _member("Id", "ElementId", declaring_type="Autodesk.Revit.DB.Element")
     candidate = classify_member(member, source_type="Autodesk.Revit.DB.Element", known_type_short_names=set())

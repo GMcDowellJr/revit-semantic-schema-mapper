@@ -15,6 +15,7 @@ pages before trusting a full run.
 from __future__ import annotations
 
 import logging
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
@@ -88,6 +89,7 @@ def _crawl_and_parse(
     by_url: dict[str, dict],
     checkpoint: Callable[[list[ApiPage], list[str]], None] | None = None,
     checkpoint_interval: int = 25,
+    checkpoint_min_interval_seconds: float = 30.0,
 ) -> tuple[list[ApiPage], list[str]]:
     """Fetch/sniff/parse every URL in ``by_url``, following class ->
     Members-page links and enqueueing newly-discovered member pages as it
@@ -97,15 +99,25 @@ def _crawl_and_parse(
     differ only in how they seed ``by_url`` and what they do with the
     results afterward.
 
-    If ``checkpoint`` is given, it's called every ``checkpoint_interval``
-    pages with the pages/failed_urls parsed so far (the caller is expected to
-    export them), and once more if the loop exits early via an unhandled
-    exception -- including KeyboardInterrupt -- so a long crawl that's
-    interrupted partway through still leaves reasonably fresh, usable output
-    on disk instead of nothing at all. The caller is responsible for calling
-    ``checkpoint`` itself one final time after this returns normally, to
-    export the complete result -- this function only guarantees a checkpoint
-    on the *abnormal*-exit path.
+    If ``checkpoint`` is given, a progress line is logged every
+    ``checkpoint_interval`` pages, and ``checkpoint`` itself is called at
+    that same cadence *but no more often than every*
+    ``checkpoint_min_interval_seconds`` of wall-clock time (the caller is
+    expected to export the pages/failed_urls it's given). ``checkpoint`` is
+    a full classify+export pass over everything parsed so far, so its cost
+    grows with page count -- gating it by ``checkpoint_interval`` alone
+    would make a large crawl's *total* checkpoint overhead grow roughly
+    quadratically (a fixed page-count cadence means the already-expensive
+    late-run checkpoints fire just as often as the cheap early ones). Gating
+    by elapsed time bounds total overhead to roughly
+    ``run_duration / checkpoint_min_interval_seconds`` checkpoints,
+    regardless of crawl size. ``checkpoint`` is also called once more if the
+    loop exits early via an unhandled exception -- including
+    KeyboardInterrupt -- so a long crawl that's interrupted partway through
+    still leaves reasonably fresh, usable output on disk instead of nothing
+    at all. The caller is responsible for calling ``checkpoint`` itself one
+    final time after this returns normally, to export the complete result --
+    this function only guarantees a checkpoint on the *abnormal*-exit path.
     """
     pages: list[ApiPage] = []
     failed_urls: list[str] = []
@@ -175,6 +187,7 @@ def _crawl_and_parse(
             enqueue_member_links=enqueue_member_links,
             checkpoint=checkpoint,
             checkpoint_interval=checkpoint_interval,
+            checkpoint_min_interval_seconds=checkpoint_min_interval_seconds,
         )
     except BaseException:
         if checkpoint is not None:
@@ -198,7 +211,9 @@ def _run_crawl_loop(
     enqueue_member_links: Callable[[list[dict], str, str], None],
     checkpoint: Callable[[list[ApiPage], list[str]], None] | None,
     checkpoint_interval: int,
+    checkpoint_min_interval_seconds: float,
 ) -> None:
+    last_checkpoint_time = time.monotonic()
     while queue:
         url = queue.pop(0)
         if url in visited:
@@ -211,8 +226,16 @@ def _run_crawl_loop(
                 "progress: %d pages fetched, %d queued, %d parsed, %d failed",
                 len(visited), len(queue), len(pages), len(failed_urls),
             )
-            if checkpoint is not None:
+            if checkpoint is not None and time.monotonic() - last_checkpoint_time >= checkpoint_min_interval_seconds:
                 checkpoint(pages, failed_urls)
+                # Measured *after* checkpoint() returns, not before: a slow
+                # export (the case this rate limit exists to protect --
+                # e.g. serializing a large crawl can itself take longer than
+                # checkpoint_min_interval_seconds) would otherwise count its
+                # own duration as cooldown time, letting the very next
+                # page-count boundary fire another full export immediately
+                # and collapsing back toward every-interval exports.
+                last_checkpoint_time = time.monotonic()
 
         # by_url's declaring_type_hint is checked first (and is the only one
         # enqueue_member_links corrects in place -- see its docstring), so a
@@ -291,6 +314,7 @@ def run_pipeline(
     fallback_reason: str | None = None,
     include_doc_text: bool = False,
     checkpoint_interval: int = 25,
+    checkpoint_min_interval_seconds: float = 30.0,
 ) -> PipelineResult:
     crawler = Crawler(config)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -378,7 +402,9 @@ def run_pipeline(
         last_result["edge_candidates"] = edge_candidates
         last_result["failed_urls"] = failed_urls
 
-    pages, failed_urls = _crawl_and_parse(crawler, config, by_url, checkpoint=checkpoint, checkpoint_interval=checkpoint_interval)
+    pages, failed_urls = _crawl_and_parse(
+        crawler, config, by_url, checkpoint=checkpoint, checkpoint_interval=checkpoint_interval, checkpoint_min_interval_seconds=checkpoint_min_interval_seconds
+    )
 
     checkpoint(pages, failed_urls)  # guaranteed final write reflecting the complete result
 
@@ -596,6 +622,7 @@ def run_targeted_pipeline(
     known_edge_checks: list[tuple[str, str]] | None = None,
     include_doc_text: bool = False,
     checkpoint_interval: int = 25,
+    checkpoint_min_interval_seconds: float = 30.0,
 ) -> TargetedPipelineResult:
     """Scoped validation crawl: fetch only the target classes' pages (class,
     Members, Methods/Properties, and every linked property/method page) via
@@ -660,7 +687,9 @@ def run_targeted_pipeline(
         last_result["known_edge_report"] = known_edge_report
         last_result["discovery_notes"] = discovery_notes
 
-    pages, failed_urls = _crawl_and_parse(crawler, config, by_url, checkpoint=checkpoint, checkpoint_interval=checkpoint_interval)
+    pages, failed_urls = _crawl_and_parse(
+        crawler, config, by_url, checkpoint=checkpoint, checkpoint_interval=checkpoint_interval, checkpoint_min_interval_seconds=checkpoint_min_interval_seconds
+    )
 
     checkpoint(pages, failed_urls)  # guaranteed final write reflecting the complete result
 

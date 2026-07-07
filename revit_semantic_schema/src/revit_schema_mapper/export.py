@@ -91,6 +91,38 @@ _CONFIDENCE_RANK = {
     "needs_runtime_validation": 6,
 }
 
+# Edge types that mean "definitely a DB-object/ElementId reference, but no
+# keyword/docs evidence identifies which specific relationship" (see
+# docs/edge_taxonomy_v0.md). High edge_confidence here reflects confidence in
+# the *return type*, not in any specific relationship, so these shouldn't
+# crowd out genuinely-classified edges in a "top confident" listing.
+_UNKNOWN_EDGE_TYPES = {"UNKNOWN_DB_OBJECT_REFERENCE", "UNKNOWN_ELEMENTID_REFERENCE"}
+
+
+def _unknown_target_type_breakdown(edge_candidates: list[EdgeCandidate], top_n: int = 15) -> list[str]:
+    """For UNKNOWN_* edges, count how many share each candidate_target_type.
+
+    A live crawl's UNKNOWN_* bucket is often dominated by a handful of
+    generic identifier/spec-key types (e.g. ForgeTypeId, FailureDefinitionId)
+    referenced from all over the API with no consistent name pattern -- this
+    surfaces that concentration directly instead of leaving it to be found by
+    manually querying candidate_edges.json.
+    """
+    unknown = [e for e in edge_candidates if e.candidate_edge_type.value in _UNKNOWN_EDGE_TYPES]
+    if not unknown:
+        return ["- (none)"]
+    counts: dict[str, int] = {}
+    for e in unknown:
+        target = e.candidate_target_type or "(none)"
+        counts[target] = counts.get(target, 0) + 1
+    ranked = sorted(counts.items(), key=lambda kv: -kv[1])
+    lines = [f"- {len(unknown)} total UNKNOWN_* edges, {len(counts)} distinct target type(s)"]
+    for target, count in ranked[:top_n]:
+        lines.append(f"  - `{target}`: {count} ({100 * count / len(unknown):.0f}%)")
+    if len(ranked) > top_n:
+        lines.append(f"  - ...and {len(ranked) - top_n} more target type(s)")
+    return lines
+
 
 def _room_investigation_section(pages: list[ApiPage]) -> str:
     room_pages = [p for p in pages if p.type_name == "Room"]
@@ -155,7 +187,15 @@ def write_summary(
     methods = [e for e in edge_candidates if e.member_kind is MemberKind.METHOD]
     enum_member_count = sum(len(p.enum_members) for p in pages)
 
-    ranked = sorted(edge_candidates, key=lambda e: _CONFIDENCE_RANK.get(e.edge_confidence.value, 99))
+    # A high edge_confidence only reflects confidence in the *return type*;
+    # sorting on that alone let UNKNOWN_* edges (definitely a reference, but
+    # to no specific relationship) crowd out genuinely-classified ones at the
+    # top of this list. Rank specific edge types first, unknown ones last,
+    # confidence within each group.
+    ranked = sorted(
+        edge_candidates,
+        key=lambda e: (e.candidate_edge_type.value in _UNKNOWN_EDGE_TYPES, _CONFIDENCE_RANK.get(e.edge_confidence.value, 99)),
+    )
     top_confident = ranked[:25]
     top_uncertain = sorted(
         edge_candidates,
@@ -200,13 +240,24 @@ def write_summary(
     lines.append("## 9. Top 25 uncertain candidates needing review")
     lines.extend([_fmt_edge(e) for e in top_uncertain] or ["- (none)"])
     lines.append("")
-    lines.append("## 10. Room / Room Number / Room Name findings")
+    lines.append("## 10. Unknown-reference target type breakdown")
+    lines.append(
+        "Both UNKNOWN_* edge types mean 'definitely a reference, but no keyword/docs evidence "
+        "identifies which specific relationship' -- per docs/edge_taxonomy_v0.md, that's the "
+        "conservative, honest label, not a bug to fix by guessing a specific type. This "
+        "breakdown exists so a concentration in a few target types (e.g. a generic identifier "
+        "type referenced from all over the API) is visible here instead of only discoverable by "
+        "querying candidate_edges.json directly."
+    )
+    lines.extend(_unknown_target_type_breakdown(edge_candidates))
+    lines.append("")
+    lines.append("## 11. Room / Room Number / Room Name findings")
     lines.append(_room_investigation_section(pages))
     lines.append("")
-    lines.append("## 11. Limitations")
+    lines.append("## 12. Limitations")
     lines.extend(f"- {item}" for item in limitations)
     lines.append("")
-    lines.append("## 12. Recommended next steps")
+    lines.append("## 13. Recommended next steps")
     lines.extend(f"- {item}" for item in next_steps)
     lines.append("")
 
