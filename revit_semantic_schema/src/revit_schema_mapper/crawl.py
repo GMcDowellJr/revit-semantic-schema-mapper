@@ -6,9 +6,14 @@ Design constraints (see docs/crawl_notes.md for the full rationale):
 - Throttled: a minimum delay between requests to the same host.
 - Cached: every fetched page is written to disk under ``cache_dir`` keyed by
   URL, and is never re-fetched on a later run unless ``force_refresh=True``.
-- Resumable: ``raw_index.json`` is written incrementally so a crawl that is
-  interrupted partway through can be restarted and will pick up where it
-  left off.
+  This is what makes restarting an interrupted crawl cheap: re-running the
+  same command skips every already-cached page and only fetches what's
+  missing.
+- Checkpointed: ``pipeline.run_pipeline``/``run_targeted_pipeline`` write all
+  output files (not just ``raw_index.json``) every ``checkpoint_interval``
+  pages, and once more before propagating an unhandled exception (including
+  KeyboardInterrupt) -- so a long crawl that's interrupted partway through
+  still leaves current, usable output on disk, not nothing at all.
 - Scoped: only URLs under the configured RevitApiDocs version path are
   followed; nothing outside revitapidocs.com is ever requested.
 
