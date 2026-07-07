@@ -1,8 +1,8 @@
 import json
 
 from revit_schema_mapper.crawl import CrawlConfig, Crawler
-from revit_schema_mapper.models import ClassRole
-from revit_schema_mapper.pipeline import run_pipeline, run_targeted_pipeline
+from revit_schema_mapper.models import ApiPage, ClassRole, Kind, MemberInfo, MemberKind
+from revit_schema_mapper.pipeline import _build_known_edge_report, run_pipeline, run_targeted_pipeline
 
 _CLASS_HTML = """
 <html><body>
@@ -357,3 +357,61 @@ def test_preseeded_inherited_member_url_gets_corrected_by_members_page_parse(tmp
     assert are_phases_pages[0].declaring_type == "Autodesk.Revit.DB.Element"
 
     assert not any(e.source_type == "Autodesk.Revit.DB.Wall" and e.member_name == "ArePhasesModifiable" for e in result.edge_candidates)
+
+
+def _member_page(declaring_type: str, member_name: str, return_type: str = "string") -> ApiPage:
+    member = MemberInfo(
+        name=member_name,
+        kind=MemberKind.PROPERTY,
+        declaring_type=declaring_type,
+        raw_signature=f"public {return_type} {member_name} {{ get; }}",
+        return_type=return_type,
+        source_url="https://www.revitapidocs.com/2024/fake.htm",
+    )
+    return ApiPage(
+        revit_version="2024",
+        namespace="Autodesk.Revit.DB.Architecture",
+        type_name=member_name,
+        full_type_name=f"{declaring_type}.{member_name}",
+        kind=Kind.PROPERTY,
+        declaring_type=declaring_type,
+        members=[member],
+        source_url=member.source_url,
+    )
+
+
+def test_known_edge_report_resolves_member_found_under_different_declaring_type():
+    """Regression test for a real finding from a live crawl: Room.Number is
+    actually declared on the intermediate base class SpatialElement
+    (Room -> SpatialElement -> Element), not on Room itself. Our own
+    inherited-member attribution correctly resolves it there, but the
+    known-edge report was reporting this as "NOT CRAWLED" (a coverage gap)
+    when it had, in fact, been crawled and correctly attributed -- just not
+    to the type the check happened to name.
+    """
+    pages = [_member_page("Autodesk.Revit.DB.Architecture.SpatialElement", "Number")]
+    checks = [("Autodesk.Revit.DB.Architecture.Room", "Number")]
+
+    report = _build_known_edge_report(pages, edge_candidates=[], checks=checks)
+
+    assert len(report) == 1
+    result = report[0]
+    assert result.member_found is True
+    assert result.actual_declaring_type == "Autodesk.Revit.DB.Architecture.SpatialElement"
+    assert "found declared on Autodesk.Revit.DB.Architecture.SpatialElement" in result.note
+    # Room.Number is in _EXPECTED_NO_EDGE -- still correctly flagged as
+    # expected-no-edge even though it resolved to a different declaring type.
+    assert "expected: no relationship edge" in result.note
+
+
+def test_known_edge_report_genuinely_missing_member_is_not_confused_with_cross_type_match():
+    # No member named "Number" anywhere at all -- must stay a real "not found".
+    pages = [_member_page("Autodesk.Revit.DB.Wall", "Width")]
+    checks = [("Autodesk.Revit.DB.Architecture.Room", "Number")]
+
+    report = _build_known_edge_report(pages, edge_candidates=[], checks=checks)
+
+    result = report[0]
+    assert result.member_found is False
+    assert result.actual_declaring_type is None
+    assert "not crawled/parsed" in result.note

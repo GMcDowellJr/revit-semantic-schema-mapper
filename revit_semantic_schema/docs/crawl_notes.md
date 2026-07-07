@@ -85,6 +85,40 @@ returned `raw_title` itself is unchanged. Covered by
 `test_sniff_kind_recognizes_overloaded_method_page`, and
 `test_parse_member_page_overloaded_method_title`, using the exact real titles found on the Pi.
 
+### First full targeted-validation-crawl run (Raspberry Pi, 2024): clean, plus two real findings
+
+After the two fixes above, a full `--targeted-validation` run against Revit 2024 came back
+clean: **13/13 target classes found and parsed, 508 pages discovered, 469 parsed, 0 failed
+pages, 165 edge candidates** (48 property-based, 117 method-based). All definition-of-done
+checklist items passed. Two of the nine known-edge checks initially looked like coverage gaps
+but turned out to be real, useful findings rather than bugs:
+
+1. **`Material.SurfacePatternId`/`CutPatternId` don't exist in the real Revit 2024 API.**
+   Confirmed by listing every member actually found under `Material` in that run: the real
+   properties are `CutBackgroundPatternId`, `CutForegroundPatternId`,
+   `SurfaceBackgroundPatternId`, and `SurfaceForegroundPatternId` -- Revit apparently split
+   each pattern into separate background/foreground layers at some point, deprecating the
+   singular names. `DEFAULT_KNOWN_EDGE_CHECKS` deliberately keeps checking the original
+   (brief-specified, "if present") names rather than the confirmed real ones, since the
+   check's job is to honestly report whether that exact hypothesis holds, not to quietly
+   correct itself -- and it now correctly reports "member page was not crawled/parsed" for
+   both, which is the accurate answer.
+2. **`Room.Number` is inherited from `Autodesk.Revit.DB.Architecture.SpatialElement`, not
+   declared on `Room` itself** (`Room : SpatialElement : Element`) -- confirmed by finding the
+   parsed `Number` property page's `declaring_type` directly. This refines the "Room / Room
+   Number / Room Name" hypothesis in the README: `Name` (from `Element`) and `Number` (from
+   `SpatialElement`) reach the object model through the *same* mechanism (an inherited base
+   property), just at different levels of the inheritance chain, not two different mechanisms
+   as originally guessed. This exposed a real reporting bug: `_build_known_edge_report` was
+   reporting this as "**NOT CRAWLED**" (implying a coverage gap) when the member had, in fact,
+   been crawled and correctly attributed -- just not to the type the check happened to name.
+   Fixed: when the exact (declaring_type, member_name) pair isn't found, the report now also
+   checks whether that member name was found under a *different* declaring type before
+   concluding it's genuinely missing, and reports `actual_declaring_type` plus an explanatory
+   note when so. Covered by
+   `test_known_edge_report_resolves_member_found_under_different_declaring_type` and
+   `test_known_edge_report_genuinely_missing_member_is_not_confused_with_cross_type_match`.
+
 ## Target version: 2027, with a documented fallback
 
 The brief asks to start with Revit 2027 docs on revitapidocs.com and fall back to 2026

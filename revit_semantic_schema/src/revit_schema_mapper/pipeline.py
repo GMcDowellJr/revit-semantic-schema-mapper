@@ -327,6 +327,11 @@ class KnownEdgeCheckResult:
     edge_type: str | None
     edge_confidence: str | None
     note: str
+    # Set only when the member was found under a *different* declaring type
+    # than expected -- e.g. Room.Number is actually declared on the
+    # intermediate base class SpatialElement, not Room itself. None means
+    # either an exact match or not found at all (see member_found/note).
+    actual_declaring_type: str | None = None
 
 
 @dataclass
@@ -387,9 +392,33 @@ def _build_known_edge_report(
 
     results: list[KnownEdgeCheckResult] = []
     for declaring_type, member_name in checks:
-        member_found = any(m.declaring_type == declaring_type and m.name == member_name for m in all_members)
+        exact_match = any(m.declaring_type == declaring_type and m.name == member_name for m in all_members)
+
+        actual_declaring_type: str | None = None
+        resolution_note = ""
+        lookup_declaring_type = declaring_type
+        if exact_match:
+            member_found = True
+        else:
+            # Not found under the expected declaring type -- check whether
+            # it was found under a *different* one instead of assuming it's
+            # simply missing. A real crawl found exactly this: Room.Number
+            # is actually declared on the intermediate base class
+            # SpatialElement (Room -> SpatialElement -> Element), which our
+            # own inherited-member attribution correctly resolves to -- that
+            # should read as a confirmed fact, not a coverage gap.
+            other_match = next((m for m in all_members if m.name == member_name and m.declaring_type != declaring_type), None)
+            member_found = other_match is not None
+            if other_match is not None:
+                actual_declaring_type = other_match.declaring_type
+                lookup_declaring_type = actual_declaring_type
+                resolution_note = (
+                    f"found declared on {actual_declaring_type} instead of the expected {declaring_type} "
+                    "(inherited from an intermediate base type); "
+                )
+
         edge = next(
-            (e for e in edge_candidates if e.source_type == declaring_type and e.member_name == member_name),
+            (e for e in edge_candidates if e.source_type == lookup_declaring_type and e.member_name == member_name),
             None,
         )
         edge_produced = edge is not None
@@ -416,7 +445,8 @@ def _build_known_edge_report(
                 edge_produced=edge_produced,
                 edge_type=edge.candidate_edge_type.value if edge else None,
                 edge_confidence=edge.edge_confidence.value if edge else None,
-                note=note,
+                note=resolution_note + note,
+                actual_declaring_type=actual_declaring_type,
             )
         )
     return results
