@@ -226,10 +226,16 @@ def _run_crawl_loop(
                 "progress: %d pages fetched, %d queued, %d parsed, %d failed",
                 len(visited), len(queue), len(pages), len(failed_urls),
             )
-            now = time.monotonic()
-            if checkpoint is not None and now - last_checkpoint_time >= checkpoint_min_interval_seconds:
+            if checkpoint is not None and time.monotonic() - last_checkpoint_time >= checkpoint_min_interval_seconds:
                 checkpoint(pages, failed_urls)
-                last_checkpoint_time = now
+                # Measured *after* checkpoint() returns, not before: a slow
+                # export (the case this rate limit exists to protect --
+                # e.g. serializing a large crawl can itself take longer than
+                # checkpoint_min_interval_seconds) would otherwise count its
+                # own duration as cooldown time, letting the very next
+                # page-count boundary fire another full export immediately
+                # and collapsing back toward every-interval exports.
+                last_checkpoint_time = time.monotonic()
 
         # by_url's declaring_type_hint is checked first (and is the only one
         # enqueue_member_links corrects in place -- see its docstring), so a

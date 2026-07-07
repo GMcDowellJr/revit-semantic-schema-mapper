@@ -2,6 +2,7 @@ import json
 
 import pytest
 
+from revit_schema_mapper import pipeline as pipeline_module
 from revit_schema_mapper.crawl import CrawlConfig, Crawler
 from revit_schema_mapper.models import ApiPage, ClassRole, IsElementCandidate, Kind, MemberInfo, MemberKind, NodeCandidate
 from revit_schema_mapper.pipeline import _build_known_edge_report, _crawl_and_parse, run_discovery, run_pipeline, run_targeted_pipeline
@@ -268,6 +269,60 @@ def test_crawl_and_parse_checkpoint_is_rate_limited_by_wall_clock_time(tmp_path)
     )
 
     assert calls == []
+
+
+def test_checkpoint_cooldown_starts_after_export_finishes_not_before(tmp_path, monkeypatch):
+    """Regression test: last_checkpoint_time must be recorded after
+    checkpoint() returns, not before checkpoint() is called. A slow export
+    (the case checkpoint_min_interval_seconds exists to protect against --
+    e.g. serializing a large crawl can itself take longer than the
+    configured minimum interval) would otherwise count its own duration as
+    cooldown time, letting the very next page-count boundary fire another
+    full checkpoint immediately and collapsing back toward every-interval
+    exports -- the exact overhead this rate limit exists to prevent.
+    """
+
+    class FakeClock:
+        def __init__(self):
+            self.now = 0.0
+
+        def monotonic(self):
+            self.now += 1.0  # every call simulates a small amount of wall-clock passing
+            return self.now
+
+        def jump(self, seconds):
+            self.now += seconds
+
+    fake_clock = FakeClock()
+    monkeypatch.setattr(pipeline_module.time, "monotonic", fake_clock.monotonic)
+
+    output_dir = tmp_path / "output"
+    config = CrawlConfig(version="2024", namespace_prefix="Autodesk.Revit.DB", cache_dir=output_dir / "cache")
+    crawler = Crawler(config)
+
+    _prime_cache(crawler, crawler.namespace_json_url(), json.dumps(_WIDGET_NAMESPACE_TREE))
+    _prime_cache(crawler, "https://www.revitapidocs.com/2024/widget-class.htm", _CLASS_HTML)
+    _prime_cache(crawler, "https://www.revitapidocs.com/2024/widget-properties.htm", _PROPERTIES_INDEX_HTML)
+    _prime_cache(crawler, "https://www.revitapidocs.com/2024/symbol-property.htm", _PROPERTY_HTML)
+
+    entries, _ = crawler.discover_via_namespace_json()
+    by_url = {e["url"]: e for e in entries}
+
+    calls: list[int] = []
+
+    def spy_checkpoint(pages, failed_urls):
+        calls.append(len(calls))
+        if len(calls) == 1:
+            fake_clock.jump(5.0)  # simulate a slow export exceeding checkpoint_min_interval_seconds
+
+    _crawl_and_parse(
+        crawler, config, by_url, checkpoint=spy_checkpoint, checkpoint_interval=1, checkpoint_min_interval_seconds=2.0
+    )
+
+    # Only one checkpoint should fire during the loop: the page-count
+    # boundary immediately after the slow export must not re-fire just
+    # because the export's own duration was mistakenly counted as cooldown.
+    assert len(calls) == 1
 
 
 def test_crawl_and_parse_writes_final_checkpoint_on_interrupt(tmp_path, monkeypatch):
