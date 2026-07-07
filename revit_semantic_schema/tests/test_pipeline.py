@@ -1,8 +1,8 @@
 import json
 
 from revit_schema_mapper.crawl import CrawlConfig, Crawler
-from revit_schema_mapper.models import ClassRole
-from revit_schema_mapper.pipeline import run_pipeline, run_targeted_pipeline
+from revit_schema_mapper.models import ApiPage, ClassRole, IsElementCandidate, Kind, MemberInfo, MemberKind, NodeCandidate
+from revit_schema_mapper.pipeline import _build_known_edge_report, run_pipeline, run_targeted_pipeline
 
 _CLASS_HTML = """
 <html><body>
@@ -292,6 +292,10 @@ def test_targeted_crawl_of_wall_alone_attributes_inherited_member_to_element(tmp
 
     result = run_targeted_pipeline(config, output_dir, target_full_type_names=["Autodesk.Revit.DB.Wall"], known_edge_checks=[])
 
+    # known_edge_checks=[] must mean zero checks, not a silent fallback to
+    # DEFAULT_KNOWN_EDGE_CHECKS.
+    assert result.known_edge_report == []
+
     are_phases_pages = [p for p in result.pages if p.full_type_name.endswith(".ArePhasesModifiable")]
     assert len(are_phases_pages) == 1
     assert are_phases_pages[0].declaring_type == "Autodesk.Revit.DB.Element"
@@ -352,8 +356,107 @@ def test_preseeded_inherited_member_url_gets_corrected_by_members_page_parse(tmp
 
     result = run_targeted_pipeline(config, output_dir, target_full_type_names=["Autodesk.Revit.DB.Wall"], known_edge_checks=[])
 
+    # known_edge_checks=[] must mean zero checks, not a silent fallback to
+    # DEFAULT_KNOWN_EDGE_CHECKS.
+    assert result.known_edge_report == []
+
     are_phases_pages = [p for p in result.pages if p.full_type_name.endswith(".ArePhasesModifiable")]
     assert len(are_phases_pages) == 1
     assert are_phases_pages[0].declaring_type == "Autodesk.Revit.DB.Element"
 
     assert not any(e.source_type == "Autodesk.Revit.DB.Wall" and e.member_name == "ArePhasesModifiable" for e in result.edge_candidates)
+
+
+def _member_page(declaring_type: str, member_name: str, return_type: str = "string") -> ApiPage:
+    member = MemberInfo(
+        name=member_name,
+        kind=MemberKind.PROPERTY,
+        declaring_type=declaring_type,
+        raw_signature=f"public {return_type} {member_name} {{ get; }}",
+        return_type=return_type,
+        source_url="https://www.revitapidocs.com/2024/fake.htm",
+    )
+    return ApiPage(
+        revit_version="2024",
+        namespace="Autodesk.Revit.DB.Architecture",
+        type_name=member_name,
+        full_type_name=f"{declaring_type}.{member_name}",
+        kind=Kind.PROPERTY,
+        declaring_type=declaring_type,
+        members=[member],
+        source_url=member.source_url,
+    )
+
+
+def _node_candidate(full_type_name: str, inheritance_chain: list) -> NodeCandidate:
+    return NodeCandidate(
+        full_type_name=full_type_name,
+        short_name=full_type_name.rsplit(".", 1)[-1],
+        kind=Kind.CLASS,
+        namespace=full_type_name.rsplit(".", 1)[0],
+        base_type=inheritance_chain[0] if inheritance_chain else None,
+        inheritance_chain=inheritance_chain,
+        is_element_candidate=IsElementCandidate.UNKNOWN,
+        class_role=ClassRole.UNKNOWN,
+        evidence=[],
+        source_url="https://www.revitapidocs.com/2024/fake.htm",
+    )
+
+
+def test_known_edge_report_resolves_member_found_under_different_declaring_type():
+    """Regression test for a real finding from a live crawl: Room.Number is
+    actually declared on the intermediate base class SpatialElement
+    (Room -> SpatialElement -> Element), not on Room itself. Our own
+    inherited-member attribution correctly resolves it there, but the
+    known-edge report was reporting this as "NOT CRAWLED" (a coverage gap)
+    when it had, in fact, been crawled and correctly attributed -- just not
+    to the type the check happened to name.
+    """
+    pages = [_member_page("Autodesk.Revit.DB.Architecture.SpatialElement", "Number")]
+    node_candidates = [_node_candidate("Autodesk.Revit.DB.Architecture.Room", ["SpatialElement"])]
+    checks = [("Autodesk.Revit.DB.Architecture.Room", "Number")]
+
+    report = _build_known_edge_report(pages, edge_candidates=[], node_candidates=node_candidates, checks=checks)
+
+    assert len(report) == 1
+    result = report[0]
+    assert result.member_found is True
+    assert result.actual_declaring_type == "Autodesk.Revit.DB.Architecture.SpatialElement"
+    assert "found declared on Autodesk.Revit.DB.Architecture.SpatialElement" in result.note
+    # Room.Number is in _EXPECTED_NO_EDGE -- still correctly flagged as
+    # expected-no-edge even though it resolved to a different declaring type.
+    assert "expected: no relationship edge" in result.note
+
+
+def test_known_edge_report_rejects_same_named_member_on_unrelated_type():
+    """The cross-type fallback must be restricted to declaring_type's own
+    confirmed inheritance chain -- a same-named member on some unrelated
+    crawled type (a coincidence, not evidence of inheritance) must not be
+    reported as if it satisfied the check; that would hide a genuine
+    coverage gap instead of reporting it honestly. Before this fix, any
+    same-named member anywhere in the crawl would have matched here.
+    """
+    pages = [_member_page("Autodesk.Revit.DB.Wall", "Number")]  # unrelated type, coincidentally same member name
+    node_candidates = [_node_candidate("Autodesk.Revit.DB.Architecture.Room", ["SpatialElement"])]  # Wall is not in Room's chain
+    checks = [("Autodesk.Revit.DB.Architecture.Room", "Number")]
+
+    report = _build_known_edge_report(pages, edge_candidates=[], node_candidates=node_candidates, checks=checks)
+
+    result = report[0]
+    assert result.member_found is False
+    assert result.actual_declaring_type is None
+    assert "not crawled/parsed" in result.note
+
+
+def test_known_edge_report_genuinely_missing_member_is_not_confused_with_cross_type_match():
+    # No member named "Number" anywhere at all -- must stay a real "not found".
+    pages = [_member_page("Autodesk.Revit.DB.Wall", "Width")]
+    node_candidates = [_node_candidate("Autodesk.Revit.DB.Architecture.Room", ["SpatialElement"])]
+    checks = [("Autodesk.Revit.DB.Architecture.Room", "Number")]
+
+    report = _build_known_edge_report(pages, edge_candidates=[], node_candidates=node_candidates, checks=checks)
+
+    result = report[0]
+    assert result.member_found is False
+    assert result.actual_declaring_type is None
+    assert "not crawled/parsed" in result.note

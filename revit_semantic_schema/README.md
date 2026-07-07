@@ -123,9 +123,17 @@ concept. `classify.classify_member` never emits an edge candidate for `Room.Numb
 plain `string` property matching no relationship keyword — see
 `tests/test_classify.py::test_room_number_is_not_classified_as_a_relationship`), and
 `export.write_summary` has a dedicated section reporting what's known/found about Room, Name,
-Number, and the relevant `BuiltInParameter` entries each run. See `summary.md` section 10 and
-`docs/crawl_notes.md` for the caveat that this hasn't been checked against a live Room page
-yet.
+Number, and the relevant `BuiltInParameter` entries each run. See `summary.md` section 10.
+
+**Confirmed against a live targeted crawl (Revit 2024)**: the original hypothesis above was
+half right. `Room.Name` is inherited from `Element.Name`, as expected -- but `Room.Number` is
+*not* a Room-specific property either; it's inherited from an intermediate base class between
+`Room` and `Element` (`Room : SpatialElement : Element`), not declared directly on `Room`. So
+`Name` and `Number` reach the object model through the *same* mechanism (an inherited base
+property), just at different levels of the inheritance chain, not two different mechanisms as
+originally guessed. They're still correctly kept as two distinct concepts. (That live run's
+fully-qualified owner name for `SpatialElement` was itself wrong at the time, due to a bug --
+see `docs/crawl_notes.md` for the fix and how the known-edge report resolves this.)
 
 ## Non-goals (this pass)
 
