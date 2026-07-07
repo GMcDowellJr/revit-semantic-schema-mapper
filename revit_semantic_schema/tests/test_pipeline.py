@@ -353,9 +353,9 @@ def test_progress_log_reports_recent_and_overall_rate(tmp_path, monkeypatch, cap
     single running average would lag behind how fast the crawl is actually
     going right now. See test_progress_rate_tracker_smooths_a_single_slow_interval
     for the windowing/smoothing behavior itself, isolated from a real crawl,
-    and test_throttle_floor_eta_reflects_uncached_queue_count for the ETA
+    and test_fetch_floor_eta_reflects_uncached_queue_count for the ETA
     (which is deliberately *not* derived from this rate -- see
-    _throttle_floor_eta_seconds's docstring for why).
+    _fetch_floor_eta_seconds's docstring for why).
     """
 
     class FakeClock:
@@ -396,12 +396,15 @@ def test_progress_log_reports_recent_and_overall_rate(tmp_path, monkeypatch, cap
     assert "0 queued" in progress_lines[2]
 
     # All 3 URLs were pre-cached before the crawl even started (see
-    # _prime_cache calls above), so the throttle-floor ETA -- which only
-    # counts queued URLs *without* a cached copy on disk -- is 0 throughout,
-    # regardless of the (irrelevant to it) simulated rate above.
+    # _prime_cache calls above), so the fetch-floor ETA -- which only counts
+    # queued URLs *without* a cached copy on disk -- is 0 throughout,
+    # regardless of the (irrelevant to it) simulated rate above. No fetch
+    # was ever genuinely uncached either, so _FetchDurationTracker never
+    # recorded a real sample and reports its fallback: CrawlConfig's default
+    # throttle_seconds (2.0), unchanged by this config not overriding it.
     for line in progress_lines:
         assert "(0 uncached)" in line
-        assert "ETA 0s (throttle floor)" in line
+        assert "ETA 0s (observed floor, ~2.00s/fetch)" in line
 
 
 def test_progress_rate_tracker_smooths_a_single_slow_interval():
@@ -435,20 +438,22 @@ def test_progress_rate_tracker_smooths_a_single_slow_interval():
     assert tracker.record(now=105.0, visited=6) == pytest.approx(1.0)
 
 
-def test_throttle_floor_eta_reflects_uncached_queue_count(tmp_path):
-    """The throttle-floor ETA counts only queued URLs without a cached copy
-    on disk (each of those costs a real, throttled network request -- see
-    _throttle_floor_eta_seconds's docstring) and ignores cached ones (a
-    cache hit is effectively free). Confirmed on a real run: this is what
-    lets the ETA react immediately to a resumed crawl exhausting its
+def test_fetch_floor_eta_reflects_uncached_queue_count(tmp_path):
+    """The fetch-floor ETA counts only queued URLs without a cached copy on
+    disk (each of those costs a real network fetch -- see
+    _fetch_floor_eta_seconds's docstring) and ignores cached ones (a cache
+    hit is effectively free). Confirmed on a real run: this is what lets
+    the ETA react immediately to a resumed crawl exhausting its
     already-cached pages and hitting the network for real, instead of
     lagging for several progress lines like an empirical rate average does.
-    """
-    from revit_schema_mapper.pipeline import _count_uncached, _throttle_floor_eta_seconds
 
-    config = CrawlConfig(
-        version="2024", namespace_prefix="Autodesk.Revit.DB", cache_dir=tmp_path / "cache", throttle_seconds=1.5
-    )
+    ``avg_fetch_seconds`` here is an arbitrary observed value (2.3), not
+    ``--throttle-seconds`` -- see test_fetch_duration_tracker_averages_only_genuine_fetches
+    for why the two aren't the same thing.
+    """
+    from revit_schema_mapper.pipeline import _count_uncached, _fetch_floor_eta_seconds
+
+    config = CrawlConfig(version="2024", namespace_prefix="Autodesk.Revit.DB", cache_dir=tmp_path / "cache")
     crawler = Crawler(config)
 
     cached_urls = [f"https://www.revitapidocs.com/2024/cached-{i}.htm" for i in range(3)]
@@ -460,7 +465,64 @@ def test_throttle_floor_eta_reflects_uncached_queue_count(tmp_path):
     not_cached = _count_uncached(queue, crawler)
 
     assert not_cached == 4  # only the never-fetched URLs
-    assert _throttle_floor_eta_seconds(not_cached, config.throttle_seconds) == pytest.approx(4 * 1.5)
+    assert _fetch_floor_eta_seconds(not_cached, avg_fetch_seconds=2.3) == pytest.approx(4 * 2.3)
+
+
+def test_fetch_duration_tracker_averages_only_genuine_fetches(monkeypatch):
+    """_FetchDurationTracker (and the _fetch_and_track_duration wrapper that
+    feeds it) must average real, not-already-cached fetch durations only --
+    a cache hit is near-instant and would otherwise silently pull the
+    average down, understating the true per-fetch cost the same way a
+    blended pages/s rate did (this is the exact bug this whole mechanism
+    replaces: confirmed on a real run, actual per-fetch time ran roughly
+    2x the configured --throttle-seconds once the throttle stopped being
+    the binding constraint, which a naive throttle_seconds-only ETA missed
+    entirely).
+    """
+    from revit_schema_mapper.pipeline import _FetchDurationTracker, _fetch_and_track_duration
+
+    class FakeClock:
+        def __init__(self):
+            self.now = 0.0
+
+        def monotonic(self):
+            self.now += 1.0  # every call simulates 1s of wall-clock passing
+            return self.now
+
+    monkeypatch.setattr(pipeline_module.time, "monotonic", FakeClock().monotonic)
+
+    class _FakeCrawler:
+        """Duck-typed stand-in for Crawler -- only is_cached()/fetch() are
+        used by _fetch_and_track_duration, and a real Crawler would attempt
+        an actual network request for any URL not already in its on-disk
+        cache, which a unit test must not do.
+        """
+
+        def __init__(self, cached_urls):
+            self._cached = set(cached_urls)
+
+        def is_cached(self, url):
+            return url in self._cached
+
+        def fetch(self, url):
+            return f"<html>{url}</html>"
+
+    tracker = _FetchDurationTracker(window=10, fallback_seconds=99.0)
+    crawler = _FakeCrawler(cached_urls={"https://example.invalid/cached.htm"})
+
+    # Fallback used until a genuine fetch has actually been measured.
+    assert tracker.average_seconds == 99.0
+
+    # A cache hit: the wrapper skips reading the clock at all for this case
+    # (see its docstring), so nothing gets recorded either way.
+    html = _fetch_and_track_duration(crawler, "https://example.invalid/cached.htm", tracker)
+    assert html == "<html>https://example.invalid/cached.htm</html>"
+    assert tracker.average_seconds == 99.0  # unchanged -- still just the fallback
+
+    # A genuine fetch: this one must be recorded.
+    html = _fetch_and_track_duration(crawler, "https://example.invalid/fresh.htm", tracker)
+    assert html == "<html>https://example.invalid/fresh.htm</html>"
+    assert tracker.average_seconds == pytest.approx(1.0)  # one real 1s sample, fallback no longer used
 
 
 def test_format_duration_reports_unknown_for_non_finite_or_negative():

@@ -285,37 +285,86 @@ class _ProgressRateTracker:
 
 def _count_uncached(urls: list[str], crawler: Crawler) -> int:
     """How many of ``urls`` have no cached copy on disk yet -- the ones a
-    real crawl still has to spend a throttled network request on (see
-    ``_throttle_floor_eta_seconds``'s docstring for why this, not an
-    empirical rate average, drives the progress log's ETA).
+    real crawl still has to spend an actual network fetch on (see
+    ``_fetch_floor_eta_seconds``'s docstring for why this, not an empirical
+    rate average blending in near-instant cache hits, drives the progress
+    log's ETA).
     """
     return sum(1 for url in urls if not crawler.is_cached(url))
 
 
-def _throttle_floor_eta_seconds(not_cached_remaining: int, throttle_seconds: float) -> float:
-    """Lower-bound ETA given how many queued URLs still need a real fetch:
-    ``throttle_seconds`` each, since that's the hard minimum gap
-    ``Crawler.fetch`` enforces between real network requests -- a cache hit
-    returns before any throttling/network call happens at all, so an
-    already-cached queued URL costs effectively nothing here. This is a
-    *floor*, not a full prediction: a real fetch/parse also costs some
-    non-throttle time (network latency, HTML parsing), and pages not yet
-    discovered obviously aren't counted -- both only push the true
-    remaining time above this number, never below it.
+# Number of trailing *individual fresh fetches* (not progress intervals --
+# these land far more often, one per uncached page rather than one per
+# checkpoint_interval pages) averaged for _FetchDurationTracker. Large
+# enough to smooth out one slow request without taking too long to react
+# if the real per-fetch cost genuinely shifts (e.g. the site or network
+# gets slower partway through a multi-hour crawl).
+_FETCH_DURATION_WINDOW = 50
 
-    Deliberately not derived from an empirical rate average (see
-    ``_ProgressRateTracker`` for that, used for the "pages/s" figures
-    logged alongside this): confirmed on a real run, a resumed crawl that
-    starts out mostly replaying already-cached pages (fast) and then
-    transitions into genuinely new, network-throttled territory shows a
-    sustained multi-line drop in the empirical rate as the average slowly
-    catches up to the new reality -- that's not noise a wider window can
-    smooth away, it's a real regime change an average necessarily lags
-    behind. This floor has no such lag: it's grounded in which URLs are
-    actually on disk *right now*, not recent history, so it's accurate
-    immediately on both sides of that transition.
+
+class _FetchDurationTracker:
+    """Trailing average of how long a genuinely-fresh (not-already-cached)
+    fetch actually takes, used to ground the ETA in the real per-page cost
+    instead of assuming ``--throttle-seconds`` alone is that cost.
+
+    ``Crawler._throttle`` only ever adds a *sleep* when a request finishes
+    faster than ``throttle_seconds`` -- if the real round trip (network
+    latency, TLS, then this process parsing the HTML) already takes longer
+    than that on its own, the throttle never intervenes at all, and
+    ``throttle_seconds`` understates the true per-page cost, potentially by
+    a large margin (confirmed: on a real run, actual per-fetch time was
+    roughly double a 1.0s throttle). Averaging only over fetches that
+    weren't already cached is what matters here -- mixing in cache hits
+    (near-instant) would silently pull this average back down toward
+    whatever fraction of recent pages happened to be cached, the same
+    dilution problem that made a blended pages/s rate a bad basis for the
+    ETA in the first place (see ``_ProgressRateTracker``/
+    ``_count_uncached``).
     """
-    return not_cached_remaining * throttle_seconds
+
+    def __init__(self, window: int, fallback_seconds: float):
+        self._durations: deque[float] = deque(maxlen=window)
+        self._fallback_seconds = fallback_seconds
+
+    def record(self, duration_seconds: float) -> None:
+        self._durations.append(duration_seconds)
+
+    @property
+    def average_seconds(self) -> float:
+        """The fallback (``--throttle-seconds``) until at least one real,
+        not-already-cached fetch has actually been measured -- there's
+        nothing else to base an estimate on yet, and throttle_seconds is
+        at least a documented, deliberate lower bound rather than a guess.
+        """
+        if not self._durations:
+            return self._fallback_seconds
+        return sum(self._durations) / len(self._durations)
+
+
+def _fetch_floor_eta_seconds(not_cached_remaining: int, avg_fetch_seconds: float) -> float:
+    """ETA given how many queued URLs still need a real fetch, at
+    ``avg_fetch_seconds`` each (see ``_FetchDurationTracker``) -- an
+    already-cached queued URL costs effectively nothing here, since a cache
+    hit returns before any network call happens at all. Still a *floor*,
+    not a full prediction, in one remaining respect: pages not yet
+    discovered (the crawl can enqueue new URLs as it parses class/members
+    pages) obviously aren't counted, which can only push the true remaining
+    time above this number, never below it.
+
+    Deliberately not derived from a blended pages/s average across *all*
+    visited pages (see ``_ProgressRateTracker``, used only for the
+    informational "pages/s" figures logged alongside this): confirmed on a
+    real run, a resumed crawl that starts out mostly replaying
+    already-cached pages (fast) and then transitions into genuinely new,
+    network-bound territory shows a sustained multi-line drop in any such
+    blended average as it slowly catches up to the new reality -- that's
+    not noise a wider window can smooth away, it's a real regime change a
+    blended average necessarily lags behind. This floor has no such lag:
+    it's grounded in which URLs are actually on disk *right now* and how
+    long *actual* fresh fetches have actually been taking, not recent
+    history blended with cache hits.
+    """
+    return not_cached_remaining * avg_fetch_seconds
 
 
 def _format_duration(seconds: float | None) -> str:
@@ -336,6 +385,30 @@ def _format_duration(seconds: float | None) -> str:
     return f"{secs}s"
 
 
+def _fetch_and_track_duration(crawler: Crawler, url: str, tracker: _FetchDurationTracker) -> str:
+    """``crawler.fetch(url)``, recording how long it took into ``tracker`` --
+    but only when ``url`` wasn't already cached before this call, so a cache
+    hit (near-instant) never dilutes the tracked real-fetch average (see
+    ``_FetchDurationTracker``'s docstring). Whatever ``crawler.fetch``
+    raises propagates unchanged; callers handle a failed fetch the same way
+    regardless of whether it went through this wrapper.
+
+    Skips both ``time.monotonic()`` reads entirely for a cache hit rather
+    than taking them and simply not recording the result -- a cache hit is
+    the common case for most of a resumed crawl (see this module's other
+    docstrings on the cache-exhaustion transition), so two avoidable clock
+    reads per page would add up, and a real ``Crawler.fetch`` cache hit
+    itself skips any timing-relevant work for the same reason (see its
+    docstring).
+    """
+    if crawler.is_cached(url):
+        return crawler.fetch(url)
+    start = time.monotonic()
+    html = crawler.fetch(url)
+    tracker.record(time.monotonic() - start)
+    return html
+
+
 def _run_crawl_loop(
     *,
     crawler: Crawler,
@@ -354,6 +427,7 @@ def _run_crawl_loop(
     crawl_start_time = time.monotonic()
     last_checkpoint_time = crawl_start_time
     rate_tracker = _ProgressRateTracker(_PROGRESS_RATE_WINDOW, crawl_start_time)
+    fetch_duration_tracker = _FetchDurationTracker(_FETCH_DURATION_WINDOW, config.throttle_seconds)
     while queue:
         url = queue.pop(0)
         if url in visited:
@@ -373,12 +447,13 @@ def _run_crawl_loop(
             # reflection of a crawl whose full scope isn't known upfront,
             # not a bug.
             not_cached_remaining = _count_uncached(queue, crawler)
-            eta_seconds = _throttle_floor_eta_seconds(not_cached_remaining, config.throttle_seconds)
+            avg_fetch_seconds = fetch_duration_tracker.average_seconds
+            eta_seconds = _fetch_floor_eta_seconds(not_cached_remaining, avg_fetch_seconds)
             logger.info(
                 "progress: %d pages fetched, %d queued (%d uncached), %d parsed, %d failed -- "
-                "%.2f pages/s (recent avg), %.2f pages/s (overall), ETA %s (throttle floor)",
+                "%.2f pages/s (recent avg), %.2f pages/s (overall), ETA %s (observed floor, ~%.2fs/fetch)",
                 len(visited), len(queue), not_cached_remaining, len(pages), len(failed_urls),
-                recent_rate, overall_rate, _format_duration(eta_seconds),
+                recent_rate, overall_rate, _format_duration(eta_seconds), avg_fetch_seconds,
             )
             # Reuses `now` (just captured above for the progress log) rather
             # than taking a fresh reading -- the log call itself is fast
@@ -410,7 +485,7 @@ def _run_crawl_loop(
             declaring_type_hint = next((dt for u, dt in member_queue if u == url), None)
 
         try:
-            html = crawler.fetch(url)
+            html = _fetch_and_track_duration(crawler, url, fetch_duration_tracker)
         except Exception as exc:  # noqa: BLE001
             logger.warning("failed to fetch %s: %r", url, exc)
             failed_urls.append(url)
@@ -430,7 +505,7 @@ def _run_crawl_loop(
                 members_url = find_members_page_link(html, url)
                 if members_url and members_url not in visited:
                     try:
-                        members_html = crawler.fetch(members_url)
+                        members_html = _fetch_and_track_duration(crawler, members_url, fetch_duration_tracker)
                     except Exception as exc:  # noqa: BLE001
                         logger.warning("failed to fetch members index page %s: %r", members_url, exc)
                     else:
