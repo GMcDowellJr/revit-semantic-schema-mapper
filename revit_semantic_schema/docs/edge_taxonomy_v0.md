@@ -27,7 +27,7 @@ at the evidence more closely first, not to guess.
 | `MEMBER_OF_GROUP` | Source belongs to a `Group` | `Element.GroupId -> Group` |
 | `MEMBER_OF_ASSEMBLY` | Source belongs to an `AssemblyInstance` | `Element.AssemblyInstanceId` |
 | `DEPENDS_ON` | Source structurally depends on another element | `Element.GetDependentElements(...)` |
-| `REFERENCES` | Generic reference that doesn't fit a more specific type but has a resolvable target concept (e.g. Room, View, Owner) not yet in this taxonomy | property named `View`/`Owner`/`Room` |
+| `REFERENCES` | Generic reference that doesn't fit a more specific type but has a resolvable target concept not yet worth its own edge type | `Element.Document`/`FailuresAccessor.GetDocument() -> Document` (confirmed against a live 2024 crawl: 19 edges, 19 distinct source types, zero counterexamples) |
 | `RETURNS_ELEMENT_IDS` | Bulk/collection accessor of `ElementId`s with no specific relationship semantics identified | `FilteredElementCollector`-style `GetAll...()` |
 | `UNKNOWN_ELEMENTID_REFERENCE` | Returns `ElementId`, but the member name gives no reliable hint of the target type or relationship | `Element.Id` |
 | `UNKNOWN_DB_OBJECT_REFERENCE` | Returns a concrete Revit DB object type, but no keyword/docs evidence identifies a specific relationship semantics for it | a property returning a DB type not covered by a more specific rule |

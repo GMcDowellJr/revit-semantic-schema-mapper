@@ -97,6 +97,12 @@ _NAME_KEYWORD_RULES: list[tuple[re.Pattern[str], EdgeType, str | None]] = [
     (re.compile(r"^GetDependent|Dependent", re.IGNORECASE), EdgeType.DEPENDS_ON, None),
     (re.compile(r"^Symbol$", re.IGNORECASE), EdgeType.INSTANCE_OF, "FamilySymbol"),
     (re.compile(r"^(Family)$", re.IGNORECASE), EdgeType.BELONGS_TO_FAMILY, "Family"),
+    # Evidence from a live 2024 crawl: 19 edges, 19 distinct source types
+    # (spanning DB, DB.Events, DB.IFC, DB.Structure), all named exactly
+    # "Document"/"GetDocument", all returning Document with direct_return_type
+    # confidence, zero counterexamples -- see docs/edge_taxonomy_v0.md's
+    # REFERENCES entry.
+    (re.compile(r"^(Get)?Document$", re.IGNORECASE), EdgeType.REFERENCES, "Document"),
     (re.compile(r"^(Type|GetTypeId)$", re.IGNORECASE), EdgeType.TYPE_OF, None),
     (re.compile(r"Category", re.IGNORECASE), EdgeType.HAS_CATEGORY, "Category"),
     (re.compile(r"Parameter", re.IGNORECASE), EdgeType.HAS_PARAMETER, None),

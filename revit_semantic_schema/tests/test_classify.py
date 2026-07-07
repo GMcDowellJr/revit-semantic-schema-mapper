@@ -120,6 +120,36 @@ def test_family_instance_symbol_classified_as_instance_of():
     assert candidate.candidate_target_type == "Autodesk.Revit.DB.FamilySymbol"
 
 
+def test_document_property_classified_as_references():
+    member = _member("Document", "Document", declaring_type="Autodesk.Revit.DB.Element")
+    candidate = classify_member(member, source_type="Autodesk.Revit.DB.Element", known_type_short_names={"Document"})
+
+    assert candidate is not None
+    assert candidate.candidate_edge_type is EdgeType.REFERENCES
+    assert candidate.edge_confidence is ConfidenceLabel.DIRECT_RETURN_TYPE
+    assert candidate.candidate_target_type == "Autodesk.Revit.DB.Document"
+
+
+def test_get_document_method_classified_as_references():
+    member = _member("GetDocument", "Document", declaring_type="Autodesk.Revit.DB.FailuresAccessor")
+    candidate = classify_member(member, source_type="Autodesk.Revit.DB.FailuresAccessor", known_type_short_names={"Document"})
+
+    assert candidate is not None
+    assert candidate.candidate_edge_type is EdgeType.REFERENCES
+    assert candidate.edge_confidence is ConfidenceLabel.DIRECT_RETURN_TYPE
+    assert candidate.candidate_target_type == "Autodesk.Revit.DB.Document"
+
+
+def test_documented_but_unrelated_member_name_is_not_matched_by_document_rule():
+    """The Document/GetDocument rule is an exact match, not a substring
+    search -- a member merely containing 'Document' (e.g. a hypothetical
+    DocumentVersion-style name) must not be swept up by it."""
+    member = _member("DocumentVersion", "int", declaring_type="Autodesk.Revit.DB.Element")
+    candidate = classify_member(member, source_type="Autodesk.Revit.DB.Element", known_type_short_names=set())
+
+    assert candidate is None
+
+
 def test_unknown_elementid_reference_preserved_when_name_gives_no_hint():
     member = _member("Id", "ElementId", declaring_type="Autodesk.Revit.DB.Element")
     candidate = classify_member(member, source_type="Autodesk.Revit.DB.Element", known_type_short_names=set())
