@@ -7,6 +7,7 @@ import json
 from enum import Enum
 from pathlib import Path
 
+from .graph import GraphBuildResult, filter_core
 from .models import ApiPage, EdgeCandidate, MemberKind, NodeCandidate
 
 
@@ -71,6 +72,32 @@ def write_enum_catalogs(output_dir: Path, pages: list[ApiPage]) -> None:
         catalog.setdefault(page.type_name, [])
         catalog[page.type_name].extend(_to_jsonable(page.enum_members))
     _write_json(output_dir / "enum_catalogs.json", catalog)
+
+
+def write_graph(output_dir: Path, result: GraphBuildResult, *, revit_version: str) -> None:
+    """Write ``graph.json``: the full materialized graph (see graph.py),
+    plus ``graph_core.json``, the same graph filtered to just the
+    high-confidence 'core' tier -- a small subgraph a downstream tool can
+    trust without first re-implementing the confidence-tier filtering
+    itself.
+    """
+    tier_counts: dict[str, int] = {}
+    for e in result.edges:
+        tier_counts[e.confidence_tier.value] = tier_counts.get(e.confidence_tier.value, 0) + 1
+
+    metadata = {
+        "revit_version": revit_version,
+        "node_count": len(result.nodes),
+        "edge_count": len(result.edges),
+        "external_node_count": result.external_node_count,
+        "target_resolution_counts": result.target_resolution_counts,
+        "confidence_tier_counts": tier_counts,
+    }
+    _write_json(output_dir / "graph.json", {"metadata": metadata, "nodes": result.nodes, "edges": result.edges})
+
+    core_nodes, core_edges = filter_core(result)
+    core_metadata = dict(metadata, node_count=len(core_nodes), edge_count=len(core_edges))
+    _write_json(output_dir / "graph_core.json", {"metadata": core_metadata, "nodes": core_nodes, "edges": core_edges})
 
 
 def write_target_report(output_dir: Path, target_report: list) -> None:
@@ -171,6 +198,28 @@ def _room_investigation_section(pages: list[ApiPage]) -> str:
     return "\n".join(lines)
 
 
+def _graph_section(result: GraphBuildResult | None, *, section_number: int) -> list[str]:
+    if result is None:
+        return []
+    core_nodes, core_edges = filter_core(result)
+    tier_counts: dict[str, int] = {}
+    for e in result.edges:
+        tier_counts[e.confidence_tier.value] = tier_counts.get(e.confidence_tier.value, 0) + 1
+
+    lines = [f"## {section_number}. Knowledge graph materialization", ""]
+    lines.append(
+        "`graph.json`/`graph_core.json` resolve each edge's `candidate_target_type` string "
+        "against the crawled node set (see graph.py) instead of leaving it as a loose type name."
+    )
+    lines.append(f"- {len(result.nodes)} total nodes ({result.external_node_count} external -- referenced by an edge but never crawled/classified)")
+    lines.append(f"- {len(result.edges)} total edges")
+    lines.append("- Target resolution: " + ", ".join(f"{k}={v}" for k, v in sorted(result.target_resolution_counts.items())))
+    lines.append("- Confidence tier breakdown: " + ", ".join(f"{k}={v}" for k, v in sorted(tier_counts.items())))
+    lines.append(f"- `graph_core.json` (confidence_tier=core only): {len(core_nodes)} nodes, {len(core_edges)} edges")
+    lines.append("")
+    return lines
+
+
 def write_summary(
     output_dir: Path,
     *,
@@ -182,6 +231,7 @@ def write_summary(
     edge_candidates: list[EdgeCandidate],
     limitations: list[str],
     next_steps: list[str],
+    graph_result: GraphBuildResult | None = None,
 ) -> None:
     properties = [e for e in edge_candidates if e.member_kind is MemberKind.PROPERTY]
     methods = [e for e in edge_candidates if e.member_kind is MemberKind.METHOD]
@@ -260,6 +310,7 @@ def write_summary(
     lines.append("## 13. Recommended next steps")
     lines.extend(f"- {item}" for item in next_steps)
     lines.append("")
+    lines.extend(_graph_section(graph_result, section_number=14))
 
     (output_dir / "summary.md").write_text("\n".join(lines), encoding="utf-8")
 
@@ -277,6 +328,7 @@ def write_validation_summary(
     edge_candidates: list[EdgeCandidate],
     failed_urls: list[str],
     discovery_notes: list[str],
+    graph_result: GraphBuildResult | None = None,
 ) -> None:
     """Write ``validation_summary.md`` for a targeted validation crawl
     (``pipeline.run_targeted_pipeline``). Unlike ``write_summary``, this
@@ -382,5 +434,6 @@ def write_validation_summary(
         "has been validated against a live Revit document."
     )
     lines.append("")
+    lines.extend(_graph_section(graph_result, section_number=9))
 
     (output_dir / "validation_summary.md").write_text("\n".join(lines), encoding="utf-8")

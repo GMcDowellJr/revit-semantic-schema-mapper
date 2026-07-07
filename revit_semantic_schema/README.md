@@ -9,21 +9,32 @@ This is **not** about extracting elements from a specific RVT model. The target 
 generic Revit DB object model itself, as documented, with an eye toward eventually building a
 graph schema for it.
 
-## Status: scaffold complete, live crawl pending
+## Status: full live crawl completed for Revit 2024; 2027 still pending
 
-The crawler, parser, classifier, exporter, docs, and test suite are all implemented and
-unit-tested against representative fixture HTML. **No page in `outputs/revit_2027/` has been
-produced by an actual crawl of revitapidocs.com yet** — the session this was built in had its
-outbound network access blocked entirely (confirmed independently via both `curl` and the
-`WebFetch` tool; see `docs/crawl_notes.md` for the full account). Running the one command
-below against a network-enabled environment is what's left to do.
+A full (non-targeted) live crawl of `Autodesk.Revit.DB` against Revit 2024 has now been run
+successfully: 28,459 pages discovered, 23,241 parsed, 2,421 node candidates, and 10,697 edge
+candidates. Its bulk output isn't committed to this repo (see "Where the crawl output lives"
+below) but `outputs/revit_2024/summary.md` is. `outputs/revit_2027/` is still pending — run
 
 ```
 python -m revit_schema_mapper --version 2027
 ```
 
-See `docs/crawl_notes.md` → "What to check on the first real run" for how to sanity-check
-that first live run before trusting its output.
+against a network-enabled environment (falling back to `--version 2026
+--fallback-reason "..."` if 2027 turns out to be unavailable or structurally inconsistent, per
+the documented policy in `docs/crawl_notes.md`). See `docs/crawl_notes.md` → "What to check on
+the first real run" for how to sanity-check a new live run before trusting its output.
+
+### Where the crawl output lives
+
+`outputs/revit_<version>/*.json` (everything except the markdown summaries and the small
+targeted-crawl reports) is gitignored — a full crawl's `api_pages.json`/`candidate_edges.json`/
+`graph.json` etc. run into the tens of megabytes and would otherwise bloat every commit that
+touches this repo, even though the content mostly just churns from one crawl to the next. The
+convention is: **small, durable summaries live in git; bulk per-run data gets published
+separately** (e.g. as a GitHub Release asset for that Revit version) so it stays available
+without living in git history. If you're looking for a specific version's full output and it
+isn't attached to a Release yet, check with whoever ran that crawl.
 
 ## Quickstart
 
@@ -50,9 +61,10 @@ hostname verification stay on) — see `http_compat.py`'s module docstring for d
 
 Outputs land in `outputs/revit_<version>/`: `raw_index.json`, `api_pages.json`,
 `node_type_candidates.json`, `property_relationship_candidates.json`,
-`method_relationship_candidates.json`, `enum_catalogs.json`, `candidate_edges.json`, and a
-human-readable `summary.md`. Fetched HTML is cached under `outputs/revit_<version>/cache/`
-and is not re-fetched on subsequent runs unless `--force-refresh` is passed.
+`method_relationship_candidates.json`, `enum_catalogs.json`, `candidate_edges.json`,
+`graph.json`, `graph_core.json`, and a human-readable `summary.md`. Fetched HTML is cached
+under `outputs/revit_<version>/cache/` and is not re-fetched on subsequent runs unless
+`--force-refresh` is passed.
 
 ## How it works
 
@@ -63,9 +75,46 @@ parse.py    -- turns one page's HTML into an ApiPage (class/struct/enum/property
 classify.py -- turns parsed members into NodeCandidate / EdgeCandidate objects, each with
                a candidate_edge_type (docs/edge_taxonomy_v0.md), edge_confidence
                (docs/confidence_model_v0.md), and (for node candidates) a class_role
+graph.py    -- materializes node/edge candidates into an actual graph.json/graph_core.json
+               (see "Knowledge graph output" below)
 export.py   -- writes all outputs/revit_<version>/*.json + summary.md
 pipeline.py -- wires the above into the single command in __main__.py
 ```
+
+## Knowledge graph output
+
+`node_type_candidates.json` + `candidate_edges.json` are already almost a graph -- `graph.py`
+closes the two remaining gaps so downstream tools can consume it directly instead of
+re-deriving this themselves:
+
+1. **Resolved node ids.** An `EdgeCandidate.candidate_target_type` is a loose type-name string,
+   not a guaranteed match against a crawled node. `graph.build_graph` resolves it in two passes:
+   an exact match against `NodeCandidate.full_type_name`, then (only if unambiguous) a
+   short-name fallback -- needed because edge classification and node classification are
+   separate code paths that can disagree on namespace qualification for the same real type
+   (confirmed on a live crawl: edges pointed at `Autodesk.Revit.DB.Room` while the actual
+   crawled node was `Autodesk.Revit.DB.Architecture.Room`). Anything still unresolved becomes an
+   `external` stub node (deduplicated by id) rather than a dropped edge, so nothing disappears
+   silently -- it's just marked as pointing outside the crawled node set.
+2. **A four-bucket `confidence_tier`**, collapsing the seven-label `ConfidenceLabel` model into
+   `core` / `likely` / `needs_validation` / `unverified_reference`. `UNKNOWN_DB_OBJECT_REFERENCE`
+   and `UNKNOWN_ELEMENTID_REFERENCE` edges are pinned to `unverified_reference` regardless of
+   their `edge_confidence` label, even `direct_return_type` -- that label only reflects
+   confidence in the *return type*, not in any specific relationship, and in the real Revit 2024
+   crawl those two edge types alone are ~77% of all edges. Without that override, "core" would
+   be mostly noise instead of a genuinely trustworthy subgraph.
+
+`graph.json` is the full materialized graph plus a `metadata` block (node/edge counts, target
+resolution counts, confidence tier counts). `graph_core.json` is the same graph filtered to
+`confidence_tier: core` edges only, plus just the nodes those edges reference -- a small,
+high-trust subgraph a downstream tool can load without re-implementing any of the above
+filtering itself. Both are gitignored for the same bulk-output reason as `candidate_edges.json`
+etc. (see "Where the crawl output lives" above); consume them from wherever that run's output
+was published.
+
+`GraphNode.id` and `GraphEdge.source`/`target` are always a type's fully-qualified name --
+that's the join key for anything downstream (a Neo4j import, an RDF conversion, an in-memory
+`networkx` graph, etc.).
 
 ## Targeted validation crawl
 

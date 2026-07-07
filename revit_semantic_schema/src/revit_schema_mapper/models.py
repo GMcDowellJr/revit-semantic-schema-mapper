@@ -172,3 +172,74 @@ class EdgeCandidate:
     evidence: list[str]
     source_url: str
     parser_notes: list[str] = field(default_factory=list)
+
+
+class ConfidenceTier(str, Enum):
+    """A coarse, four-bucket collapse of ``ConfidenceLabel`` for graph
+    consumers that just want "how much do I trust this edge" rather than the
+    full seven-label model -- see ``graph.confidence_tier`` for the mapping
+    rules and why ``UNKNOWN_*`` edge types are pinned to
+    ``UNVERIFIED_REFERENCE`` regardless of their (return-type-only)
+    confidence label.
+    """
+
+    CORE = "core"
+    LIKELY = "likely"
+    NEEDS_VALIDATION = "needs_validation"
+    UNVERIFIED_REFERENCE = "unverified_reference"
+
+
+class TargetResolution(str, Enum):
+    """How ``graph.build_graph`` matched an edge's ``candidate_target_type``
+    string to a node.
+    """
+
+    EXACT = "exact"
+    SHORT_NAME_FALLBACK = "short_name_fallback"
+    EXTERNAL = "external"
+    NONE = "none"
+
+
+@dataclass
+class GraphNode:
+    """One node in the materialized graph -- see ``graph.build_graph``.
+
+    ``id`` is always the node's fully-qualified type name, so any edge's
+    ``source``/``target`` can be resolved by a simple dict lookup on this
+    field. ``external`` marks a node that was never crawled/classified --
+    it exists only because some edge's ``candidate_target_type`` pointed at
+    it (e.g. a type outside the crawled namespace, a misresolved generic
+    element type, or a primitive that classify.py mis-qualified).
+    """
+
+    id: str
+    short_name: str
+    external: bool
+    kind: Optional[str] = None
+    namespace: Optional[str] = None
+    class_role: Optional[str] = None
+    is_element_candidate: Optional[str] = None
+    base_type: Optional[str] = None
+    source_url: str = ""
+
+
+@dataclass
+class GraphEdge:
+    """One edge in the materialized graph -- see ``graph.build_graph``.
+
+    ``source``/``target`` are node ids (``GraphNode.id``); ``target`` is
+    ``None`` only when the originating ``EdgeCandidate`` itself had no
+    ``candidate_target_type`` at all (``target_resolution`` is then
+    ``TargetResolution.NONE``).
+    """
+
+    source: str
+    target: Optional[str]
+    member_name: str
+    member_kind: MemberKind
+    edge_type: EdgeType
+    confidence: ConfidenceLabel
+    confidence_tier: ConfidenceTier
+    target_resolution: TargetResolution
+    evidence: list[str]
+    source_url: str

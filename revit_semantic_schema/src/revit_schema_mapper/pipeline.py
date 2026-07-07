@@ -23,6 +23,7 @@ from urllib.parse import urlparse
 
 from . import classify, export
 from .crawl import ALLOWED_HOST, CrawlConfig, Crawler
+from .graph import build_graph
 from .models import ApiPage, EdgeCandidate, Kind, NodeCandidate
 from .parse import (
     extract_member_links,
@@ -337,6 +338,7 @@ def run_pipeline(
 
         node_candidates = classify.build_node_candidates(in_scope_pages)
         edge_candidates = classify.build_edge_candidates(in_scope_pages)
+        graph_result = build_graph(node_candidates, edge_candidates)
 
         raw_index = list(by_url.values())
 
@@ -345,6 +347,7 @@ def run_pipeline(
         export.write_node_candidates(output_dir, node_candidates)
         export.write_edge_candidates(output_dir, edge_candidates)
         export.write_enum_catalogs(output_dir, in_scope_pages)
+        export.write_graph(output_dir, graph_result, revit_version=config.version)
 
         limitations = [
             "Edge classification is a static, docs-only heuristic; no candidate edge has been "
@@ -394,6 +397,7 @@ def run_pipeline(
             edge_candidates=edge_candidates,
             limitations=limitations,
             next_steps=next_steps,
+            graph_result=graph_result,
         )
 
         last_result["raw_index_entries"] = raw_index
@@ -651,6 +655,7 @@ def run_targeted_pipeline(
     def checkpoint(pages: list[ApiPage], failed_urls: list[str]) -> None:
         node_candidates = classify.build_node_candidates(pages)
         edge_candidates = classify.build_edge_candidates(pages)
+        graph_result = build_graph(node_candidates, edge_candidates)
 
         raw_index_entries = list(by_url.values())
 
@@ -662,6 +667,7 @@ def run_targeted_pipeline(
         export.write_node_candidates(output_dir, node_candidates)
         export.write_edge_candidates(output_dir, edge_candidates)
         export.write_enum_catalogs(output_dir, pages)
+        export.write_graph(output_dir, graph_result, revit_version=config.version)
         export.write_target_report(output_dir, target_report)
         export.write_known_edge_report(output_dir, known_edge_report)
         export.write_validation_summary(
@@ -676,6 +682,7 @@ def run_targeted_pipeline(
             edge_candidates=edge_candidates,
             failed_urls=failed_urls,
             discovery_notes=discovery_notes,
+            graph_result=graph_result,
         )
 
         last_result["raw_index_entries"] = raw_index_entries

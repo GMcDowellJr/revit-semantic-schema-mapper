@@ -1,0 +1,183 @@
+from revit_schema_mapper import graph
+from revit_schema_mapper.models import (
+    ClassRole,
+    ConfidenceLabel,
+    ConfidenceTier,
+    EdgeCandidate,
+    EdgeType,
+    IsElementCandidate,
+    Kind,
+    MemberKind,
+    NodeCandidate,
+    TargetResolution,
+)
+
+
+def _node(full_type_name: str, short_name: str | None = None) -> NodeCandidate:
+    return NodeCandidate(
+        full_type_name=full_type_name,
+        short_name=short_name or full_type_name.rsplit(".", 1)[-1],
+        kind=Kind.CLASS,
+        namespace="Autodesk.Revit.DB",
+        base_type=None,
+        inheritance_chain=[],
+        is_element_candidate=IsElementCandidate.UNKNOWN,
+        class_role=ClassRole.UNKNOWN,
+        evidence=[],
+        source_url="https://www.revitapidocs.com/2024/x.htm",
+    )
+
+
+def _edge(
+    source_type: str,
+    target: str | None,
+    edge_type: EdgeType,
+    confidence: ConfidenceLabel,
+) -> EdgeCandidate:
+    return EdgeCandidate(
+        source_type=source_type,
+        member_name="SomeMember",
+        member_kind=MemberKind.PROPERTY,
+        raw_signature="x",
+        return_type=target,
+        parameter_types=[],
+        candidate_target_type=target,
+        candidate_edge_type=edge_type,
+        edge_confidence=confidence,
+        evidence=[],
+        source_url="https://www.revitapidocs.com/2024/x.htm",
+    )
+
+
+def test_exact_target_resolves_to_matching_node():
+    nodes = [_node("Autodesk.Revit.DB.View")]
+    edges = [_edge("Autodesk.Revit.DB.View", "Autodesk.Revit.DB.View", EdgeType.CONTROLLED_BY_TEMPLATE, ConfidenceLabel.ELEMENTID_WITH_STRONG_NAME)]
+
+    result = graph.build_graph(nodes, edges)
+
+    assert result.edges[0].target == "Autodesk.Revit.DB.View"
+    assert result.edges[0].target_resolution is TargetResolution.EXACT
+    assert result.external_node_count == 0
+
+
+def test_unresolved_target_falls_back_to_unambiguous_short_name():
+    """A real crawl found candidate_target_type computed as the top-level
+    namespace (Autodesk.Revit.DB.Room) while the actual crawled node lived
+    in a sub-namespace (Autodesk.Revit.DB.Architecture.Room) -- see
+    docs/crawl_notes.md. The resolver must still connect these when exactly
+    one node shares the short name.
+    """
+    nodes = [_node("Autodesk.Revit.DB.Architecture.Room", short_name="Room"), _node("Autodesk.Revit.DB.SomeType")]
+    edges = [_edge("Autodesk.Revit.DB.SomeType", "Autodesk.Revit.DB.Room", EdgeType.UNKNOWN_DB_OBJECT_REFERENCE, ConfidenceLabel.DIRECT_RETURN_TYPE)]
+
+    result = graph.build_graph(nodes, edges)
+
+    assert result.edges[0].target == "Autodesk.Revit.DB.Architecture.Room"
+    assert result.edges[0].target_resolution is TargetResolution.SHORT_NAME_FALLBACK
+    assert result.external_node_count == 0
+
+
+def test_ambiguous_short_name_is_not_used_as_fallback():
+    """Two distinct real nodes sharing a short name must not be merged --
+    an unresolved target stays external rather than guessing which one it
+    meant.
+    """
+    nodes = [
+        _node("Autodesk.Revit.DB.Architecture.Room", short_name="Room"),
+        _node("Autodesk.Revit.DB.Mechanical.Room", short_name="Room"),
+        _node("Autodesk.Revit.DB.SomeType"),
+    ]
+    edges = [_edge("Autodesk.Revit.DB.SomeType", "Autodesk.Revit.DB.Room", EdgeType.UNKNOWN_DB_OBJECT_REFERENCE, ConfidenceLabel.DIRECT_RETURN_TYPE)]
+
+    result = graph.build_graph(nodes, edges)
+
+    assert result.edges[0].target == "Autodesk.Revit.DB.Room"
+    assert result.edges[0].target_resolution is TargetResolution.EXTERNAL
+    assert result.external_node_count == 1
+
+
+def test_external_target_creates_deduped_stub_node():
+    nodes = [_node("Autodesk.Revit.DB.SomeType")]
+    edges = [
+        _edge("Autodesk.Revit.DB.SomeType", "Autodesk.Revit.DB.ForgeTypeId", EdgeType.UNKNOWN_DB_OBJECT_REFERENCE, ConfidenceLabel.DIRECT_RETURN_TYPE),
+        _edge("Autodesk.Revit.DB.SomeType", "Autodesk.Revit.DB.ForgeTypeId", EdgeType.UNKNOWN_DB_OBJECT_REFERENCE, ConfidenceLabel.DIRECT_RETURN_TYPE),
+    ]
+
+    result = graph.build_graph(nodes, edges)
+
+    external_nodes = [n for n in result.nodes if n.external]
+    assert len(external_nodes) == 1
+    assert external_nodes[0].id == "Autodesk.Revit.DB.ForgeTypeId"
+    assert external_nodes[0].short_name == "ForgeTypeId"
+
+
+def test_edge_with_no_target_type_gets_none_resolution():
+    nodes = [_node("Autodesk.Revit.DB.SomeType")]
+    edges = [_edge("Autodesk.Revit.DB.SomeType", None, EdgeType.HAS_PARAMETER, ConfidenceLabel.NAME_ONLY_CANDIDATE)]
+
+    result = graph.build_graph(nodes, edges)
+
+    assert result.edges[0].target is None
+    assert result.edges[0].target_resolution is TargetResolution.NONE
+
+
+def test_unknown_edge_type_is_pinned_to_unverified_reference_regardless_of_confidence():
+    """UNKNOWN_* edge types mean 'definitely a reference, no specific
+    relationship identified' -- their edge_confidence can still be
+    direct_return_type (the return type itself is certain), but that must
+    not promote them into the 'core' tier, or 'core' would be dominated by
+    relationships that carry no actual semantics (~77% of edges in a real
+    full crawl were UNKNOWN_DB_OBJECT_REFERENCE with direct_return_type).
+    """
+    edge = _edge("Autodesk.Revit.DB.SomeType", "Autodesk.Revit.DB.Color", EdgeType.UNKNOWN_DB_OBJECT_REFERENCE, ConfidenceLabel.DIRECT_RETURN_TYPE)
+
+    assert graph.confidence_tier(edge) is ConfidenceTier.UNVERIFIED_REFERENCE
+
+
+def test_needs_runtime_validation_is_its_own_tier_even_for_a_specific_edge_type():
+    edge = _edge("Autodesk.Revit.DB.SomeType", "Autodesk.Revit.DB.Level", EdgeType.ASSIGNED_TO_LEVEL, ConfidenceLabel.NEEDS_RUNTIME_VALIDATION)
+
+    assert graph.confidence_tier(edge) is ConfidenceTier.NEEDS_VALIDATION
+
+
+def test_core_confidence_with_specific_edge_type_is_core_tier():
+    edge = _edge("Autodesk.Revit.DB.FamilyInstance", "Autodesk.Revit.DB.FamilySymbol", EdgeType.INSTANCE_OF, ConfidenceLabel.DIRECT_RETURN_TYPE)
+
+    assert graph.confidence_tier(edge) is ConfidenceTier.CORE
+
+
+def test_name_only_candidate_is_likely_tier():
+    edge = _edge("Autodesk.Revit.DB.Element", "Autodesk.Revit.DB.Workset", EdgeType.OWNED_BY_WORKSET, ConfidenceLabel.NAME_ONLY_CANDIDATE)
+
+    assert graph.confidence_tier(edge) is ConfidenceTier.LIKELY
+
+
+def test_filter_core_keeps_only_core_edges_and_their_referenced_nodes():
+    nodes = [_node("Autodesk.Revit.DB.FamilyInstance"), _node("Autodesk.Revit.DB.FamilySymbol"), _node("Autodesk.Revit.DB.Unrelated")]
+    edges = [
+        _edge("Autodesk.Revit.DB.FamilyInstance", "Autodesk.Revit.DB.FamilySymbol", EdgeType.INSTANCE_OF, ConfidenceLabel.DIRECT_RETURN_TYPE),
+        _edge("Autodesk.Revit.DB.Unrelated", "Autodesk.Revit.DB.FamilySymbol", EdgeType.UNKNOWN_DB_OBJECT_REFERENCE, ConfidenceLabel.DIRECT_RETURN_TYPE),
+    ]
+
+    result = graph.build_graph(nodes, edges)
+    core_nodes, core_edges = graph.filter_core(result)
+
+    assert len(core_edges) == 1
+    assert core_edges[0].edge_type == EdgeType.INSTANCE_OF
+    core_node_ids = {n.id for n in core_nodes}
+    assert core_node_ids == {"Autodesk.Revit.DB.FamilyInstance", "Autodesk.Revit.DB.FamilySymbol"}
+
+
+def test_dangling_source_is_still_resolved_and_not_left_as_raw_string():
+    """A truncated crawl can produce an edge whose source_type was never
+    itself classified into a node -- the source should still resolve
+    consistently (falling back to an external stub) rather than being a
+    bare string that doesn't match anything in result.nodes.
+    """
+    nodes = [_node("Autodesk.Revit.DB.FamilySymbol")]
+    edges = [_edge("Autodesk.Revit.DB.NeverCrawledType", "Autodesk.Revit.DB.FamilySymbol", EdgeType.INSTANCE_OF, ConfidenceLabel.DIRECT_RETURN_TYPE)]
+
+    result = graph.build_graph(nodes, edges)
+
+    node_ids = {n.id for n in result.nodes}
+    assert result.edges[0].source in node_ids
