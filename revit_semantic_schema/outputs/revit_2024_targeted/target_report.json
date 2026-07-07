@@ -1,0 +1,106 @@
+[
+  {
+    "full_type_name": "Autodesk.Revit.DB.Element",
+    "found_in_namespace_json": true,
+    "class_page_parsed": true,
+    "member_pages_parsed": 92,
+    "member_count": 92,
+    "reason": null
+  },
+  {
+    "full_type_name": "Autodesk.Revit.DB.ElementType",
+    "found_in_namespace_json": true,
+    "class_page_parsed": true,
+    "member_pages_parsed": 11,
+    "member_count": 11,
+    "reason": null
+  },
+  {
+    "full_type_name": "Autodesk.Revit.DB.View",
+    "found_in_namespace_json": true,
+    "class_page_parsed": true,
+    "member_pages_parsed": 142,
+    "member_count": 142,
+    "reason": null
+  },
+  {
+    "full_type_name": "Autodesk.Revit.DB.ViewSheet",
+    "found_in_namespace_json": true,
+    "class_page_parsed": true,
+    "member_pages_parsed": 20,
+    "member_count": 20,
+    "reason": null
+  },
+  {
+    "full_type_name": "Autodesk.Revit.DB.Viewport",
+    "found_in_namespace_json": true,
+    "class_page_parsed": true,
+    "member_pages_parsed": 16,
+    "member_count": 16,
+    "reason": null
+  },
+  {
+    "full_type_name": "Autodesk.Revit.DB.Family",
+    "found_in_namespace_json": true,
+    "class_page_parsed": true,
+    "member_pages_parsed": 26,
+    "member_count": 26,
+    "reason": null
+  },
+  {
+    "full_type_name": "Autodesk.Revit.DB.FamilySymbol",
+    "found_in_namespace_json": true,
+    "class_page_parsed": true,
+    "member_pages_parsed": 12,
+    "member_count": 12,
+    "reason": null
+  },
+  {
+    "full_type_name": "Autodesk.Revit.DB.FamilyInstance",
+    "found_in_namespace_json": true,
+    "class_page_parsed": true,
+    "member_pages_parsed": 61,
+    "member_count": 61,
+    "reason": null
+  },
+  {
+    "full_type_name": "Autodesk.Revit.DB.Material",
+    "found_in_namespace_json": true,
+    "class_page_parsed": true,
+    "member_pages_parsed": 25,
+    "member_count": 25,
+    "reason": null
+  },
+  {
+    "full_type_name": "Autodesk.Revit.DB.FillPatternElement",
+    "found_in_namespace_json": true,
+    "class_page_parsed": true,
+    "member_pages_parsed": 5,
+    "member_count": 5,
+    "reason": null
+  },
+  {
+    "full_type_name": "Autodesk.Revit.DB.LinePatternElement",
+    "found_in_namespace_json": true,
+    "class_page_parsed": true,
+    "member_pages_parsed": 8,
+    "member_count": 8,
+    "reason": null
+  },
+  {
+    "full_type_name": "Autodesk.Revit.DB.ParameterFilterElement",
+    "found_in_namespace_json": true,
+    "class_page_parsed": true,
+    "member_pages_parsed": 17,
+    "member_count": 17,
+    "reason": null
+  },
+  {
+    "full_type_name": "Autodesk.Revit.DB.Architecture.Room",
+    "found_in_namespace_json": true,
+    "class_page_parsed": true,
+    "member_pages_parsed": 9,
+    "member_count": 9,
+    "reason": null
+  }
+]

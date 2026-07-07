@@ -1,0 +1,777 @@
+[
+  {
+    "source_type": "Autodesk.Revit.DB.Element",
+    "member_name": "AssemblyInstanceId",
+    "member_kind": "property",
+    "raw_signature": "public ElementId AssemblyInstanceId { get ; }",
+    "return_type": "ElementId",
+    "parameter_types": [],
+    "candidate_target_type": null,
+    "candidate_edge_type": "MEMBER_OF_ASSEMBLY",
+    "edge_confidence": "elementid_with_strong_name",
+    "evidence": [
+      "member name 'AssemblyInstanceId' matches keyword pattern /Assembly/"
+    ],
+    "source_url": "https://www.revitapidocs.com/2024/83989f69-1aca-1a49-9647-e57bc2d58b21.htm",
+    "parser_notes": [
+      "name keyword matched but no reliable target type mapping exists for it yet"
+    ]
+  },
+  {
+    "source_type": "Autodesk.Revit.DB.Element",
+    "member_name": "Category",
+    "member_kind": "property",
+    "raw_signature": "public Category Category { get ; }",
+    "return_type": "Category",
+    "parameter_types": [],
+    "candidate_target_type": "Autodesk.Revit.DB.Category",
+    "candidate_edge_type": "HAS_CATEGORY",
+    "edge_confidence": "direct_return_type",
+    "evidence": [
+      "return type 'Category' directly names a Revit DB object type"
+    ],
+    "source_url": "https://www.revitapidocs.com/2024/8990bd36-af08-fc99-496b-f94fcb056b21.htm",
+    "parser_notes": []
+  },
+  {
+    "source_type": "Autodesk.Revit.DB.Element",
+    "member_name": "CreatedPhaseId",
+    "member_kind": "property",
+    "raw_signature": "public ElementId CreatedPhaseId { get ; set ; }",
+    "return_type": "ElementId",
+    "parameter_types": [],
+    "candidate_target_type": "Autodesk.Revit.DB.Phase",
+    "candidate_edge_type": "ASSIGNED_TO_PHASE",
+    "edge_confidence": "elementid_with_strong_name",
+    "evidence": [
+      "member name 'CreatedPhaseId' matches keyword pattern /Phase/"
+    ],
+    "source_url": "https://www.revitapidocs.com/2024/c6032e01-f7cb-b2ea-3312-697d14216a31.htm",
+    "parser_notes": []
+  },
+  {
+    "source_type": "Autodesk.Revit.DB.Element",
+    "member_name": "DemolishedPhaseId",
+    "member_kind": "property",
+    "raw_signature": "public ElementId DemolishedPhaseId { get ; set ; }",
+    "return_type": "ElementId",
+    "parameter_types": [],
+    "candidate_target_type": "Autodesk.Revit.DB.Phase",
+    "candidate_edge_type": "ASSIGNED_TO_PHASE",
+    "edge_confidence": "elementid_with_strong_name",
+    "evidence": [
+      "member name 'DemolishedPhaseId' matches keyword pattern /Phase/"
+    ],
+    "source_url": "https://www.revitapidocs.com/2024/7949a983-c5dc-62a3-594a-d685365449d5.htm",
+    "parser_notes": []
+  },
+  {
+    "source_type": "Autodesk.Revit.DB.Element",
+    "member_name": "DesignOption",
+    "member_kind": "property",
+    "raw_signature": "public DesignOption DesignOption { get ; }",
+    "return_type": "DesignOption",
+    "parameter_types": [],
+    "candidate_target_type": "Autodesk.Revit.DB.DesignOption",
+    "candidate_edge_type": "ASSIGNED_TO_DESIGN_OPTION",
+    "edge_confidence": "direct_return_type",
+    "evidence": [
+      "return type 'DesignOption' directly names a Revit DB object type"
+    ],
+    "source_url": "https://www.revitapidocs.com/2024/5c20fe58-e301-6ddb-3438-666db5c586ee.htm",
+    "parser_notes": []
+  },
+  {
+    "source_type": "Autodesk.Revit.DB.Element",
+    "member_name": "GroupId",
+    "member_kind": "property",
+    "raw_signature": "public ElementId GroupId { get ; }",
+    "return_type": "ElementId",
+    "parameter_types": [],
+    "candidate_target_type": null,
+    "candidate_edge_type": "MEMBER_OF_GROUP",
+    "edge_confidence": "elementid_with_strong_name",
+    "evidence": [
+      "member name 'GroupId' matches keyword pattern /^GetMember|Group/"
+    ],
+    "source_url": "https://www.revitapidocs.com/2024/9508a6c5-9681-bbef-07c5-1351583b0e1e.htm",
+    "parser_notes": [
+      "name keyword matched but no reliable target type mapping exists for it yet"
+    ]
+  },
+  {
+    "source_type": "Autodesk.Revit.DB.Element",
+    "member_name": "Id",
+    "member_kind": "property",
+    "raw_signature": "public ElementId Id { get ; }",
+    "return_type": "ElementId",
+    "parameter_types": [],
+    "candidate_target_type": null,
+    "candidate_edge_type": "UNKNOWN_ELEMENTID_REFERENCE",
+    "edge_confidence": "unknown_reference",
+    "evidence": [
+      "return type is ElementId but member name gives no strong hint of the target type"
+    ],
+    "source_url": "https://www.revitapidocs.com/2024/9235095b-b7ae-b6e5-6cc2-2b8d397644de.htm",
+    "parser_notes": []
+  },
+  {
+    "source_type": "Autodesk.Revit.DB.Element",
+    "member_name": "LevelId",
+    "member_kind": "property",
+    "raw_signature": "public ElementId LevelId { get ; }",
+    "return_type": "ElementId",
+    "parameter_types": [],
+    "candidate_target_type": "Autodesk.Revit.DB.Level",
+    "candidate_edge_type": "ASSIGNED_TO_LEVEL",
+    "edge_confidence": "elementid_with_strong_name",
+    "evidence": [
+      "member name 'LevelId' matches keyword pattern /Level/"
+    ],
+    "source_url": "https://www.revitapidocs.com/2024/27033fe3-6740-61e3-be82-47a6b8ae77db.htm",
+    "parser_notes": []
+  },
+  {
+    "source_type": "Autodesk.Revit.DB.Element",
+    "member_name": "OwnerViewId",
+    "member_kind": "property",
+    "raw_signature": "public ElementId OwnerViewId { get ; }",
+    "return_type": "ElementId",
+    "parameter_types": [],
+    "candidate_target_type": null,
+    "candidate_edge_type": "UNKNOWN_ELEMENTID_REFERENCE",
+    "edge_confidence": "unknown_reference",
+    "evidence": [
+      "return type is ElementId but member name gives no strong hint of the target type"
+    ],
+    "source_url": "https://www.revitapidocs.com/2024/174c1adf-0be8-a4b0-41f3-9e3ea1d6b1f1.htm",
+    "parser_notes": []
+  },
+  {
+    "source_type": "Autodesk.Revit.DB.Element",
+    "member_name": "Parameters",
+    "member_kind": "property",
+    "raw_signature": "public ParameterSet Parameters { get ; }",
+    "return_type": "ParameterSet",
+    "parameter_types": [],
+    "candidate_target_type": null,
+    "candidate_edge_type": "HAS_PARAMETER",
+    "edge_confidence": "name_only_candidate",
+    "evidence": [
+      "member name 'Parameters' matches keyword pattern /Parameter/ but return type 'ParameterSet' gives no type-level confirmation"
+    ],
+    "source_url": "https://www.revitapidocs.com/2024/7af5d66f-4533-33d2-dd82-d9573eaabf15.htm",
+    "parser_notes": []
+  },
+  {
+    "source_type": "Autodesk.Revit.DB.Element",
+    "member_name": "ParametersMap",
+    "member_kind": "property",
+    "raw_signature": "public ParameterMap ParametersMap { get ; }",
+    "return_type": "ParameterMap",
+    "parameter_types": [],
+    "candidate_target_type": null,
+    "candidate_edge_type": "HAS_PARAMETER",
+    "edge_confidence": "name_only_candidate",
+    "evidence": [
+      "member name 'ParametersMap' matches keyword pattern /Parameter/ but return type 'ParameterMap' gives no type-level confirmation"
+    ],
+    "source_url": "https://www.revitapidocs.com/2024/82c45482-a018-32e4-d8e5-9751e10ffeb9.htm",
+    "parser_notes": []
+  },
+  {
+    "source_type": "Autodesk.Revit.DB.Element",
+    "member_name": "WorksetId",
+    "member_kind": "property",
+    "raw_signature": "public WorksetId WorksetId { get ; }",
+    "return_type": "WorksetId",
+    "parameter_types": [],
+    "candidate_target_type": "Autodesk.Revit.DB.Workset",
+    "candidate_edge_type": "OWNED_BY_WORKSET",
+    "edge_confidence": "name_only_candidate",
+    "evidence": [
+      "member name 'WorksetId' matches keyword pattern /Workset/ but return type 'WorksetId' gives no type-level confirmation"
+    ],
+    "source_url": "https://www.revitapidocs.com/2024/4b45250a-7a07-a89a-0f63-cf8d142a7b93.htm",
+    "parser_notes": []
+  },
+  {
+    "source_type": "Autodesk.Revit.DB.Family",
+    "member_name": "FamilyCategory",
+    "member_kind": "property",
+    "raw_signature": "public Category FamilyCategory { get ; set ; }",
+    "return_type": "Category",
+    "parameter_types": [],
+    "candidate_target_type": "Autodesk.Revit.DB.Category",
+    "candidate_edge_type": "HAS_CATEGORY",
+    "edge_confidence": "direct_return_type",
+    "evidence": [
+      "return type 'Category' directly names a Revit DB object type"
+    ],
+    "source_url": "https://www.revitapidocs.com/2024/e00c2b8b-b92d-526b-11b6-71c7e1d5d1b7.htm",
+    "parser_notes": []
+  },
+  {
+    "source_type": "Autodesk.Revit.DB.Family",
+    "member_name": "FamilyCategoryId",
+    "member_kind": "property",
+    "raw_signature": "public ElementId FamilyCategoryId { get ; set ; }",
+    "return_type": "ElementId",
+    "parameter_types": [],
+    "candidate_target_type": "Autodesk.Revit.DB.Category",
+    "candidate_edge_type": "HAS_CATEGORY",
+    "edge_confidence": "elementid_with_strong_name",
+    "evidence": [
+      "member name 'FamilyCategoryId' matches keyword pattern /Category/"
+    ],
+    "source_url": "https://www.revitapidocs.com/2024/c1e0b7fa-8ea0-b6f6-a300-4c3e231bdb95.htm",
+    "parser_notes": []
+  },
+  {
+    "source_type": "Autodesk.Revit.DB.Family",
+    "member_name": "StructuralMaterialType",
+    "member_kind": "property",
+    "raw_signature": "public StructuralMaterialType StructuralMaterialType { get ; }",
+    "return_type": "StructuralMaterialType",
+    "parameter_types": [],
+    "candidate_target_type": "Autodesk.Revit.DB.Material",
+    "candidate_edge_type": "USES_MATERIAL",
+    "edge_confidence": "name_only_candidate",
+    "evidence": [
+      "member name 'StructuralMaterialType' matches keyword pattern /Material/ but return type 'StructuralMaterialType' gives no type-level confirmation"
+    ],
+    "source_url": "https://www.revitapidocs.com/2024/b8770014-b218-1b8d-c996-d722828429f4.htm",
+    "parser_notes": []
+  },
+  {
+    "source_type": "Autodesk.Revit.DB.FamilyInstance",
+    "member_name": "FromRoom",
+    "member_kind": "property",
+    "raw_signature": "public Room FromRoom { get ; }",
+    "return_type": "Room",
+    "parameter_types": [],
+    "candidate_target_type": "Autodesk.Revit.DB.Room",
+    "candidate_edge_type": "UNKNOWN_DB_OBJECT_REFERENCE",
+    "edge_confidence": "direct_return_type",
+    "evidence": [
+      "return type 'Room' directly names a Revit DB object type"
+    ],
+    "source_url": "https://www.revitapidocs.com/2024/d6658841-da29-ead4-049b-3036cbd4951a.htm",
+    "parser_notes": []
+  },
+  {
+    "source_type": "Autodesk.Revit.DB.FamilyInstance",
+    "member_name": "Host",
+    "member_kind": "property",
+    "raw_signature": "public Element Host { get ; }",
+    "return_type": "Element",
+    "parameter_types": [],
+    "candidate_target_type": "Autodesk.Revit.DB.Element",
+    "candidate_edge_type": "HOSTED_BY",
+    "edge_confidence": "direct_return_type",
+    "evidence": [
+      "return type 'Element' directly names a Revit DB object type"
+    ],
+    "source_url": "https://www.revitapidocs.com/2024/69f30141-bd3b-8bdd-7a63-6353d4d495f9.htm",
+    "parser_notes": []
+  },
+  {
+    "source_type": "Autodesk.Revit.DB.FamilyInstance",
+    "member_name": "HostFace",
+    "member_kind": "property",
+    "raw_signature": "public Reference HostFace { get ; }",
+    "return_type": "Reference",
+    "parameter_types": [],
+    "candidate_target_type": null,
+    "candidate_edge_type": "HOSTED_BY",
+    "edge_confidence": "name_only_candidate",
+    "evidence": [
+      "member name 'HostFace' matches keyword pattern /^GetHosted|Host/ but return type 'Reference' gives no type-level confirmation"
+    ],
+    "source_url": "https://www.revitapidocs.com/2024/e795508b-bb6a-4f76-e282-57aa6f7074e5.htm",
+    "parser_notes": []
+  },
+  {
+    "source_type": "Autodesk.Revit.DB.FamilyInstance",
+    "member_name": "HostParameter",
+    "member_kind": "property",
+    "raw_signature": "public double HostParameter { get ; }",
+    "return_type": "double",
+    "parameter_types": [],
+    "candidate_target_type": null,
+    "candidate_edge_type": "HOSTED_BY",
+    "edge_confidence": "docs_semantic_hint",
+    "evidence": [
+      "member name 'HostParameter' matches keyword pattern /^GetHosted|Host/ but return type 'double' gives no type-level confirmation",
+      "docs text contains relationship phrase: 'is hosted by'"
+    ],
+    "source_url": "https://www.revitapidocs.com/2024/bcf1a885-5015-0b87-dfe8-9109d499f4e7.htm",
+    "parser_notes": []
+  },
+  {
+    "source_type": "Autodesk.Revit.DB.FamilyInstance",
+    "member_name": "Room",
+    "member_kind": "property",
+    "raw_signature": "public Room Room { get ; }",
+    "return_type": "Room",
+    "parameter_types": [],
+    "candidate_target_type": "Autodesk.Revit.DB.Room",
+    "candidate_edge_type": "UNKNOWN_DB_OBJECT_REFERENCE",
+    "edge_confidence": "direct_return_type",
+    "evidence": [
+      "return type 'Room' directly names a Revit DB object type"
+    ],
+    "source_url": "https://www.revitapidocs.com/2024/37944e7a-f298-9c25-20bb-9c0c1da46f41.htm",
+    "parser_notes": []
+  },
+  {
+    "source_type": "Autodesk.Revit.DB.FamilyInstance",
+    "member_name": "StructuralMaterialId",
+    "member_kind": "property",
+    "raw_signature": "public ElementId StructuralMaterialId { get ; set ; }",
+    "return_type": "ElementId",
+    "parameter_types": [],
+    "candidate_target_type": "Autodesk.Revit.DB.Material",
+    "candidate_edge_type": "USES_MATERIAL",
+    "edge_confidence": "elementid_with_strong_name",
+    "evidence": [
+      "member name 'StructuralMaterialId' matches keyword pattern /Material/"
+    ],
+    "source_url": "https://www.revitapidocs.com/2024/856b95a1-38c9-4d61-59cd-2844f7348984.htm",
+    "parser_notes": []
+  },
+  {
+    "source_type": "Autodesk.Revit.DB.FamilyInstance",
+    "member_name": "StructuralMaterialType",
+    "member_kind": "property",
+    "raw_signature": "public StructuralMaterialType StructuralMaterialType { get ; }",
+    "return_type": "StructuralMaterialType",
+    "parameter_types": [],
+    "candidate_target_type": "Autodesk.Revit.DB.Material",
+    "candidate_edge_type": "USES_MATERIAL",
+    "edge_confidence": "name_only_candidate",
+    "evidence": [
+      "member name 'StructuralMaterialType' matches keyword pattern /Material/ but return type 'StructuralMaterialType' gives no type-level confirmation"
+    ],
+    "source_url": "https://www.revitapidocs.com/2024/042b7922-53d9-d0ee-2f57-ce32cf5c5e4e.htm",
+    "parser_notes": []
+  },
+  {
+    "source_type": "Autodesk.Revit.DB.FamilyInstance",
+    "member_name": "SuperComponent",
+    "member_kind": "property",
+    "raw_signature": "public Element SuperComponent { get ; }",
+    "return_type": "Element",
+    "parameter_types": [],
+    "candidate_target_type": "Autodesk.Revit.DB.Element",
+    "candidate_edge_type": "UNKNOWN_DB_OBJECT_REFERENCE",
+    "edge_confidence": "direct_return_type",
+    "evidence": [
+      "return type 'Element' directly names a Revit DB object type"
+    ],
+    "source_url": "https://www.revitapidocs.com/2024/1dcf3123-c2ea-867a-7b9a-73173343121e.htm",
+    "parser_notes": []
+  },
+  {
+    "source_type": "Autodesk.Revit.DB.FamilyInstance",
+    "member_name": "Symbol",
+    "member_kind": "property",
+    "raw_signature": "public FamilySymbol Symbol { get ; set ; }",
+    "return_type": "FamilySymbol",
+    "parameter_types": [],
+    "candidate_target_type": "Autodesk.Revit.DB.FamilySymbol",
+    "candidate_edge_type": "INSTANCE_OF",
+    "edge_confidence": "direct_return_type",
+    "evidence": [
+      "return type 'FamilySymbol' directly names a Revit DB object type"
+    ],
+    "source_url": "https://www.revitapidocs.com/2024/4157fff5-cde3-cbb7-1df8-03f77d64712f.htm",
+    "parser_notes": []
+  },
+  {
+    "source_type": "Autodesk.Revit.DB.FamilyInstance",
+    "member_name": "ToRoom",
+    "member_kind": "property",
+    "raw_signature": "public Room ToRoom { get ; }",
+    "return_type": "Room",
+    "parameter_types": [],
+    "candidate_target_type": "Autodesk.Revit.DB.Room",
+    "candidate_edge_type": "UNKNOWN_DB_OBJECT_REFERENCE",
+    "edge_confidence": "direct_return_type",
+    "evidence": [
+      "return type 'Room' directly names a Revit DB object type"
+    ],
+    "source_url": "https://www.revitapidocs.com/2024/939e9c7b-072a-7be9-105f-64e1aa1f3a97.htm",
+    "parser_notes": []
+  },
+  {
+    "source_type": "Autodesk.Revit.DB.FamilySymbol",
+    "member_name": "Family",
+    "member_kind": "property",
+    "raw_signature": "public Family Family { get ; }",
+    "return_type": "Family",
+    "parameter_types": [],
+    "candidate_target_type": "Autodesk.Revit.DB.Family",
+    "candidate_edge_type": "BELONGS_TO_FAMILY",
+    "edge_confidence": "direct_return_type",
+    "evidence": [
+      "return type 'Family' directly names a Revit DB object type"
+    ],
+    "source_url": "https://www.revitapidocs.com/2024/14272fe6-5fc3-f053-b4c6-2f44d05786f2.htm",
+    "parser_notes": []
+  },
+  {
+    "source_type": "Autodesk.Revit.DB.FamilySymbol",
+    "member_name": "StructuralMaterialType",
+    "member_kind": "property",
+    "raw_signature": "public StructuralMaterialType StructuralMaterialType { get ; }",
+    "return_type": "StructuralMaterialType",
+    "parameter_types": [],
+    "candidate_target_type": "Autodesk.Revit.DB.Material",
+    "candidate_edge_type": "USES_MATERIAL",
+    "edge_confidence": "name_only_candidate",
+    "evidence": [
+      "member name 'StructuralMaterialType' matches keyword pattern /Material/ but return type 'StructuralMaterialType' gives no type-level confirmation"
+    ],
+    "source_url": "https://www.revitapidocs.com/2024/e3e95cd1-6fb6-6c08-b8e7-4e5267d7339e.htm",
+    "parser_notes": []
+  },
+  {
+    "source_type": "Autodesk.Revit.DB.Material",
+    "member_name": "AppearanceAssetId",
+    "member_kind": "property",
+    "raw_signature": "public ElementId AppearanceAssetId { get ; set ; }",
+    "return_type": "ElementId",
+    "parameter_types": [],
+    "candidate_target_type": null,
+    "candidate_edge_type": "UNKNOWN_ELEMENTID_REFERENCE",
+    "edge_confidence": "unknown_reference",
+    "evidence": [
+      "return type is ElementId but member name gives no strong hint of the target type"
+    ],
+    "source_url": "https://www.revitapidocs.com/2024/d02d0677-341a-8d1a-d3eb-35ff82f01695.htm",
+    "parser_notes": []
+  },
+  {
+    "source_type": "Autodesk.Revit.DB.Material",
+    "member_name": "CutBackgroundPatternId",
+    "member_kind": "property",
+    "raw_signature": "public ElementId CutBackgroundPatternId { get ; set ; }",
+    "return_type": "ElementId",
+    "parameter_types": [],
+    "candidate_target_type": null,
+    "candidate_edge_type": "UNKNOWN_ELEMENTID_REFERENCE",
+    "edge_confidence": "unknown_reference",
+    "evidence": [
+      "return type is ElementId but member name gives no strong hint of the target type"
+    ],
+    "source_url": "https://www.revitapidocs.com/2024/290d0d15-afd4-b333-ff39-8d46481b1b06.htm",
+    "parser_notes": []
+  },
+  {
+    "source_type": "Autodesk.Revit.DB.Material",
+    "member_name": "CutForegroundPatternId",
+    "member_kind": "property",
+    "raw_signature": "public ElementId CutForegroundPatternId { get ; set ; }",
+    "return_type": "ElementId",
+    "parameter_types": [],
+    "candidate_target_type": null,
+    "candidate_edge_type": "UNKNOWN_ELEMENTID_REFERENCE",
+    "edge_confidence": "unknown_reference",
+    "evidence": [
+      "return type is ElementId but member name gives no strong hint of the target type"
+    ],
+    "source_url": "https://www.revitapidocs.com/2024/9f03bba4-bdb1-5a2e-065e-c1d6ac04bb95.htm",
+    "parser_notes": []
+  },
+  {
+    "source_type": "Autodesk.Revit.DB.Material",
+    "member_name": "MaterialCategory",
+    "member_kind": "property",
+    "raw_signature": "public string MaterialCategory { get ; set ; }",
+    "return_type": "string",
+    "parameter_types": [],
+    "candidate_target_type": "Autodesk.Revit.DB.Material",
+    "candidate_edge_type": "USES_MATERIAL",
+    "edge_confidence": "name_only_candidate",
+    "evidence": [
+      "member name 'MaterialCategory' matches keyword pattern /Material/ but return type 'string' gives no type-level confirmation"
+    ],
+    "source_url": "https://www.revitapidocs.com/2024/75828584-b04c-7f5e-3eb1-353bca44cdec.htm",
+    "parser_notes": []
+  },
+  {
+    "source_type": "Autodesk.Revit.DB.Material",
+    "member_name": "MaterialClass",
+    "member_kind": "property",
+    "raw_signature": "public string MaterialClass { get ; set ; }",
+    "return_type": "string",
+    "parameter_types": [],
+    "candidate_target_type": "Autodesk.Revit.DB.Material",
+    "candidate_edge_type": "USES_MATERIAL",
+    "edge_confidence": "name_only_candidate",
+    "evidence": [
+      "member name 'MaterialClass' matches keyword pattern /Material/ but return type 'string' gives no type-level confirmation"
+    ],
+    "source_url": "https://www.revitapidocs.com/2024/ad8d658d-736a-f89c-981a-555f0d69c2e5.htm",
+    "parser_notes": []
+  },
+  {
+    "source_type": "Autodesk.Revit.DB.Material",
+    "member_name": "StructuralAssetId",
+    "member_kind": "property",
+    "raw_signature": "public ElementId StructuralAssetId { get ; set ; }",
+    "return_type": "ElementId",
+    "parameter_types": [],
+    "candidate_target_type": null,
+    "candidate_edge_type": "UNKNOWN_ELEMENTID_REFERENCE",
+    "edge_confidence": "unknown_reference",
+    "evidence": [
+      "return type is ElementId but member name gives no strong hint of the target type"
+    ],
+    "source_url": "https://www.revitapidocs.com/2024/9b6f4d74-4c3b-06cc-874c-176758d305db.htm",
+    "parser_notes": []
+  },
+  {
+    "source_type": "Autodesk.Revit.DB.Material",
+    "member_name": "SurfaceBackgroundPatternId",
+    "member_kind": "property",
+    "raw_signature": "public ElementId SurfaceBackgroundPatternId { get ; set ; }",
+    "return_type": "ElementId",
+    "parameter_types": [],
+    "candidate_target_type": null,
+    "candidate_edge_type": "UNKNOWN_ELEMENTID_REFERENCE",
+    "edge_confidence": "unknown_reference",
+    "evidence": [
+      "return type is ElementId but member name gives no strong hint of the target type"
+    ],
+    "source_url": "https://www.revitapidocs.com/2024/6b7f71e4-7d89-ab30-3eda-65ca8bc038e2.htm",
+    "parser_notes": []
+  },
+  {
+    "source_type": "Autodesk.Revit.DB.Material",
+    "member_name": "SurfaceForegroundPatternId",
+    "member_kind": "property",
+    "raw_signature": "public ElementId SurfaceForegroundPatternId { get ; set ; }",
+    "return_type": "ElementId",
+    "parameter_types": [],
+    "candidate_target_type": null,
+    "candidate_edge_type": "UNKNOWN_ELEMENTID_REFERENCE",
+    "edge_confidence": "unknown_reference",
+    "evidence": [
+      "return type is ElementId but member name gives no strong hint of the target type"
+    ],
+    "source_url": "https://www.revitapidocs.com/2024/dc5602cc-54d3-2be0-bd3c-4dd9efc14010.htm",
+    "parser_notes": []
+  },
+  {
+    "source_type": "Autodesk.Revit.DB.Material",
+    "member_name": "ThermalAssetId",
+    "member_kind": "property",
+    "raw_signature": "public ElementId ThermalAssetId { get ; set ; }",
+    "return_type": "ElementId",
+    "parameter_types": [],
+    "candidate_target_type": null,
+    "candidate_edge_type": "UNKNOWN_ELEMENTID_REFERENCE",
+    "edge_confidence": "unknown_reference",
+    "evidence": [
+      "return type is ElementId but member name gives no strong hint of the target type"
+    ],
+    "source_url": "https://www.revitapidocs.com/2024/76db3e11-fdaa-14f1-58c6-6f66ed70e0bd.htm",
+    "parser_notes": []
+  },
+  {
+    "source_type": "Autodesk.Revit.DB.View",
+    "member_name": "AnalysisDisplayStyleId",
+    "member_kind": "property",
+    "raw_signature": "public ElementId AnalysisDisplayStyleId { get ; set ; }",
+    "return_type": "ElementId",
+    "parameter_types": [],
+    "candidate_target_type": null,
+    "candidate_edge_type": "UNKNOWN_ELEMENTID_REFERENCE",
+    "edge_confidence": "unknown_reference",
+    "evidence": [
+      "return type is ElementId but member name gives no strong hint of the target type"
+    ],
+    "source_url": "https://www.revitapidocs.com/2024/7becc6f0-0510-745b-b4ba-24bbf875919d.htm",
+    "parser_notes": []
+  },
+  {
+    "source_type": "Autodesk.Revit.DB.View",
+    "member_name": "AssociatedAssemblyInstanceId",
+    "member_kind": "property",
+    "raw_signature": "public ElementId AssociatedAssemblyInstanceId { get ; }",
+    "return_type": "ElementId",
+    "parameter_types": [],
+    "candidate_target_type": null,
+    "candidate_edge_type": "MEMBER_OF_ASSEMBLY",
+    "edge_confidence": "elementid_with_strong_name",
+    "evidence": [
+      "member name 'AssociatedAssemblyInstanceId' matches keyword pattern /Assembly/"
+    ],
+    "source_url": "https://www.revitapidocs.com/2024/57f30f8b-8155-8916-4bef-b904e22b583e.htm",
+    "parser_notes": [
+      "name keyword matched but no reliable target type mapping exists for it yet"
+    ]
+  },
+  {
+    "source_type": "Autodesk.Revit.DB.View",
+    "member_name": "DetailLevel",
+    "member_kind": "property",
+    "raw_signature": "public ViewDetailLevel DetailLevel { get ; set ; }",
+    "return_type": "ViewDetailLevel",
+    "parameter_types": [],
+    "candidate_target_type": "Autodesk.Revit.DB.Level",
+    "candidate_edge_type": "ASSIGNED_TO_LEVEL",
+    "edge_confidence": "name_only_candidate",
+    "evidence": [
+      "member name 'DetailLevel' matches keyword pattern /Level/ but return type 'ViewDetailLevel' gives no type-level confirmation"
+    ],
+    "source_url": "https://www.revitapidocs.com/2024/a4e9896a-606e-8b97-c8a7-a8397419145e.htm",
+    "parser_notes": []
+  },
+  {
+    "source_type": "Autodesk.Revit.DB.View",
+    "member_name": "GenLevel",
+    "member_kind": "property",
+    "raw_signature": "public Level GenLevel { get ; }",
+    "return_type": "Level",
+    "parameter_types": [],
+    "candidate_target_type": "Autodesk.Revit.DB.Level",
+    "candidate_edge_type": "ASSIGNED_TO_LEVEL",
+    "edge_confidence": "direct_return_type",
+    "evidence": [
+      "return type 'Level' directly names a Revit DB object type"
+    ],
+    "source_url": "https://www.revitapidocs.com/2024/95f430ac-65e5-87b1-aea9-937412ef2eb8.htm",
+    "parser_notes": []
+  },
+  {
+    "source_type": "Autodesk.Revit.DB.View",
+    "member_name": "IsAssemblyView",
+    "member_kind": "property",
+    "raw_signature": "public bool IsAssemblyView { get ; }",
+    "return_type": "bool",
+    "parameter_types": [],
+    "candidate_target_type": null,
+    "candidate_edge_type": "MEMBER_OF_ASSEMBLY",
+    "edge_confidence": "name_only_candidate",
+    "evidence": [
+      "member name 'IsAssemblyView' matches keyword pattern /Assembly/ but return type 'bool' gives no type-level confirmation"
+    ],
+    "source_url": "https://www.revitapidocs.com/2024/259a699e-b118-58d9-debe-7975d04fd2bb.htm",
+    "parser_notes": []
+  },
+  {
+    "source_type": "Autodesk.Revit.DB.View",
+    "member_name": "IsTemplate",
+    "member_kind": "property",
+    "raw_signature": "public bool IsTemplate { get ; }",
+    "return_type": "bool",
+    "parameter_types": [],
+    "candidate_target_type": "Autodesk.Revit.DB.View",
+    "candidate_edge_type": "CONTROLLED_BY_TEMPLATE",
+    "edge_confidence": "name_only_candidate",
+    "evidence": [
+      "member name 'IsTemplate' matches keyword pattern /Template/ but return type 'bool' gives no type-level confirmation"
+    ],
+    "source_url": "https://www.revitapidocs.com/2024/bd7d3469-dc89-93b7-1cb8-848fd4f38d65.htm",
+    "parser_notes": []
+  },
+  {
+    "source_type": "Autodesk.Revit.DB.View",
+    "member_name": "ViewTemplateId",
+    "member_kind": "property",
+    "raw_signature": "public ElementId ViewTemplateId { get ; set ; }",
+    "return_type": "ElementId",
+    "parameter_types": [],
+    "candidate_target_type": "Autodesk.Revit.DB.View",
+    "candidate_edge_type": "CONTROLLED_BY_TEMPLATE",
+    "edge_confidence": "elementid_with_strong_name",
+    "evidence": [
+      "member name 'ViewTemplateId' matches keyword pattern /Template/"
+    ],
+    "source_url": "https://www.revitapidocs.com/2024/2559f20b-87d4-e879-3139-7f555b251b71.htm",
+    "parser_notes": []
+  },
+  {
+    "source_type": "Autodesk.Revit.DB.Viewport",
+    "member_name": "SheetId",
+    "member_kind": "property",
+    "raw_signature": "public ElementId SheetId { get ; }",
+    "return_type": "ElementId",
+    "parameter_types": [],
+    "candidate_target_type": "Autodesk.Revit.DB.ViewSheet",
+    "candidate_edge_type": "PLACED_ON_SHEET",
+    "edge_confidence": "elementid_with_strong_name",
+    "evidence": [
+      "member name 'SheetId' matches keyword pattern /Sheet/"
+    ],
+    "source_url": "https://www.revitapidocs.com/2024/187ece0f-f732-ec3c-1f20-ad688b8c1499.htm",
+    "parser_notes": []
+  },
+  {
+    "source_type": "Autodesk.Revit.DB.Viewport",
+    "member_name": "ViewId",
+    "member_kind": "property",
+    "raw_signature": "public ElementId ViewId { get ; set ; }",
+    "return_type": "ElementId",
+    "parameter_types": [],
+    "candidate_target_type": null,
+    "candidate_edge_type": "UNKNOWN_ELEMENTID_REFERENCE",
+    "edge_confidence": "unknown_reference",
+    "evidence": [
+      "return type is ElementId but member name gives no strong hint of the target type"
+    ],
+    "source_url": "https://www.revitapidocs.com/2024/f96f5255-17b5-d4fc-c3a3-049fae1f6eb9.htm",
+    "parser_notes": []
+  },
+  {
+    "source_type": "Autodesk.Revit.DB.ViewSheet",
+    "member_name": "SheetNumber",
+    "member_kind": "property",
+    "raw_signature": "public string SheetNumber { get ; set ; }",
+    "return_type": "string",
+    "parameter_types": [],
+    "candidate_target_type": "Autodesk.Revit.DB.ViewSheet",
+    "candidate_edge_type": "PLACED_ON_SHEET",
+    "edge_confidence": "name_only_candidate",
+    "evidence": [
+      "member name 'SheetNumber' matches keyword pattern /Sheet/ but return type 'string' gives no type-level confirmation"
+    ],
+    "source_url": "https://www.revitapidocs.com/2024/5f9129ba-b323-c55d-e27e-46d88bec503b.htm",
+    "parser_notes": []
+  },
+  {
+    "source_type": "Autodesk.Revit.DB.Architecture.Room",
+    "member_name": "UpperLimit",
+    "member_kind": "property",
+    "raw_signature": "public Level UpperLimit { get ; set ; }",
+    "return_type": "Level",
+    "parameter_types": [],
+    "candidate_target_type": "Autodesk.Revit.DB.Level",
+    "candidate_edge_type": "UNKNOWN_DB_OBJECT_REFERENCE",
+    "edge_confidence": "direct_return_type",
+    "evidence": [
+      "return type 'Level' directly names a Revit DB object type"
+    ],
+    "source_url": "https://www.revitapidocs.com/2024/ee4b5be1-482f-e195-e522-28cc2d90dd9a.htm",
+    "parser_notes": []
+  },
+  {
+    "source_type": "Autodesk.Revit.DB.Architecture.SpatialElement",
+    "member_name": "Level",
+    "member_kind": "property",
+    "raw_signature": "public Level Level { get ; }",
+    "return_type": "Level",
+    "parameter_types": [],
+    "candidate_target_type": "Autodesk.Revit.DB.Level",
+    "candidate_edge_type": "ASSIGNED_TO_LEVEL",
+    "edge_confidence": "direct_return_type",
+    "evidence": [
+      "return type 'Level' directly names a Revit DB object type"
+    ],
+    "source_url": "https://www.revitapidocs.com/2024/af1207d3-5875-3866-a259-159f8d3af4b6.htm",
+    "parser_notes": []
+  }
+]
