@@ -4,3 +4,4 @@ __pycache__/
 .pytest_cache/
 build/
 dist/
+revit_semantic_schema/outputs/*/cache/
