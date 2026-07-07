@@ -234,6 +234,52 @@ def test_parse_members_index_page_does_not_qualify_inherited_owner_with_sub_name
     assert notes == []
 
 
+# Real markup shape from a live Revit 2025 run (Raspberry Pi, 2026-07, see
+# docs/crawl_notes.md): the h1.heading section marker used in 2024 is gone,
+# replaced by a collapsible region -- a <span class=collapsibleRegionTitle>
+# (icon + section name as trailing text) followed by a sibling
+# <div class=collapsibleSection> wrapping that section's table. Modeled on
+# the real ACADExportOptions Properties page snippet the user pasted, with a
+# Methods section added so both section kinds are exercised in one page.
+_MEMBERS_PAGE_2025_COLLAPSIBLE_REGIONS = """
+<html><body>
+<h4 id="api-title" class="truncate"> Wall Members </h4>
+<div id="mainBody">
+<div class=collapsibleAreaRegion>
+<span class=collapsibleRegionTitle tabindex=0><img class=collapseToggle src='sectionexpanded.png'> Methods</span>
+</div>
+<div class=collapsibleSection id=IDMethodsSection>
+<table class="members" id="memberList">
+<tr><th>Icon</th><th>Name</th><th>Description</th></tr>
+<tr data="public;declared;notNetfw;"><td><img></td><td><a href="flip.htm">Flip</a></td><td>Flips the wall.</td></tr>
+</table>
+</div>
+<div class=collapsibleAreaRegion>
+<span class=collapsibleRegionTitle tabindex=0><img class=collapseToggle src='sectionexpanded.png'> Properties</span>
+</div>
+<div class=collapsibleSection id=IDPropertiesSection>
+<table class="members" id="memberList">
+<tr><th>Icon</th><th>Name</th><th>Description</th></tr>
+<tr data="public;declared;notNetfw;"><td><img></td><td><a href="width.htm">Width</a></td><td>The wall width.</td></tr>
+</table>
+</div>
+</div>
+</body></html>
+"""
+
+
+def test_parse_members_index_page_recognizes_2025_collapsible_region_headings():
+    links, notes = parse_members_index_page(
+        _MEMBERS_PAGE_2025_COLLAPSIBLE_REGIONS,
+        "https://www.revitapidocs.com/2025/wall-members.htm",
+    )
+    by_name = {link["name"]: link for link in links}
+
+    assert notes == []
+    assert by_name["Flip"]["member_kind"] is MemberKind.METHOD
+    assert by_name["Width"]["member_kind"] is MemberKind.PROPERTY
+
+
 def test_find_members_page_link(load_fixture):
     html = load_fixture("real_wall_members.htm")
     url = "https://www.revitapidocs.com/2024/d0678575-843b-42ea-c91d-c94b13d7dd4f.htm"

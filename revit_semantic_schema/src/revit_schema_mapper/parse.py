@@ -27,6 +27,12 @@ below), which itself holds two ``table.members``/``table#memberList`` tables
 title lives in ``h4#api-title``, not ``h1``/``#PageHeader`` (those are kept
 as fallbacks in case older cached years use classic Sandcastle markup). See
 ``pipeline.py`` for how the class-page -> members-page link is followed.
+
+CONFIRMED AGAINST LIVE MARKUP (2025, see docs/crawl_notes.md): the
+``h1.heading`` section marker is gone. Sections are now collapsible regions:
+a ``<span class=collapsibleRegionTitle>`` (an icon plus the section name,
+e.g. "Properties") followed by a ``<div class=collapsibleSection>`` wrapping
+that section's table. ``parse_members_index_page`` recognizes both forms.
 """
 
 from __future__ import annotations
@@ -640,12 +646,21 @@ def _is_members_table(tag) -> bool:
 def parse_members_index_page(html: str, base_url: str) -> tuple[list[dict], list[str]]:
     """Parse a "<Type> Members" page into member link dicts.
 
-    Confirmed live layout: an ``h1.heading`` reading "Methods" or
+    Confirmed live layout (2024): an ``h1.heading`` reading "Methods" or
     "Properties" precedes a ``table.members``/``table#memberList`` for that
     section, in document order (the live markup has an unclosed ``<div>``
     upstream of these, so they end up nested rather than siblings -- a full
     descendant walk in document order is used rather than direct children,
-    to be robust to that). Returns (links, parser_notes); each link dict has
+    to be robust to that).
+
+    Confirmed live layout (2025, see docs/crawl_notes.md): the ``h1.heading``
+    marker is gone. Each section is instead a collapsible region: a
+    ``<span class=collapsibleRegionTitle>`` (icon ``<img>`` plus the section
+    name as trailing text, e.g. "Properties") followed by a sibling
+    ``<div class=collapsibleSection>`` wrapping that section's table. Both
+    markers are recognized here -- 2025's structural change didn't remove the
+    2024 form from every cached year, so both are checked in document order.
+    Returns (links, parser_notes); each link dict has
     ``name``, ``url``, and ``member_kind`` (a ``MemberKind`` or None if the
     section heading wasn't recognized). Entries with no link (e.g. inherited
     `Object` members like ``Equals``/``GetHashCode``, which have no page of
@@ -674,6 +689,9 @@ def parse_members_index_page(html: str, base_url: str) -> tuple[list[dict], list
         if isinstance(node, str):
             continue
         if node.name == "h1" and "heading" in node.attrs.get("class", []):
+            current_section = node.get_text(strip=True)
+            continue
+        if node.name == "span" and "collapsibleRegionTitle" in node.attrs.get("class", []):
             current_section = node.get_text(strip=True)
             continue
         if not _is_members_table(node) or id(node) in seen_tables:
