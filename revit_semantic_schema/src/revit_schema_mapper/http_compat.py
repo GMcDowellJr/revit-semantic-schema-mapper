@@ -41,6 +41,7 @@ exactly this error and understand it's a workaround, not a fix.
 from __future__ import annotations
 
 import gzip
+import json as json_module
 import os
 import ssl
 import urllib.error
@@ -108,6 +109,36 @@ class HttpClient:
                 return FetchResult(text=body, status_code=response.status)
         except urllib.error.HTTPError as exc:
             raise HttpError(f"HTTP {exc.code} for {url}") from exc
+        except urllib.error.URLError as exc:
+            raise HttpError(f"Failed to reach {url}: {exc.reason}") from exc
+
+    def post_json(self, url: str, *, headers: dict[str, str], json_body: dict, timeout: float) -> FetchResult:
+        """POST a JSON body with extra headers merged on top of this
+        client's fixed headers -- used by ``community.py``'s optional
+        OpenRouter labeling call. Same requests/urllib fallback as ``get``.
+        """
+        merged_headers = {**self._headers, **headers, "Content-Type": "application/json"}
+
+        if self._session is not None:
+            try:
+                response = self._session.post(url, json=json_body, headers=merged_headers, timeout=timeout)
+                response.raise_for_status()
+            except requests.RequestException as exc:  # noqa: BLE001 - normalize to HttpError
+                raise HttpError(str(exc)) from exc
+            return FetchResult(text=response.text, status_code=response.status_code)
+
+        data = json_module.dumps(json_body).encode("utf-8")
+        request = urllib.request.Request(url, data=data, headers=merged_headers, method="POST")
+        try:
+            with urllib.request.urlopen(request, timeout=timeout, context=_make_ssl_context()) as response:  # noqa: S310 - fixed http(s) scheme, scoped by caller
+                raw = response.read()
+                raw = _decompress(raw, response.headers.get("Content-Encoding", ""))
+                charset = response.headers.get_content_charset() or "utf-8"
+                body = raw.decode(charset, errors="replace")
+                return FetchResult(text=body, status_code=response.status)
+        except urllib.error.HTTPError as exc:
+            detail = exc.read().decode("utf-8", errors="replace") if exc.fp else ""
+            raise HttpError(f"HTTP {exc.code} for {url}: {detail[:300]}") from exc
         except urllib.error.URLError as exc:
             raise HttpError(f"Failed to reach {url}: {exc.reason}") from exc
 

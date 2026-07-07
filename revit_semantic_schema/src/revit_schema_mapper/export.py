@@ -4,10 +4,23 @@ from __future__ import annotations
 
 import dataclasses
 import json
+import re
 from enum import Enum
 from pathlib import Path
 
-from .models import ApiPage, EdgeCandidate, MemberKind, NodeCandidate
+from . import semantic_roles
+from .graph import GraphBuildResult, filter_core
+from .models import (
+    ApiPage,
+    ClassRole,
+    ConfidenceLabel,
+    EdgeCandidate,
+    EdgeType,
+    IsElementCandidate,
+    Kind,
+    MemberKind,
+    NodeCandidate,
+)
 
 
 def _to_jsonable(obj):
@@ -55,6 +68,52 @@ def write_node_candidates(output_dir: Path, nodes: list[NodeCandidate]) -> None:
     _write_json(output_dir / "node_type_candidates.json", nodes)
 
 
+def read_node_candidates(output_dir: Path) -> list[NodeCandidate]:
+    """Inverse of ``write_node_candidates`` -- lets ``--graph-only`` rebuild
+    the graph from a previous run's output without re-crawling/re-parsing.
+    """
+    raw = json.loads((output_dir / "node_type_candidates.json").read_text(encoding="utf-8"))
+    return [
+        NodeCandidate(
+            full_type_name=r["full_type_name"],
+            short_name=r["short_name"],
+            kind=Kind(r["kind"]),
+            namespace=r["namespace"],
+            base_type=r.get("base_type"),
+            inheritance_chain=r.get("inheritance_chain", []),
+            is_element_candidate=IsElementCandidate(r["is_element_candidate"]),
+            class_role=ClassRole(r["class_role"]),
+            evidence=r.get("evidence", []),
+            source_url=r.get("source_url", ""),
+        )
+        for r in raw
+    ]
+
+
+def read_edge_candidates(output_dir: Path) -> list[EdgeCandidate]:
+    """Inverse of ``write_edge_candidates`` (reads ``candidate_edges.json``,
+    the union of both property/method files) -- see ``read_node_candidates``.
+    """
+    raw = json.loads((output_dir / "candidate_edges.json").read_text(encoding="utf-8"))
+    return [
+        EdgeCandidate(
+            source_type=r["source_type"],
+            member_name=r["member_name"],
+            member_kind=MemberKind(r["member_kind"]),
+            raw_signature=r["raw_signature"],
+            return_type=r.get("return_type"),
+            parameter_types=r.get("parameter_types", []),
+            candidate_target_type=r.get("candidate_target_type"),
+            candidate_edge_type=EdgeType(r["candidate_edge_type"]),
+            edge_confidence=ConfidenceLabel(r["edge_confidence"]),
+            evidence=r.get("evidence", []),
+            source_url=r.get("source_url", ""),
+            parser_notes=r.get("parser_notes", []),
+        )
+        for r in raw
+    ]
+
+
 def write_edge_candidates(output_dir: Path, edges: list[EdgeCandidate]) -> None:
     properties = [e for e in edges if e.member_kind is MemberKind.PROPERTY]
     methods = [e for e in edges if e.member_kind is MemberKind.METHOD]
@@ -71,6 +130,143 @@ def write_enum_catalogs(output_dir: Path, pages: list[ApiPage]) -> None:
         catalog.setdefault(page.type_name, [])
         catalog[page.type_name].extend(_to_jsonable(page.enum_members))
     _write_json(output_dir / "enum_catalogs.json", catalog)
+
+
+_GRAPH_VIEWER_TEMPLATE_PATH = Path(__file__).parent / "graph_viewer_template.html"
+
+
+def write_graph_html(output_dir: Path, result: GraphBuildResult, *, revit_version: str) -> None:
+    """Write ``graph.html``: a self-contained, dependency-free interactive
+    viewer (canvas force-directed layout, search, community filter, node
+    inspector -- no CDN scripts, so it works even opened directly from
+    disk) over the same core subgraph as ``graph_core.json``.
+
+    Node color is ``class_role`` (a fixed, validated 8-slot categorical
+    palette); the Communities panel is real structural communities (see
+    ``graph.apply_communities``), shown as a labeled filter list rather than
+    colored, since community count is unbounded and can't be given its own
+    validated hue per entry without cycling past that fixed set.
+    """
+    core_nodes, core_edges = filter_core(result)
+
+    node_payload = [
+        {
+            "id": n.id,
+            "short_name": n.short_name,
+            "external": n.external,
+            "kind": n.kind,
+            "namespace": n.namespace,
+            "class_role": n.class_role,
+            "source_url": n.source_url,
+            "community_id": n.community_id,
+        }
+        for n in core_nodes
+    ]
+    edge_payload = [
+        {
+            "source": e.source,
+            "target": e.target,
+            "member_name": e.member_name,
+            "edge_type": e.edge_type.value,
+            "confidence": e.confidence.value,
+            "source_url": e.source_url,
+        }
+        for e in core_edges
+    ]
+    community_payload = [
+        {"id": c.id, "label": c.label, "label_source": c.label_source, "size": c.size} for c in result.communities
+    ]
+
+    payload = json.dumps({"nodes": node_payload, "edges": edge_payload, "communities": community_payload}, separators=(",", ":"))
+    # Defensive: a literal "</script" substring anywhere in this payload
+    # (e.g. inside a source_url) would close the <script> tag early as far
+    # as the HTML parser is concerned, regardless of JS string quoting --
+    # HTML parsing happens before JS parsing.
+    payload = payload.replace("</", "<\\/")
+
+    template = _GRAPH_VIEWER_TEMPLATE_PATH.read_text(encoding="utf-8")
+    html = template.replace("__GRAPH_DATA__", payload).replace("__REVIT_VERSION__", revit_version)
+    (output_dir / "graph.html").write_text(html, encoding="utf-8")
+
+
+def write_semantic_relationship_map(
+    output_dir: Path,
+    result: GraphBuildResult,
+    *,
+    revit_version: str,
+    top_relationships: int | None = 12,
+    min_weight: int = 1,
+    max_examples: int = 80,
+) -> None:
+    """Write ``semantic_relationship_map.html``: a coarser, domain-oriented
+    lens on the same core subgraph as ``graph.html`` -- role -> relationship
+    -> role Sankey bands plus a role x relationship-type heatmap, both with
+    click-to-drilldown back to the real underlying edges. See
+    ``semantic_roles.py``'s module docstring for what this answers that the
+    raw type-level graph doesn't, and the tradeoffs its role classification
+    makes.
+    """
+    core_nodes, core_edges = filter_core(result)
+    data = semantic_roles.aggregate_graph(
+        core_nodes, core_edges, top_relationships=top_relationships, min_weight=min_weight, max_examples=max_examples
+    )
+    html = semantic_roles.render_html(data, revit_version=revit_version)
+    (output_dir / "semantic_relationship_map.html").write_text(html, encoding="utf-8")
+
+
+def _graph_metadata(nodes: list, edges: list, *, revit_version: str) -> dict:
+    """Metadata block for a graph.json/graph_core.json -- always derived
+    from the exact ``nodes``/``edges`` being written, never copied from a
+    different (e.g. unfiltered) node/edge set. graph_core.json's edges are
+    all confidence_tier=core by construction, but target_resolution still
+    varies (a core edge can still have an external/short-name-fallback
+    target) and is worth reporting accurately rather than inherited from
+    the full graph.
+    """
+    resolution_counts: dict[str, int] = {}
+    tier_counts: dict[str, int] = {}
+    for e in edges:
+        resolution_counts[e.target_resolution.value] = resolution_counts.get(e.target_resolution.value, 0) + 1
+        tier_counts[e.confidence_tier.value] = tier_counts.get(e.confidence_tier.value, 0) + 1
+
+    return {
+        "revit_version": revit_version,
+        "node_count": len(nodes),
+        "edge_count": len(edges),
+        "external_node_count": sum(1 for n in nodes if n.external),
+        "target_resolution_counts": resolution_counts,
+        "confidence_tier_counts": tier_counts,
+    }
+
+
+def write_graph(output_dir: Path, result: GraphBuildResult, *, revit_version: str) -> None:
+    """Write ``graph.json``: the full materialized graph (see graph.py),
+    plus ``graph_core.json``, the same graph filtered to just the
+    high-confidence 'core' tier -- a small subgraph a downstream tool can
+    trust without first re-implementing the confidence-tier filtering
+    itself.
+
+    ``result.communities`` (see ``graph.apply_communities``) is written
+    identically to both files as a ``communities`` list, plus a
+    ``community_count`` in each file's own metadata block. Unlike
+    ``confidence_tier_counts``/``target_resolution_counts`` -- which really
+    are recomputed per file, from that file's own edges -- communities are
+    detected *once*, over the core subgraph, and are the same set of
+    clusters regardless of which file you're reading; each node's own
+    ``community_id`` (present on the node itself, in both files) is what's
+    scoped to the core subgraph, not the community list.
+    """
+    metadata = _graph_metadata(result.nodes, result.edges, revit_version=revit_version)
+    metadata["community_count"] = len(result.communities)
+    _write_json(output_dir / "graph.json", {"metadata": metadata, "communities": result.communities, "nodes": result.nodes, "edges": result.edges})
+
+    core_nodes, core_edges = filter_core(result)
+    core_metadata = _graph_metadata(core_nodes, core_edges, revit_version=revit_version)
+    core_metadata["community_count"] = len(result.communities)
+    _write_json(
+        output_dir / "graph_core.json",
+        {"metadata": core_metadata, "communities": result.communities, "nodes": core_nodes, "edges": core_edges},
+    )
 
 
 def write_target_report(output_dir: Path, target_report: list) -> None:
@@ -171,6 +367,64 @@ def _room_investigation_section(pages: list[ApiPage]) -> str:
     return "\n".join(lines)
 
 
+def _graph_section(result: GraphBuildResult | None, *, section_number: int) -> list[str]:
+    if result is None:
+        return []
+    core_nodes, core_edges = filter_core(result)
+    tier_counts: dict[str, int] = {}
+    for e in result.edges:
+        tier_counts[e.confidence_tier.value] = tier_counts.get(e.confidence_tier.value, 0) + 1
+
+    lines = [f"## {section_number}. Knowledge graph materialization", ""]
+    lines.append(
+        "`graph.json`/`graph_core.json` resolve each edge's `candidate_target_type` string "
+        "against the crawled node set (see graph.py) instead of leaving it as a loose type name."
+    )
+    lines.append(f"- {len(result.nodes)} total nodes ({result.external_node_count} external -- referenced by an edge but never crawled/classified)")
+    lines.append(f"- {len(result.edges)} total edges")
+    lines.append("- Target resolution: " + ", ".join(f"{k}={v}" for k, v in sorted(result.target_resolution_counts.items())))
+    lines.append("- Confidence tier breakdown: " + ", ".join(f"{k}={v}" for k, v in sorted(tier_counts.items())))
+    lines.append(f"- `graph_core.json` (confidence_tier=core only): {len(core_nodes)} nodes, {len(core_edges)} edges")
+    if result.communities:
+        label_sources = {}
+        for c in result.communities:
+            label_sources[c.label_source] = label_sources.get(c.label_source, 0) + 1
+        lines.append(
+            f"- {len(result.communities)} communities detected over the core subgraph "
+            f"({', '.join(f'{k}={v}' for k, v in sorted(label_sources.items()))} labels)"
+        )
+        top = sorted(result.communities, key=lambda c: -c.size)[:10]
+        lines.append("- Largest communities:")
+        lines.extend(f"  - `{c.label}` ({c.size} nodes)" for c in top)
+    else:
+        lines.append("- 0 communities detected (no core-tier edges, or apply_communities wasn't run)")
+    lines.append("")
+    return lines
+
+
+_GRAPH_SECTION_HEADING_RE = re.compile(r"^## \d+\. Knowledge graph materialization\s*$", re.MULTILINE)
+
+
+def refresh_graph_section_in_file(path: Path, result: GraphBuildResult, *, section_number: int) -> None:
+    """Replace (or append, if absent) the 'Knowledge graph materialization'
+    section of an already-written ``summary.md``/``validation_summary.md``
+    with one reflecting ``result`` -- used by ``--graph-only`` so the
+    summary doesn't go stale relative to a freshly recomputed graph.json
+    without needing to regenerate the rest of the summary (which needs the
+    full page/index data this mode deliberately skips). A no-op if ``path``
+    doesn't exist, so callers can try both summary filenames unconditionally
+    without knowing in advance whether this was a full or targeted run.
+    """
+    if not path.exists():
+        return
+    text = path.read_text(encoding="utf-8")
+    match = _GRAPH_SECTION_HEADING_RE.search(text)
+    if match:
+        text = text[: match.start()]
+    section = _graph_section(result, section_number=section_number)
+    path.write_text(text.rstrip("\n") + "\n\n" + "\n".join(section) + "\n", encoding="utf-8")
+
+
 def write_summary(
     output_dir: Path,
     *,
@@ -182,6 +436,7 @@ def write_summary(
     edge_candidates: list[EdgeCandidate],
     limitations: list[str],
     next_steps: list[str],
+    graph_result: GraphBuildResult | None = None,
 ) -> None:
     properties = [e for e in edge_candidates if e.member_kind is MemberKind.PROPERTY]
     methods = [e for e in edge_candidates if e.member_kind is MemberKind.METHOD]
@@ -260,6 +515,7 @@ def write_summary(
     lines.append("## 13. Recommended next steps")
     lines.extend(f"- {item}" for item in next_steps)
     lines.append("")
+    lines.extend(_graph_section(graph_result, section_number=14))
 
     (output_dir / "summary.md").write_text("\n".join(lines), encoding="utf-8")
 
@@ -277,6 +533,7 @@ def write_validation_summary(
     edge_candidates: list[EdgeCandidate],
     failed_urls: list[str],
     discovery_notes: list[str],
+    graph_result: GraphBuildResult | None = None,
 ) -> None:
     """Write ``validation_summary.md`` for a targeted validation crawl
     (``pipeline.run_targeted_pipeline``). Unlike ``write_summary``, this
@@ -382,5 +639,6 @@ def write_validation_summary(
         "has been validated against a live Revit document."
     )
     lines.append("")
+    lines.extend(_graph_section(graph_result, section_number=9))
 
     (output_dir / "validation_summary.md").write_text("\n".join(lines), encoding="utf-8")

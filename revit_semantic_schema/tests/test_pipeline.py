@@ -2,10 +2,29 @@ import json
 
 import pytest
 
+from revit_schema_mapper import export
 from revit_schema_mapper import pipeline as pipeline_module
 from revit_schema_mapper.crawl import CrawlConfig, Crawler
-from revit_schema_mapper.models import ApiPage, ClassRole, IsElementCandidate, Kind, MemberInfo, MemberKind, NodeCandidate
-from revit_schema_mapper.pipeline import _build_known_edge_report, _crawl_and_parse, run_discovery, run_pipeline, run_targeted_pipeline
+from revit_schema_mapper.models import (
+    ApiPage,
+    ClassRole,
+    ConfidenceLabel,
+    EdgeCandidate,
+    EdgeType,
+    IsElementCandidate,
+    Kind,
+    MemberInfo,
+    MemberKind,
+    NodeCandidate,
+)
+from revit_schema_mapper.pipeline import (
+    _build_known_edge_report,
+    _crawl_and_parse,
+    run_discovery,
+    run_graph_only,
+    run_pipeline,
+    run_targeted_pipeline,
+)
 
 _WIDGET_NAMESPACE_TREE = [
     {
@@ -216,7 +235,7 @@ def test_crawl_and_parse_calls_checkpoint_periodically_with_growing_state(tmp_pa
 
     calls: list[tuple[int, int]] = []
 
-    def spy_checkpoint(pages, failed_urls):
+    def spy_checkpoint(pages, failed_urls, is_final=False):
         calls.append((len(pages), len(failed_urls)))
 
     # checkpoint_min_interval_seconds=0 disables the wall-clock gate (see
@@ -258,7 +277,7 @@ def test_crawl_and_parse_checkpoint_is_rate_limited_by_wall_clock_time(tmp_path)
 
     calls: list[tuple[int, int]] = []
 
-    def spy_checkpoint(pages, failed_urls):
+    def spy_checkpoint(pages, failed_urls, is_final=False):
         calls.append((len(pages), len(failed_urls)))
 
     # checkpoint_interval=1 would fire on every single page (as proven
@@ -310,7 +329,7 @@ def test_checkpoint_cooldown_starts_after_export_finishes_not_before(tmp_path, m
 
     calls: list[int] = []
 
-    def spy_checkpoint(pages, failed_urls):
+    def spy_checkpoint(pages, failed_urls, is_final=False):
         calls.append(len(calls))
         if len(calls) == 1:
             fake_clock.jump(5.0)  # simulate a slow export exceeding checkpoint_min_interval_seconds
@@ -354,7 +373,7 @@ def test_crawl_and_parse_writes_final_checkpoint_on_interrupt(tmp_path, monkeypa
 
     calls: list[tuple[int, int]] = []
 
-    def spy_checkpoint(pages, failed_urls):
+    def spy_checkpoint(pages, failed_urls, is_final=False):
         calls.append((len(pages), len(failed_urls)))
 
     with pytest.raises(KeyboardInterrupt):
@@ -473,6 +492,68 @@ def test_run_targeted_pipeline_reports_found_and_missing_targets_and_known_edges
     assert (output_dir / "target_report.json").exists()
     assert (output_dir / "known_edge_report.json").exists()
     assert (output_dir / "validation_summary.md").exists()
+    assert (output_dir / "graph.html").exists()
+
+
+def test_label_communities_llm_only_fires_on_the_final_checkpoint(tmp_path, monkeypatch):
+    """A long crawl's periodic checkpoints must not each re-trigger the
+    opt-in OpenRouter labeling call -- that has a real per-call cost, and
+    would otherwise multiply with every checkpoint of a multi-hour crawl.
+    Only the guaranteed final checkpoint should request LLM labels.
+    """
+    output_dir = tmp_path / "output"
+    config = CrawlConfig(version="2024", namespace_prefix="Autodesk.Revit.DB", cache_dir=output_dir / "cache")
+    crawler = Crawler(config)
+
+    tree = [
+        {
+            "title": "Namespaces",
+            "children": [
+                {
+                    "title": "Autodesk.Revit.DB Namespace",
+                    "tag": "Namespace",
+                    "children": [
+                        {
+                            "title": "View Class",
+                            "href": "view-class.htm",
+                            "tag": "Class",
+                            "children": [
+                                {"title": "View Members", "href": "view-members.htm", "tag": "Members"},
+                            ],
+                        },
+                    ],
+                },
+            ],
+        }
+    ]
+    _prime_cache(crawler, crawler.namespace_json_url(), json.dumps(tree))
+    _prime_cache(crawler, "https://www.revitapidocs.com/2024/view-class.htm", _VIEW_CLASS_HTML)
+    _prime_cache(crawler, "https://www.revitapidocs.com/2024/view-members.htm", _VIEW_MEMBERS_HTML)
+    _prime_cache(crawler, "https://www.revitapidocs.com/2024/viewtemplateid-property.htm", _VIEW_TEMPLATE_ID_PROPERTY_HTML)
+
+    calls = []
+    real_apply_communities = pipeline_module.apply_communities
+
+    def spy_apply_communities(result, *, use_llm_labels, model, api_key):
+        calls.append(use_llm_labels)
+        real_apply_communities(result, use_llm_labels=False, model=model, api_key=api_key)
+
+    monkeypatch.setattr(pipeline_module, "apply_communities", spy_apply_communities)
+
+    run_targeted_pipeline(
+        config,
+        output_dir,
+        target_full_type_names=["Autodesk.Revit.DB.View"],
+        known_edge_checks=[],
+        checkpoint_interval=1,
+        checkpoint_min_interval_seconds=0,
+        label_communities_llm=True,
+        openrouter_api_key="fake-key-not-actually-used",
+    )
+
+    assert len(calls) >= 1
+    assert calls[-1] is True
+    assert all(c is False for c in calls[:-1])
 
 
 _WALL_CLASS_HTML_NO_INLINE_TABLE = """
@@ -707,6 +788,49 @@ def test_known_edge_report_rejects_same_named_member_on_unrelated_type():
     assert result.member_found is False
     assert result.actual_declaring_type is None
     assert "not crawled/parsed" in result.note
+
+
+def _edge_candidate(source_type: str, target: str, edge_type: EdgeType, confidence: ConfidenceLabel) -> EdgeCandidate:
+    return EdgeCandidate(
+        source_type=source_type,
+        member_name="SomeMember",
+        member_kind=MemberKind.PROPERTY,
+        raw_signature="x",
+        return_type=target,
+        parameter_types=[],
+        candidate_target_type=target,
+        candidate_edge_type=edge_type,
+        edge_confidence=confidence,
+        evidence=[],
+        source_url="https://www.revitapidocs.com/2024/fake.htm",
+    )
+
+
+def test_run_graph_only_rebuilds_graph_and_refreshes_summary_without_crawling(tmp_path):
+    """--graph-only's whole point is to skip crawling/parsing entirely --
+    this only touches node_type_candidates.json/candidate_edges.json/
+    summary.md on disk, never Crawler/CrawlConfig.
+    """
+    nodes = [_node_candidate("Autodesk.Revit.DB.View", []), _node_candidate("Autodesk.Revit.DB.ViewSheet", [])]
+    edges = [_edge_candidate("Autodesk.Revit.DB.View", "Autodesk.Revit.DB.ViewSheet", EdgeType.PLACED_ON_SHEET, ConfidenceLabel.DIRECT_RETURN_TYPE)]
+    export.write_node_candidates(tmp_path, nodes)
+    export.write_edge_candidates(tmp_path, edges)
+    (tmp_path / "summary.md").write_text("# Old summary\n\n## 14. Knowledge graph materialization\n\nSTALE\n", encoding="utf-8")
+
+    result = run_graph_only(tmp_path, revit_version="2024")
+
+    assert len(result.nodes) == 2
+    assert len(result.edges) == 1
+
+    graph_json = json.loads((tmp_path / "graph.json").read_text())
+    assert graph_json["metadata"]["edge_count"] == 1
+    core_json = json.loads((tmp_path / "graph_core.json").read_text())
+    assert core_json["metadata"]["edge_count"] == 1
+
+    summary_text = (tmp_path / "summary.md").read_text()
+    assert "STALE" not in summary_text
+    assert "# Old summary" in summary_text
+    assert summary_text.count("## 14. Knowledge graph materialization") == 1
 
 
 def test_known_edge_report_genuinely_missing_member_is_not_confused_with_cross_type_match():

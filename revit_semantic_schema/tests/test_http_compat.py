@@ -70,3 +70,45 @@ def test_zlib_wrapped_deflate_response_is_decompressed():
 def test_raw_deflate_response_is_decompressed():
     text = _fetch_via(_make_handler("deflate", use_raw_deflate=True))
     assert json.loads(text) == _PAYLOAD
+
+
+def _make_post_handler(captured: dict):
+    class Handler(BaseHTTPRequestHandler):
+        def do_POST(self):
+            length = int(self.headers.get("Content-Length", 0))
+            captured["body"] = json.loads(self.rfile.read(length))
+            captured["headers"] = dict(self.headers)
+            response = json.dumps({"echo": captured["body"]}).encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(response)))
+            self.end_headers()
+            self.wfile.write(response)
+
+        def log_message(self, format, *args):  # noqa: A002 - stdlib signature
+            pass
+
+    return Handler
+
+
+def test_post_json_sends_body_and_merged_headers_and_returns_response():
+    captured: dict = {}
+    server = HTTPServer(("127.0.0.1", 0), _make_post_handler(captured))
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        port = server.server_address[1]
+        client = HttpClient({"User-Agent": "test"})
+        result = client.post_json(
+            f"http://127.0.0.1:{port}/",
+            headers={"Authorization": "Bearer secret"},
+            json_body={"model": "test-model", "messages": [{"role": "user", "content": "hi"}]},
+            timeout=5,
+        )
+        assert json.loads(result.text) == {"echo": {"model": "test-model", "messages": [{"role": "user", "content": "hi"}]}}
+        assert captured["body"] == {"model": "test-model", "messages": [{"role": "user", "content": "hi"}]}
+        assert captured["headers"]["Authorization"] == "Bearer secret"
+        assert captured["headers"]["User-Agent"] == "test"
+    finally:
+        server.shutdown()
+        thread.join()

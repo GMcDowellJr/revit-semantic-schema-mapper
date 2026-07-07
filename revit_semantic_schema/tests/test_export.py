@@ -1,7 +1,23 @@
 import json
+import shutil
+import subprocess
 
-from revit_schema_mapper import export
-from revit_schema_mapper.models import ApiPage, ConfidenceLabel, EdgeCandidate, EdgeType, Kind, MemberInfo, MemberKind
+import pytest
+
+from revit_schema_mapper import export, graph
+from revit_schema_mapper.export import _GRAPH_VIEWER_TEMPLATE_PATH
+from revit_schema_mapper.models import (
+    ApiPage,
+    ClassRole,
+    ConfidenceLabel,
+    EdgeCandidate,
+    EdgeType,
+    IsElementCandidate,
+    Kind,
+    MemberInfo,
+    MemberKind,
+    NodeCandidate,
+)
 
 
 def _edge(
@@ -145,3 +161,209 @@ def test_write_summary_unknown_target_type_breakdown(tmp_path):
     assert "`Autodesk.Revit.DB.FailureDefinitionId`: 1" in section_10
     # The USES_MATERIAL edge isn't UNKNOWN_* and must not appear in this breakdown.
     assert "Autodesk.Revit.DB.Material" not in section_10
+
+
+def _node(full_type_name: str) -> NodeCandidate:
+    return NodeCandidate(
+        full_type_name=full_type_name,
+        short_name=full_type_name.rsplit(".", 1)[-1],
+        kind=Kind.CLASS,
+        namespace="Autodesk.Revit.DB",
+        base_type=None,
+        inheritance_chain=[],
+        is_element_candidate=IsElementCandidate.UNKNOWN,
+        class_role=ClassRole.UNKNOWN,
+        evidence=[],
+        source_url="https://www.revitapidocs.com/2024/x.htm",
+    )
+
+
+def test_write_graph_core_metadata_reflects_only_filtered_edges(tmp_path):
+    """graph_core.json's metadata must describe graph_core.json's own
+    nodes/edges, not the full graph's -- a consumer sizing/validating the
+    filtered file from its own metadata block would otherwise see
+    confidence_tier_counts including likely/unverified_reference (edges
+    that aren't actually present in graph_core.json) and an
+    external_node_count computed against the full node set.
+    """
+    nodes = [_node("Autodesk.Revit.DB.FamilyInstance"), _node("Autodesk.Revit.DB.FamilySymbol")]
+    edges = [
+        _edge("Symbol", EdgeType.INSTANCE_OF, ConfidenceLabel.DIRECT_RETURN_TYPE, "Autodesk.Revit.DB.FamilySymbol"),
+        _edge("GetMaterialIds", EdgeType.USES_MATERIAL, ConfidenceLabel.NAME_ONLY_CANDIDATE, "Autodesk.Revit.DB.Material"),
+    ]
+    for e in edges:
+        e.source_type = "Autodesk.Revit.DB.FamilyInstance"
+
+    result = graph.build_graph(nodes, edges)
+    export.write_graph(tmp_path, result, revit_version="2024")
+
+    core = json.loads((tmp_path / "graph_core.json").read_text())
+    # Only the INSTANCE_OF edge is core tier (NAME_ONLY_CANDIDATE is 'likely').
+    assert core["metadata"]["edge_count"] == 1
+    assert core["metadata"]["confidence_tier_counts"] == {"core": 1}
+    assert core["metadata"]["external_node_count"] == 0
+    assert len(core["edges"]) == 1
+    assert core["edges"][0]["edge_type"] == "INSTANCE_OF"
+
+
+def test_read_node_candidates_round_trips_through_write(tmp_path):
+    nodes = [_node("Autodesk.Revit.DB.View")]
+    export.write_node_candidates(tmp_path, nodes)
+
+    read_back = export.read_node_candidates(tmp_path)
+
+    assert read_back == nodes
+
+
+def test_read_edge_candidates_round_trips_through_write(tmp_path):
+    edges = [_edge("ViewTemplateId", EdgeType.CONTROLLED_BY_TEMPLATE, ConfidenceLabel.ELEMENTID_WITH_STRONG_NAME, "Autodesk.Revit.DB.View")]
+    export.write_edge_candidates(tmp_path, edges)
+
+    read_back = export.read_edge_candidates(tmp_path)
+
+    assert read_back == edges
+
+
+def test_refresh_graph_section_replaces_stale_section_not_duplicates(tmp_path):
+    summary_path = tmp_path / "summary.md"
+    summary_path.write_text(
+        "# Title\n\n## 14. Knowledge graph materialization\n\nSTALE CONTENT\n",
+        encoding="utf-8",
+    )
+    nodes = [_node("Autodesk.Revit.DB.View")]
+    edges = [_edge("ViewTemplateId", EdgeType.CONTROLLED_BY_TEMPLATE, ConfidenceLabel.ELEMENTID_WITH_STRONG_NAME, "Autodesk.Revit.DB.View")]
+    for e in edges:
+        e.source_type = "Autodesk.Revit.DB.View"
+    result = graph.build_graph(nodes, edges)
+
+    export.refresh_graph_section_in_file(summary_path, result, section_number=14)
+
+    text = summary_path.read_text()
+    assert text.count("## 14. Knowledge graph materialization") == 1
+    assert "STALE CONTENT" not in text
+    assert "# Title" in text
+
+
+def test_refresh_graph_section_is_noop_when_file_missing(tmp_path):
+    missing = tmp_path / "summary.md"
+    result = graph.build_graph([], [])
+
+    export.refresh_graph_section_in_file(missing, result, section_number=14)
+
+    assert not missing.exists()
+
+
+def test_write_graph_includes_communities_and_community_count(tmp_path):
+    nodes = [_node("Autodesk.Revit.DB.FamilyInstance"), _node("Autodesk.Revit.DB.FamilySymbol")]
+    edges = [_edge("Symbol", EdgeType.INSTANCE_OF, ConfidenceLabel.DIRECT_RETURN_TYPE, "Autodesk.Revit.DB.FamilySymbol")]
+    for e in edges:
+        e.source_type = "Autodesk.Revit.DB.FamilyInstance"
+
+    result = graph.build_graph(nodes, edges)
+    graph.apply_communities(result)
+    export.write_graph(tmp_path, result, revit_version="2024")
+
+    full = json.loads((tmp_path / "graph.json").read_text())
+    core = json.loads((tmp_path / "graph_core.json").read_text())
+
+    assert full["metadata"]["community_count"] == 1
+    assert core["metadata"]["community_count"] == 1
+    assert len(full["communities"]) == 1
+    assert full["nodes"][0]["community_id"] is not None
+
+
+def test_write_graph_html_produces_self_contained_viewer_with_embedded_data(tmp_path):
+    nodes = [_node("Autodesk.Revit.DB.FamilyInstance"), _node("Autodesk.Revit.DB.FamilySymbol")]
+    edges = [_edge("Symbol", EdgeType.INSTANCE_OF, ConfidenceLabel.DIRECT_RETURN_TYPE, "Autodesk.Revit.DB.FamilySymbol")]
+    for e in edges:
+        e.source_type = "Autodesk.Revit.DB.FamilyInstance"
+
+    result = graph.build_graph(nodes, edges)
+    graph.apply_communities(result)
+    export.write_graph_html(tmp_path, result, revit_version="2024")
+
+    html = (tmp_path / "graph.html").read_text()
+    assert "<title>" in html
+    assert "2024" in html
+    assert "Autodesk.Revit.DB.FamilyInstance" in html
+    assert "</script" not in html.split("const DATA = ")[1].split(";\n")[0]
+    # no external script/style dependency -- fully self-contained
+    assert "<script src=" not in html
+    assert "cdn." not in html.lower()
+
+
+def test_write_graph_html_escapes_stray_script_close_sequences(tmp_path):
+    """A literal '</script' inside embedded data (e.g. a pathological
+    source_url) would close the <script> tag early as far as the HTML
+    parser is concerned, regardless of JS string quoting -- must be
+    escaped in the written file regardless of where it appears in the
+    payload.
+    """
+    nodes = [_node("Autodesk.Revit.DB.FamilyInstance"), _node("Autodesk.Revit.DB.FamilySymbol")]
+    edges = [_edge("Symbol", EdgeType.INSTANCE_OF, ConfidenceLabel.DIRECT_RETURN_TYPE, "Autodesk.Revit.DB.FamilySymbol")]
+    for e in edges:
+        e.source_type = "Autodesk.Revit.DB.FamilyInstance"
+        e.source_url = "https://example.com/</script><script>alert(1)</script>"
+
+    result = graph.build_graph(nodes, edges)
+    export.write_graph_html(tmp_path, result, revit_version="2024")
+
+    html = (tmp_path / "graph.html").read_text()
+    script_body = html.split("<script>", 1)[1].rsplit("</script>", 1)[0]
+    assert "</script" not in script_body
+
+
+def test_graph_html_viewer_keeps_self_loop_edges_visible(tmp_path):
+    """A self-loop (factory/getter method returning its own declaring type)
+    must still show up in graph.html's edge count/node degree/connections
+    list -- not be silently dropped the way the original 's === t' guard
+    did. Extracts and actually executes the node/edge-construction JS
+    (via Node) against synthetic DATA rather than trusting the diff, since
+    this is client-side behavior no Python-level test can observe.
+    """
+    node_bin = shutil.which("node")
+    if node_bin is None:
+        pytest.skip("node not available in this environment")
+
+    template = _GRAPH_VIEWER_TEMPLATE_PATH.read_text(encoding="utf-8")
+    start = template.index("const nodesById = new Map();")
+    push_pos = template.index("edges.push(rec);", template.index("const edges = [];"))
+    end = template.index("\n}\n", push_pos) + len("\n}\n")
+    js_block = template[start:end]
+
+    harness = f"""
+const DATA = {{
+  nodes: [{{ id: "A", short_name: "A", external: false, community_id: null, source_url: "" }}],
+  edges: [{{ source: "A", target: "A", member_name: "Duplicate", edge_type: "TYPE_OF", confidence: "direct_return_type", source_url: "" }}],
+}};
+{js_block}
+console.log(JSON.stringify({{
+  edgeCount: edges.length,
+  degree: nodes[0].degree,
+  outCount: nodes[0].out.length,
+  inCount: nodes[0].in.length,
+}}));
+"""
+    result = subprocess.run([node_bin, "-e", harness], capture_output=True, text=True, timeout=10)
+    assert result.returncode == 0, result.stderr
+    data = json.loads(result.stdout)
+
+    assert data["edgeCount"] == 1
+    assert data["degree"] == 1
+    assert data["outCount"] == 1
+    assert data["inCount"] == 0
+
+
+def test_write_semantic_relationship_map_produces_standalone_html(tmp_path):
+    nodes = [_node("Autodesk.Revit.DB.FamilyInstance"), _node("Autodesk.Revit.DB.FamilySymbol")]
+    edges = [_edge("Symbol", EdgeType.INSTANCE_OF, ConfidenceLabel.DIRECT_RETURN_TYPE, "Autodesk.Revit.DB.FamilySymbol")]
+    for e in edges:
+        e.source_type = "Autodesk.Revit.DB.FamilyInstance"
+
+    result = graph.build_graph(nodes, edges)
+    export.write_semantic_relationship_map(tmp_path, result, revit_version="2024")
+
+    html = (tmp_path / "semantic_relationship_map.html").read_text()
+    assert html.strip().startswith("<!doctype html>")
+    assert "2024" in html
+    assert "Family" in html

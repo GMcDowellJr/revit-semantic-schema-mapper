@@ -9,21 +9,32 @@ This is **not** about extracting elements from a specific RVT model. The target 
 generic Revit DB object model itself, as documented, with an eye toward eventually building a
 graph schema for it.
 
-## Status: scaffold complete, live crawl pending
+## Status: full live crawl completed for Revit 2024; 2027 still pending
 
-The crawler, parser, classifier, exporter, docs, and test suite are all implemented and
-unit-tested against representative fixture HTML. **No page in `outputs/revit_2027/` has been
-produced by an actual crawl of revitapidocs.com yet** — the session this was built in had its
-outbound network access blocked entirely (confirmed independently via both `curl` and the
-`WebFetch` tool; see `docs/crawl_notes.md` for the full account). Running the one command
-below against a network-enabled environment is what's left to do.
+A full (non-targeted) live crawl of `Autodesk.Revit.DB` against Revit 2024 has now been run
+successfully: 28,459 pages discovered, 23,241 parsed, 2,421 node candidates, and 10,697 edge
+candidates. Its bulk output isn't committed to this repo (see "Where the crawl output lives"
+below) but `outputs/revit_2024/summary.md` is. `outputs/revit_2027/` is still pending — run
 
 ```
 python -m revit_schema_mapper --version 2027
 ```
 
-See `docs/crawl_notes.md` → "What to check on the first real run" for how to sanity-check
-that first live run before trusting its output.
+against a network-enabled environment (falling back to `--version 2026
+--fallback-reason "..."` if 2027 turns out to be unavailable or structurally inconsistent, per
+the documented policy in `docs/crawl_notes.md`). See `docs/crawl_notes.md` → "What to check on
+the first real run" for how to sanity-check a new live run before trusting its output.
+
+### Where the crawl output lives
+
+`outputs/revit_<version>/*.json` (everything except the markdown summaries and the small
+targeted-crawl reports) is gitignored — a full crawl's `api_pages.json`/`candidate_edges.json`/
+`graph.json` etc. run into the tens of megabytes and would otherwise bloat every commit that
+touches this repo, even though the content mostly just churns from one crawl to the next. The
+convention is: **small, durable summaries live in git; bulk per-run data gets published
+separately** (e.g. as a GitHub Release asset for that Revit version) so it stays available
+without living in git history. If you're looking for a specific version's full output and it
+isn't attached to a Release yet, check with whoever ran that crawl.
 
 ## Quickstart
 
@@ -50,9 +61,58 @@ hostname verification stay on) — see `http_compat.py`'s module docstring for d
 
 Outputs land in `outputs/revit_<version>/`: `raw_index.json`, `api_pages.json`,
 `node_type_candidates.json`, `property_relationship_candidates.json`,
-`method_relationship_candidates.json`, `enum_catalogs.json`, `candidate_edges.json`, and a
-human-readable `summary.md`. Fetched HTML is cached under `outputs/revit_<version>/cache/`
-and is not re-fetched on subsequent runs unless `--force-refresh` is passed.
+`method_relationship_candidates.json`, `enum_catalogs.json`, `candidate_edges.json`,
+`graph.json`, `graph_core.json`, `graph.html`, `semantic_relationship_map.html`, and a
+human-readable `summary.md`. Fetched
+HTML is cached under `outputs/revit_<version>/cache/` and is not re-fetched on subsequent
+runs unless `--force-refresh` is passed.
+
+### CLI flags
+
+`python -m revit_schema_mapper [flags]` -- every flag `argparse` knows about (see
+`__main__.py`):
+
+| Flag | Default | Meaning |
+|---|---|---|
+| `--version VERSION` | `2027` | Revit version path segment on revitapidocs.com |
+| `--output-dir DIR` | `outputs/revit_<version>[_targeted]/` | Where all output files are written |
+| `--cache-dir DIR` | `<output-dir>/cache` | Where fetched HTML is cached |
+| `--namespace-prefix PREFIX` | `Autodesk.Revit.DB` | Only keep pages whose namespace starts with this |
+| `--throttle-seconds N` | `1.5` | Minimum delay between HTTP requests (politeness) |
+| `--max-pages N` | unlimited | Cap on total pages fetched -- for smoke tests |
+| `--force-refresh` | off | Re-fetch pages even if already cached |
+| `--fallback-reason TEXT` | none | Records why this run is a documented version fallback (e.g. 2027 -> 2026); shown in `summary.md` |
+| `--targeted-validation` | off | Scoped crawl against `pipeline.DEFAULT_TARGET_CLASSES` + a known-edge report, instead of a full namespace crawl -- see "Targeted validation crawl" below |
+| `--target-classes "A,B,C"` | `DEFAULT_TARGET_CLASSES` | Comma-separated fully-qualified class names, overriding the default target list (implies `--targeted-validation`) |
+| `--discover-only` | off | Only run page discovery and report how many pages a full run would fetch; writes just `raw_index.json`, no fetching/parsing of individual pages |
+| `--graph-only` | off | Recompute `graph.json`/`graph_core.json`/`graph.html`/`semantic_relationship_map.html` (and refresh the summary's graph section) from an existing `--output-dir`'s already-written `node_type_candidates.json`/`candidate_edges.json`, without crawling or re-parsing anything -- see "Recomputing just the graph" below |
+| `--include-doc-text` | off | Include full summary/remarks/code-example text (copied from the docs site) in `api_pages.json`; omitted by default since it's prose/code, not derived facts -- for local debugging only, don't republish the result |
+| `--label-communities-llm` | off | Upgrade community labels from the default free heuristic to a short OpenRouter-generated one -- see "Communities" below. Requires `OPENROUTER_API_KEY` in the environment; falls back to the heuristic with a warning if unset |
+| `--community-label-model MODEL` | `openai/gpt-4o-mini` | OpenRouter model id used with `--label-communities-llm` -- a suggested small/inexpensive default, not a guarantee (OpenRouter's catalog/pricing changes over time) |
+| `-v`, `--verbose` | off | INFO-level logging (HTTP/HTML backend in use, crawl progress heartbeat, robots.txt rules, etc.) |
+
+`OPENROUTER_API_KEY` is read from the environment only -- there's deliberately no
+`--openrouter-api-key` flag, so the key never ends up in shell history or a process listing.
+
+### Recomputing just the graph
+
+`graph.json`/`graph_core.json` are cheap to recompute from a previous run's
+`node_type_candidates.json`/`candidate_edges.json` -- no network access, no re-parsing HTML.
+This matters because a full re-run reuses cached HTML (skips re-*fetching*) but still
+re-parses and re-classifies every page from scratch, which is itself the slow part on
+constrained hardware (e.g. tens of thousands of cached pages on a Raspberry Pi). If you've
+only changed `graph.py` (or just want to regenerate `graph.json` after editing
+`node_type_candidates.json`/`candidate_edges.json` by hand), skip straight to:
+
+```bash
+python -m revit_schema_mapper --version 2024 --graph-only
+```
+
+This requires `node_type_candidates.json` and `candidate_edges.json` to already exist in
+`--output-dir` (from a previous full or `--targeted-validation` run) -- it errors out if
+they're missing rather than silently doing nothing. It also refreshes the "Knowledge graph
+materialization" section of whichever summary file exists (`summary.md` or
+`validation_summary.md`) in place, without touching the rest of that file.
 
 ## How it works
 
@@ -63,9 +123,137 @@ parse.py    -- turns one page's HTML into an ApiPage (class/struct/enum/property
 classify.py -- turns parsed members into NodeCandidate / EdgeCandidate objects, each with
                a candidate_edge_type (docs/edge_taxonomy_v0.md), edge_confidence
                (docs/confidence_model_v0.md), and (for node candidates) a class_role
-export.py   -- writes all outputs/revit_<version>/*.json + summary.md
+graph.py    -- materializes node/edge candidates into an actual graph.json/graph_core.json
+               (see "Knowledge graph output" below)
+community.py -- structural community detection + labeling over the core subgraph (see
+               "Communities" below)
+semantic_roles.py -- a coarser, domain-oriented lens (see "Semantic relationship map"
+               below) -- role classification, role/relationship aggregation, and its
+               own Sankey+heatmap HTML rendering
+export.py   -- writes all outputs/revit_<version>/*.json + summary.md + graph.html +
+               semantic_relationship_map.html
 pipeline.py -- wires the above into the single command in __main__.py
 ```
+
+## Knowledge graph output
+
+`node_type_candidates.json` + `candidate_edges.json` are already almost a graph -- `graph.py`
+closes the two remaining gaps so downstream tools can consume it directly instead of
+re-deriving this themselves:
+
+1. **Resolved node ids.** An `EdgeCandidate.candidate_target_type` is a loose type-name string,
+   not a guaranteed match against a crawled node. `graph.build_graph` resolves it in two passes:
+   an exact match against `NodeCandidate.full_type_name`, then (only if unambiguous) a
+   short-name fallback -- needed because edge classification and node classification are
+   separate code paths that can disagree on namespace qualification for the same real type
+   (confirmed on a live crawl: edges pointed at `Autodesk.Revit.DB.Room` while the actual
+   crawled node was `Autodesk.Revit.DB.Architecture.Room`). Anything still unresolved becomes an
+   `external` stub node (deduplicated by id) rather than a dropped edge, so nothing disappears
+   silently -- it's just marked as pointing outside the crawled node set.
+2. **A four-bucket `confidence_tier`**, collapsing the seven-label `ConfidenceLabel` model into
+   `core` / `likely` / `needs_validation` / `unverified_reference`. `UNKNOWN_DB_OBJECT_REFERENCE`
+   and `UNKNOWN_ELEMENTID_REFERENCE` edges are pinned to `unverified_reference` regardless of
+   their `edge_confidence` label, even `direct_return_type` -- that label only reflects
+   confidence in the *return type*, not in any specific relationship, and in the real Revit 2024
+   crawl those two edge types alone are ~77% of all edges. Without that override, "core" would
+   be mostly noise instead of a genuinely trustworthy subgraph.
+
+`graph.json` is the full materialized graph plus a `metadata` block (node/edge counts, target
+resolution counts, confidence tier counts). `graph_core.json` is the same graph filtered to
+`confidence_tier: core` edges only, plus just the nodes those edges reference -- a small,
+high-trust subgraph a downstream tool can load without re-implementing any of the above
+filtering itself. Both are gitignored for the same bulk-output reason as `candidate_edges.json`
+etc. (see "Where the crawl output lives" above); consume them from wherever that run's output
+was published.
+
+`GraphNode.id` and `GraphEdge.source`/`target` are always a type's fully-qualified name --
+that's the join key for anything downstream (a Neo4j import, an RDF conversion, an in-memory
+`networkx` graph, etc.).
+
+## Communities
+
+`class_role` (below) classifies each type *individually*, from its own kind/name/member
+shape -- it has no notion of how types actually connect to each other. `community.py` instead
+looks at the core subgraph's real connectivity and detects clusters of densely
+interconnected types, closer to what a tool like [Graphify](https://github.com/Graphify-Labs/graphify)
+calls a "community" when it clusters a codebase's call graph.
+
+`community.detect_communities` is a single-level greedy modularity optimization (Louvain's
+local-move phase, without the multi-level aggregation phase full Louvain repeats on top of
+it) over an undirected, multiplicity-weighted projection of the **core-tier** subgraph only
+(the other tiers are either too generic -- `UNKNOWN_*` edges, ~77% of a real full crawl -- or
+explicitly flagged as unverified). It's dependency-free and deterministic: the same graph
+always produces the same partition. Run against the real Revit 2024 core subgraph (330
+nodes, 1,241 edges), it found 53 communities -- e.g. one 72-node cluster centered on
+`FailureDefinitionId`/`BuiltInFailures.*`, a 26-node cluster around
+`Category`/`ConceptualSurfaceType`/`Family`, and so on.
+
+Every node's `community_id` is set to match (present in both `graph.json` and
+`graph_core.json`, since those write the same node objects -- just a different subset);
+`GraphBuildResult.communities` (also written as a top-level `communities` list in both files)
+carries each community's `label`, `label_source`, and `size`. A node outside the core
+subgraph keeps `community_id: null` -- communities are only meaningful relative to the edges
+they were detected from.
+
+**Labeling** defaults to a free, zero-dependency heuristic: a community's most-connected
+member names (e.g. `"FailureDefinitionId · BuiltInFailures.GroupFailures ·
+BuiltInFailures.FamilyFailures"`). Pass `--label-communities-llm` (with `OPENROUTER_API_KEY`
+set) to upgrade this to a short thematic label from a cheap model via
+[OpenRouter](https://openrouter.ai) instead -- e.g. what Graphify's own LLM-labeled clusters
+look like ("Hashing and Join Keys"). This is best-effort per community: any single request
+failing (missing key, network error, non-2xx, malformed response) just leaves that
+community on its heuristic label rather than raising, and it only fires once, on a run's
+final checkpoint -- not on every periodic checkpoint of a long crawl, which would otherwise
+multiply the API cost for no benefit.
+
+`graph.html` is a self-contained, dependency-free interactive viewer (no CDN scripts, so it
+opens fine straight off disk) over the core subgraph: a hand-rolled canvas force-directed
+layout, node search, a community filter panel (checkboxes + counts, like Graphify's), and a
+node inspector showing a type's `class_role`, community, source-doc link, and full connection
+list. Node fill color is `class_role` (a fixed, validated 8-slot categorical palette);
+communities are shown as a labeled filter list rather than colored, since community count is
+unbounded and can't be given its own validated hue per entry without cycling past that fixed
+set -- real communities already show up as visual clusters in the force layout on their own.
+Its hand-rolled physics uses a minimum repulsion distance, damping, and a hard speed cap --
+without those, a real hub node (one has degree 499 in the Revit 2024 core subgraph) can
+accumulate enough velocity, frame over frame, to push coordinates to Infinity/NaN once the
+layout cools. Labels are zoom- and importance-aware (top-14-degree hubs at overview zoom, more
+as you zoom in, search/selection always labeled) rather than a flat radius threshold -- at a
+few hundred nodes, labeling everything above a fixed size reads as a word cloud, not a graph.
+
+## Semantic relationship map
+
+`graph.html` answers "what does the raw type graph look like" -- which needs domain
+familiarity to get much out of, since 330 individual types is a lot to visually parse.
+`semantic_relationship_map.html` (`semantic_roles.py`) answers a different, coarser question:
+"how do the *categories* of the Revit API relate to each other." It reclassifies every core
+node into one of ~21 domain-recognizable **semantic roles** (`View`, `Family`, `Room / Space`,
+`Failures`, `Options / Settings`, ... -- see `semantic_roles.ROLE_ORDER`), independent of
+`class_role`, then aggregates edges into role -> relationship -> role triples, rendered as:
+
+- A **Sankey-style flow diagram**: source roles on the left, relationship types in the
+  middle, target roles on the right, band width/opacity scaled by edge count.
+- A **role x relationship-type heatmap** underneath, for scanning by row (source role).
+- **Click-to-drilldown** on any flow or heatmap cell shows the real underlying edges (member
+  name, confidence tier, a link to the source doc page) -- same "candidate schema, always
+  traceable to evidence" principle as `graph.html`'s node inspector, kept consistent here too.
+
+`classify_api_role` is a coarser heuristic than `class_role` -- and a lossy one in a few
+spots by design: e.g. `FamilyInstance` (a placed instance) and `Family`/`FamilySymbol`
+(family *definitions*) both land in the "Family" role, because the check is a plain name
+match. That's an intentional simplification for readability, not a claim that those are the
+same concept (see `test_classify_api_role_family_ambiguity_is_a_known_tradeoff`). Only the
+top 12 relationship types (by edge count) are shown by default (`--top-relationships` in the
+standalone script this was ported from; fixed at 12 in the pipeline for now) -- a full ~20-type
+diagram would be unreadable, so the rest aren't silently dropped, they're disclosed: the
+footer states exactly how many of the total relationship types/edges are shown, and
+`relationship_counts_total` in the underlying data always has the full breakdown.
+
+Role colors here are a supplementary/orienting channel, not the sole identity carrier --
+every role box is always direct-labeled with its name, same reasoning as `graph.html`'s
+communities panel: 21 roles is inherently beyond what a validated CVD-safe categorical set
+can distinctly cover (that set tops out around 8), so precise pairwise color separation
+isn't the accessibility mechanism here; the text labels are.
 
 ## Targeted validation crawl
 
