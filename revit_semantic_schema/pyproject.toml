@@ -20,5 +20,8 @@ dev = ["pytest>=7.4"]
 [tool.setuptools.packages.find]
 where = ["src"]
 
+[tool.setuptools.package-data]
+revit_schema_mapper = ["graph_viewer_template.html"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]

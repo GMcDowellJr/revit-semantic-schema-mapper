@@ -246,3 +246,63 @@ def test_refresh_graph_section_is_noop_when_file_missing(tmp_path):
     export.refresh_graph_section_in_file(missing, result, section_number=14)
 
     assert not missing.exists()
+
+
+def test_write_graph_includes_communities_and_community_count(tmp_path):
+    nodes = [_node("Autodesk.Revit.DB.FamilyInstance"), _node("Autodesk.Revit.DB.FamilySymbol")]
+    edges = [_edge("Symbol", EdgeType.INSTANCE_OF, ConfidenceLabel.DIRECT_RETURN_TYPE, "Autodesk.Revit.DB.FamilySymbol")]
+    for e in edges:
+        e.source_type = "Autodesk.Revit.DB.FamilyInstance"
+
+    result = graph.build_graph(nodes, edges)
+    graph.apply_communities(result)
+    export.write_graph(tmp_path, result, revit_version="2024")
+
+    full = json.loads((tmp_path / "graph.json").read_text())
+    core = json.loads((tmp_path / "graph_core.json").read_text())
+
+    assert full["metadata"]["community_count"] == 1
+    assert core["metadata"]["community_count"] == 1
+    assert len(full["communities"]) == 1
+    assert full["nodes"][0]["community_id"] is not None
+
+
+def test_write_graph_html_produces_self_contained_viewer_with_embedded_data(tmp_path):
+    nodes = [_node("Autodesk.Revit.DB.FamilyInstance"), _node("Autodesk.Revit.DB.FamilySymbol")]
+    edges = [_edge("Symbol", EdgeType.INSTANCE_OF, ConfidenceLabel.DIRECT_RETURN_TYPE, "Autodesk.Revit.DB.FamilySymbol")]
+    for e in edges:
+        e.source_type = "Autodesk.Revit.DB.FamilyInstance"
+
+    result = graph.build_graph(nodes, edges)
+    graph.apply_communities(result)
+    export.write_graph_html(tmp_path, result, revit_version="2024")
+
+    html = (tmp_path / "graph.html").read_text()
+    assert "<title>" in html
+    assert "2024" in html
+    assert "Autodesk.Revit.DB.FamilyInstance" in html
+    assert "</script" not in html.split("const DATA = ")[1].split(";\n")[0]
+    # no external script/style dependency -- fully self-contained
+    assert "<script src=" not in html
+    assert "cdn." not in html.lower()
+
+
+def test_write_graph_html_escapes_stray_script_close_sequences(tmp_path):
+    """A literal '</script' inside embedded data (e.g. a pathological
+    source_url) would close the <script> tag early as far as the HTML
+    parser is concerned, regardless of JS string quoting -- must be
+    escaped in the written file regardless of where it appears in the
+    payload.
+    """
+    nodes = [_node("Autodesk.Revit.DB.FamilyInstance"), _node("Autodesk.Revit.DB.FamilySymbol")]
+    edges = [_edge("Symbol", EdgeType.INSTANCE_OF, ConfidenceLabel.DIRECT_RETURN_TYPE, "Autodesk.Revit.DB.FamilySymbol")]
+    for e in edges:
+        e.source_type = "Autodesk.Revit.DB.FamilyInstance"
+        e.source_url = "https://example.com/</script><script>alert(1)</script>"
+
+    result = graph.build_graph(nodes, edges)
+    export.write_graph_html(tmp_path, result, revit_version="2024")
+
+    html = (tmp_path / "graph.html").read_text()
+    script_body = html.split("<script>", 1)[1].rsplit("</script>", 1)[0]
+    assert "</script" not in script_body

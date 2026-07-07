@@ -131,6 +131,63 @@ def write_enum_catalogs(output_dir: Path, pages: list[ApiPage]) -> None:
     _write_json(output_dir / "enum_catalogs.json", catalog)
 
 
+_GRAPH_VIEWER_TEMPLATE_PATH = Path(__file__).parent / "graph_viewer_template.html"
+
+
+def write_graph_html(output_dir: Path, result: GraphBuildResult, *, revit_version: str) -> None:
+    """Write ``graph.html``: a self-contained, dependency-free interactive
+    viewer (canvas force-directed layout, search, community filter, node
+    inspector -- no CDN scripts, so it works even opened directly from
+    disk) over the same core subgraph as ``graph_core.json``.
+
+    Node color is ``class_role`` (a fixed, validated 8-slot categorical
+    palette); the Communities panel is real structural communities (see
+    ``graph.apply_communities``), shown as a labeled filter list rather than
+    colored, since community count is unbounded and can't be given its own
+    validated hue per entry without cycling past that fixed set.
+    """
+    core_nodes, core_edges = filter_core(result)
+
+    node_payload = [
+        {
+            "id": n.id,
+            "short_name": n.short_name,
+            "external": n.external,
+            "kind": n.kind,
+            "namespace": n.namespace,
+            "class_role": n.class_role,
+            "source_url": n.source_url,
+            "community_id": n.community_id,
+        }
+        for n in core_nodes
+    ]
+    edge_payload = [
+        {
+            "source": e.source,
+            "target": e.target,
+            "member_name": e.member_name,
+            "edge_type": e.edge_type.value,
+            "confidence": e.confidence.value,
+            "source_url": e.source_url,
+        }
+        for e in core_edges
+    ]
+    community_payload = [
+        {"id": c.id, "label": c.label, "label_source": c.label_source, "size": c.size} for c in result.communities
+    ]
+
+    payload = json.dumps({"nodes": node_payload, "edges": edge_payload, "communities": community_payload}, separators=(",", ":"))
+    # Defensive: a literal "</script" substring anywhere in this payload
+    # (e.g. inside a source_url) would close the <script> tag early as far
+    # as the HTML parser is concerned, regardless of JS string quoting --
+    # HTML parsing happens before JS parsing.
+    payload = payload.replace("</", "<\\/")
+
+    template = _GRAPH_VIEWER_TEMPLATE_PATH.read_text(encoding="utf-8")
+    html = template.replace("__GRAPH_DATA__", payload).replace("__REVIT_VERSION__", revit_version)
+    (output_dir / "graph.html").write_text(html, encoding="utf-8")
+
+
 def _graph_metadata(nodes: list, edges: list, *, revit_version: str) -> dict:
     """Metadata block for a graph.json/graph_core.json -- always derived
     from the exact ``nodes``/``edges`` being written, never copied from a
@@ -162,13 +219,28 @@ def write_graph(output_dir: Path, result: GraphBuildResult, *, revit_version: st
     high-confidence 'core' tier -- a small subgraph a downstream tool can
     trust without first re-implementing the confidence-tier filtering
     itself.
+
+    ``result.communities`` (see ``graph.apply_communities``) is written
+    identically to both files as a ``communities`` list, plus a
+    ``community_count`` in each file's own metadata block. Unlike
+    ``confidence_tier_counts``/``target_resolution_counts`` -- which really
+    are recomputed per file, from that file's own edges -- communities are
+    detected *once*, over the core subgraph, and are the same set of
+    clusters regardless of which file you're reading; each node's own
+    ``community_id`` (present on the node itself, in both files) is what's
+    scoped to the core subgraph, not the community list.
     """
     metadata = _graph_metadata(result.nodes, result.edges, revit_version=revit_version)
-    _write_json(output_dir / "graph.json", {"metadata": metadata, "nodes": result.nodes, "edges": result.edges})
+    metadata["community_count"] = len(result.communities)
+    _write_json(output_dir / "graph.json", {"metadata": metadata, "communities": result.communities, "nodes": result.nodes, "edges": result.edges})
 
     core_nodes, core_edges = filter_core(result)
     core_metadata = _graph_metadata(core_nodes, core_edges, revit_version=revit_version)
-    _write_json(output_dir / "graph_core.json", {"metadata": core_metadata, "nodes": core_nodes, "edges": core_edges})
+    core_metadata["community_count"] = len(result.communities)
+    _write_json(
+        output_dir / "graph_core.json",
+        {"metadata": core_metadata, "communities": result.communities, "nodes": core_nodes, "edges": core_edges},
+    )
 
 
 def write_target_report(output_dir: Path, target_report: list) -> None:
@@ -287,6 +359,19 @@ def _graph_section(result: GraphBuildResult | None, *, section_number: int) -> l
     lines.append("- Target resolution: " + ", ".join(f"{k}={v}" for k, v in sorted(result.target_resolution_counts.items())))
     lines.append("- Confidence tier breakdown: " + ", ".join(f"{k}={v}" for k, v in sorted(tier_counts.items())))
     lines.append(f"- `graph_core.json` (confidence_tier=core only): {len(core_nodes)} nodes, {len(core_edges)} edges")
+    if result.communities:
+        label_sources = {}
+        for c in result.communities:
+            label_sources[c.label_source] = label_sources.get(c.label_source, 0) + 1
+        lines.append(
+            f"- {len(result.communities)} communities detected over the core subgraph "
+            f"({', '.join(f'{k}={v}' for k, v in sorted(label_sources.items()))} labels)"
+        )
+        top = sorted(result.communities, key=lambda c: -c.size)[:10]
+        lines.append("- Largest communities:")
+        lines.extend(f"  - `{c.label}` ({c.size} nodes)" for c in top)
+    else:
+        lines.append("- 0 communities detected (no core-tier edges, or apply_communities wasn't run)")
     lines.append("")
     return lines
 

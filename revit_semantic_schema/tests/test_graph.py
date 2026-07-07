@@ -181,3 +181,40 @@ def test_dangling_source_is_still_resolved_and_not_left_as_raw_string():
 
     node_ids = {n.id for n in result.nodes}
     assert result.edges[0].source in node_ids
+
+
+def test_apply_communities_sets_community_id_on_core_nodes_only():
+    """Communities are detected over the core-tier subgraph -- a node only
+    reachable via an UNKNOWN_* (unverified_reference) edge shouldn't get a
+    community_id, since it was never part of what was clustered.
+    """
+    nodes = [
+        _node("Autodesk.Revit.DB.FamilyInstance"),
+        _node("Autodesk.Revit.DB.FamilySymbol"),
+        _node("Autodesk.Revit.DB.Orphan"),
+    ]
+    edges = [
+        _edge("Autodesk.Revit.DB.FamilyInstance", "Autodesk.Revit.DB.FamilySymbol", EdgeType.INSTANCE_OF, ConfidenceLabel.DIRECT_RETURN_TYPE),
+        _edge("Autodesk.Revit.DB.Orphan", "Autodesk.Revit.DB.FamilySymbol", EdgeType.UNKNOWN_DB_OBJECT_REFERENCE, ConfidenceLabel.DIRECT_RETURN_TYPE),
+    ]
+
+    result = graph.build_graph(nodes, edges)
+    graph.apply_communities(result)
+
+    by_id = {n.id: n for n in result.nodes}
+    assert by_id["Autodesk.Revit.DB.FamilyInstance"].community_id is not None
+    assert by_id["Autodesk.Revit.DB.FamilySymbol"].community_id is not None
+    assert by_id["Autodesk.Revit.DB.Orphan"].community_id is None
+    assert len(result.communities) == 1
+    assert result.communities[0].size == 2
+
+
+def test_apply_communities_with_no_core_edges_produces_no_communities():
+    nodes = [_node("Autodesk.Revit.DB.A"), _node("Autodesk.Revit.DB.B")]
+    edges = [_edge("Autodesk.Revit.DB.A", "Autodesk.Revit.DB.B", EdgeType.UNKNOWN_DB_OBJECT_REFERENCE, ConfidenceLabel.DIRECT_RETURN_TYPE)]
+
+    result = graph.build_graph(nodes, edges)
+    graph.apply_communities(result)
+
+    assert result.communities == []
+    assert all(n.community_id is None for n in result.nodes)

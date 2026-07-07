@@ -15,3 +15,4 @@ revit_semantic_schema/outputs/*/enum_catalogs.json
 revit_semantic_schema/outputs/*/graph.json
 revit_semantic_schema/outputs/*/graph_core.json
 *.tar.gz
+revit_semantic_schema/outputs/*/graph.html

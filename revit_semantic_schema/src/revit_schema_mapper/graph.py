@@ -15,7 +15,9 @@ from __future__ import annotations
 from collections import Counter
 from dataclasses import dataclass, field
 
+from . import community as community_module
 from .models import (
+    Community,
     ConfidenceLabel,
     ConfidenceTier,
     EdgeCandidate,
@@ -71,6 +73,8 @@ class GraphBuildResult:
     # for Autodesk.Revit.DB.Architecture.Room) rather than one-off gaps.
     target_resolution_counts: dict[str, int] = field(default_factory=dict)
     external_node_count: int = 0
+    # Populated by apply_communities -- empty until that's called.
+    communities: list[Community] = field(default_factory=list)
 
 
 class _Resolver:
@@ -186,3 +190,37 @@ def filter_core(result: GraphBuildResult) -> tuple[list[GraphNode], list[GraphEd
     referenced_ids = {e.source for e in core_edges} | {e.target for e in core_edges if e.target is not None}
     core_nodes = [n for n in result.nodes if n.id in referenced_ids]
     return core_nodes, core_edges
+
+
+def apply_communities(
+    result: GraphBuildResult,
+    *,
+    use_llm_labels: bool = False,
+    model: str = community_module.DEFAULT_OPENROUTER_MODEL,
+    api_key: str | None = None,
+) -> None:
+    """Detect and label communities over ``result``'s core-tier subgraph
+    (see ``filter_core``) and record them onto ``result`` in place:
+    ``result.communities`` gets the labeled list, and every core-subgraph
+    node's ``GraphNode.community_id`` is set to match (mutated in place, so
+    it's reflected consistently in both ``graph.json`` and
+    ``graph_core.json`` -- those write the same node objects, just a
+    different subset -- see ``export.write_graph``).
+
+    Nodes outside the core subgraph (and isolated core nodes with no
+    surviving edge) keep ``community_id=None``: communities are only
+    meaningful relative to the edges they were detected from, not a
+    property of every node in the full crawl.
+    """
+    core_nodes, core_edges = filter_core(result)
+    assignment, communities = community_module.build_communities(
+        core_nodes, core_edges, use_llm_labels=use_llm_labels, model=model, api_key=api_key
+    )
+
+    nodes_by_id = {n.id: n for n in result.nodes}
+    for node_id, community_id in assignment.items():
+        node = nodes_by_id.get(node_id)
+        if node is not None:
+            node.community_id = community_id
+
+    result.communities = communities

@@ -62,9 +62,9 @@ hostname verification stay on) — see `http_compat.py`'s module docstring for d
 Outputs land in `outputs/revit_<version>/`: `raw_index.json`, `api_pages.json`,
 `node_type_candidates.json`, `property_relationship_candidates.json`,
 `method_relationship_candidates.json`, `enum_catalogs.json`, `candidate_edges.json`,
-`graph.json`, `graph_core.json`, and a human-readable `summary.md`. Fetched HTML is cached
-under `outputs/revit_<version>/cache/` and is not re-fetched on subsequent runs unless
-`--force-refresh` is passed.
+`graph.json`, `graph_core.json`, `graph.html`, and a human-readable `summary.md`. Fetched
+HTML is cached under `outputs/revit_<version>/cache/` and is not re-fetched on subsequent
+runs unless `--force-refresh` is passed.
 
 ### CLI flags
 
@@ -84,9 +84,14 @@ under `outputs/revit_<version>/cache/` and is not re-fetched on subsequent runs 
 | `--targeted-validation` | off | Scoped crawl against `pipeline.DEFAULT_TARGET_CLASSES` + a known-edge report, instead of a full namespace crawl -- see "Targeted validation crawl" below |
 | `--target-classes "A,B,C"` | `DEFAULT_TARGET_CLASSES` | Comma-separated fully-qualified class names, overriding the default target list (implies `--targeted-validation`) |
 | `--discover-only` | off | Only run page discovery and report how many pages a full run would fetch; writes just `raw_index.json`, no fetching/parsing of individual pages |
-| `--graph-only` | off | Recompute `graph.json`/`graph_core.json` (and refresh the summary's graph section) from an existing `--output-dir`'s already-written `node_type_candidates.json`/`candidate_edges.json`, without crawling or re-parsing anything -- see "Recomputing just the graph" below |
+| `--graph-only` | off | Recompute `graph.json`/`graph_core.json`/`graph.html` (and refresh the summary's graph section) from an existing `--output-dir`'s already-written `node_type_candidates.json`/`candidate_edges.json`, without crawling or re-parsing anything -- see "Recomputing just the graph" below |
 | `--include-doc-text` | off | Include full summary/remarks/code-example text (copied from the docs site) in `api_pages.json`; omitted by default since it's prose/code, not derived facts -- for local debugging only, don't republish the result |
+| `--label-communities-llm` | off | Upgrade community labels from the default free heuristic to a short OpenRouter-generated one -- see "Communities" below. Requires `OPENROUTER_API_KEY` in the environment; falls back to the heuristic with a warning if unset |
+| `--community-label-model MODEL` | `openai/gpt-4o-mini` | OpenRouter model id used with `--label-communities-llm` -- a suggested small/inexpensive default, not a guarantee (OpenRouter's catalog/pricing changes over time) |
 | `-v`, `--verbose` | off | INFO-level logging (HTTP/HTML backend in use, crawl progress heartbeat, robots.txt rules, etc.) |
+
+`OPENROUTER_API_KEY` is read from the environment only -- there's deliberately no
+`--openrouter-api-key` flag, so the key never ends up in shell history or a process listing.
 
 ### Recomputing just the graph
 
@@ -119,7 +124,9 @@ classify.py -- turns parsed members into NodeCandidate / EdgeCandidate objects, 
                (docs/confidence_model_v0.md), and (for node candidates) a class_role
 graph.py    -- materializes node/edge candidates into an actual graph.json/graph_core.json
                (see "Knowledge graph output" below)
-export.py   -- writes all outputs/revit_<version>/*.json + summary.md
+community.py -- structural community detection + labeling over the core subgraph (see
+               "Communities" below)
+export.py   -- writes all outputs/revit_<version>/*.json + summary.md + graph.html
 pipeline.py -- wires the above into the single command in __main__.py
 ```
 
@@ -157,6 +164,51 @@ was published.
 `GraphNode.id` and `GraphEdge.source`/`target` are always a type's fully-qualified name --
 that's the join key for anything downstream (a Neo4j import, an RDF conversion, an in-memory
 `networkx` graph, etc.).
+
+## Communities
+
+`class_role` (below) classifies each type *individually*, from its own kind/name/member
+shape -- it has no notion of how types actually connect to each other. `community.py` instead
+looks at the core subgraph's real connectivity and detects clusters of densely
+interconnected types, closer to what a tool like [Graphify](https://github.com/Graphify-Labs/graphify)
+calls a "community" when it clusters a codebase's call graph.
+
+`community.detect_communities` is a single-level greedy modularity optimization (Louvain's
+local-move phase, without the multi-level aggregation phase full Louvain repeats on top of
+it) over an undirected, multiplicity-weighted projection of the **core-tier** subgraph only
+(the other tiers are either too generic -- `UNKNOWN_*` edges, ~77% of a real full crawl -- or
+explicitly flagged as unverified). It's dependency-free and deterministic: the same graph
+always produces the same partition. Run against the real Revit 2024 core subgraph (330
+nodes, 1,241 edges), it found 53 communities -- e.g. one 72-node cluster centered on
+`FailureDefinitionId`/`BuiltInFailures.*`, a 26-node cluster around
+`Category`/`ConceptualSurfaceType`/`Family`, and so on.
+
+Every node's `community_id` is set to match (present in both `graph.json` and
+`graph_core.json`, since those write the same node objects -- just a different subset);
+`GraphBuildResult.communities` (also written as a top-level `communities` list in both files)
+carries each community's `label`, `label_source`, and `size`. A node outside the core
+subgraph keeps `community_id: null` -- communities are only meaningful relative to the edges
+they were detected from.
+
+**Labeling** defaults to a free, zero-dependency heuristic: a community's most-connected
+member names (e.g. `"FailureDefinitionId · BuiltInFailures.GroupFailures ·
+BuiltInFailures.FamilyFailures"`). Pass `--label-communities-llm` (with `OPENROUTER_API_KEY`
+set) to upgrade this to a short thematic label from a cheap model via
+[OpenRouter](https://openrouter.ai) instead -- e.g. what Graphify's own LLM-labeled clusters
+look like ("Hashing and Join Keys"). This is best-effort per community: any single request
+failing (missing key, network error, non-2xx, malformed response) just leaves that
+community on its heuristic label rather than raising, and it only fires once, on a run's
+final checkpoint -- not on every periodic checkpoint of a long crawl, which would otherwise
+multiply the API cost for no benefit.
+
+`graph.html` is a self-contained, dependency-free interactive viewer (no CDN scripts, so it
+opens fine straight off disk) over the core subgraph: a hand-rolled canvas force-directed
+layout, node search, a community filter panel (checkboxes + counts, like Graphify's), and a
+node inspector showing a type's `class_role`, community, source-doc link, and full connection
+list. Node fill color is `class_role` (a fixed, validated 8-slot categorical palette);
+communities are shown as a labeled filter list rather than colored, since community count is
+unbounded and can't be given its own validated hue per entry without cycling past that fixed
+set -- real communities already show up as visual clusters in the force layout on their own.
 
 ## Targeted validation crawl
 
