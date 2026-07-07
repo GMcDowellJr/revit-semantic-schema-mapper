@@ -199,6 +199,41 @@ def test_parse_members_index_page_resolves_full_namespace_for_inherited_row():
     assert notes == []
 
 
+_ROOM_MEMBERS_PAGE_SUB_NAMESPACE_WITH_INHERITED_ROWS = """
+<html><body>
+<div id="TopicPathClassic"><a href="/2024/ns_db_architecture.htm">Autodesk.Revit.DB.Architecture</a> Namespace</div>
+<h4 id="api-title" class="truncate"> Room Members </h4>
+<div id="mainBody">
+<h1 class="heading">Properties</h1>
+<table class="members" id="memberList">
+<tr><th>Icon</th><th>Name</th><th>Description</th></tr>
+<tr data="public;inherited;notNetfw;"><td><img></td><td><a href="number.htm">Number</a></td><td>The room number. (Inherited from <a href="spatialelement.htm">SpatialElement</a>.)</td></tr>
+<tr data="public;declared;notNetfw;"><td><img></td><td><a href="volume.htm">Volume</a></td><td>The room volume.</td></tr>
+</table>
+</div>
+</body></html>
+"""
+
+
+def test_parse_members_index_page_does_not_qualify_inherited_owner_with_sub_namespace():
+    """Regression test: Room lives in Autodesk.Revit.DB.Architecture, but its
+    real base types (SpatialElement, Element) live in the top-level
+    Autodesk.Revit.DB namespace, not in .Architecture. Blindly prefixing the
+    inherited owner with the *current page's* namespace would fabricate a
+    nonexistent Autodesk.Revit.DB.Architecture.SpatialElement instead of the
+    real Autodesk.Revit.DB.SpatialElement.
+    """
+    links, notes = parse_members_index_page(
+        _ROOM_MEMBERS_PAGE_SUB_NAMESPACE_WITH_INHERITED_ROWS,
+        "https://www.revitapidocs.com/2024/room-members.htm",
+    )
+    by_name = {link["name"]: link for link in links}
+
+    assert by_name["Number"]["declaring_type_hint"] == "Autodesk.Revit.DB.SpatialElement"
+    assert "declaring_type_hint" not in by_name["Volume"]
+    assert notes == []
+
+
 def test_find_members_page_link(load_fixture):
     html = load_fixture("real_wall_members.htm")
     url = "https://www.revitapidocs.com/2024/d0678575-843b-42ea-c91d-c94b13d7dd4f.htm"

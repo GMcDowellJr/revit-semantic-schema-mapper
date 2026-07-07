@@ -327,6 +327,31 @@ def _row_inherited_from(cells: list) -> str | None:
     return match.group(1) if match else None
 
 
+_TOP_LEVEL_DB_NAMESPACE = "Autodesk.Revit.DB"
+
+
+def _resolve_inherited_owner_namespace(current_page_namespace: str) -> str:
+    """Best-effort namespace for an inherited row's owner type, given the
+    *current* page's own namespace.
+
+    Confirmed live layout: a type in a sub-namespace (e.g.
+    ``Autodesk.Revit.DB.Architecture.Room``) commonly inherits from a base
+    type declared in the top-level ``Autodesk.Revit.DB`` namespace (e.g.
+    ``Element``, ``SpatialElement``), not in that sub-namespace itself.
+    Blindly reusing the current page's own namespace would fabricate a
+    nonexistent owner (``Autodesk.Revit.DB.Architecture.Element`` instead of
+    the real ``Autodesk.Revit.DB.Element``). This is a heuristic, not a
+    verified fact for every case: it assumes the common pattern (a
+    sub-namespace type's bases live one level up, in the shared top-level
+    namespace) and returns the current namespace unchanged when it isn't
+    already under ``Autodesk.Revit.DB`` -- there's nothing more specific to
+    fall back to in that case.
+    """
+    if current_page_namespace == _TOP_LEVEL_DB_NAMESPACE or not current_page_namespace.startswith(f"{_TOP_LEVEL_DB_NAMESPACE}."):
+        return current_page_namespace
+    return _TOP_LEVEL_DB_NAMESPACE
+
+
 def _parse_see_also(soup: BeautifulSoup) -> list[str]:
     container = _first_match(soup, _SEE_ALSO_SELECTORS)
     if container is None:
@@ -578,7 +603,8 @@ def extract_member_links(html: str, base_url: str) -> list[dict]:
             inherited_from = _row_inherited_from(cells)
             if inherited_from is None:
                 continue  # inherited but from an unknown type -- don't guess
-            link["declaring_type_hint"] = f"{namespace}.{inherited_from}" if namespace else inherited_from
+            owner_namespace = _resolve_inherited_owner_namespace(namespace) if namespace else ""
+            link["declaring_type_hint"] = f"{owner_namespace}.{inherited_from}" if owner_namespace else inherited_from
         links.append(link)
     return links
 
@@ -679,7 +705,8 @@ def parse_members_index_page(html: str, base_url: str) -> tuple[list[dict], list
                 inherited_from = _row_inherited_from(cells)
                 if inherited_from is None:
                     continue  # inherited but from an unknown type -- don't guess
-                link["declaring_type_hint"] = f"{namespace}.{inherited_from}" if namespace else inherited_from
+                owner_namespace = _resolve_inherited_owner_namespace(namespace) if namespace else ""
+                link["declaring_type_hint"] = f"{owner_namespace}.{inherited_from}" if owner_namespace else inherited_from
             links.append(link)
     if not links:
         notes.append("no member rows with links found on members index page")

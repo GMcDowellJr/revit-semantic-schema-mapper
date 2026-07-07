@@ -383,12 +383,24 @@ def _build_target_report(
     return results
 
 
+def _short_type_name(full_or_short: str) -> str:
+    return full_or_short.rsplit(".", 1)[-1]
+
+
 def _build_known_edge_report(
     pages: list[ApiPage],
     edge_candidates: list[EdgeCandidate],
+    node_candidates: list[NodeCandidate],
     checks: list[tuple[str, str]],
 ) -> list[KnownEdgeCheckResult]:
     all_members = [m for p in pages for m in p.members]
+    # NodeCandidate.inheritance_chain entries are sometimes short names
+    # (e.g. "Element") and sometimes fully-qualified (e.g. when the base
+    # type was independently crawled), depending on how much of the chain
+    # classify.py could resolve -- compare by short name to handle both.
+    known_ancestor_short_names_by_type = {
+        n.full_type_name: {_short_type_name(a) for a in n.inheritance_chain} for n in node_candidates
+    }
 
     results: list[KnownEdgeCheckResult] = []
     for declaring_type, member_name in checks:
@@ -401,20 +413,31 @@ def _build_known_edge_report(
             member_found = True
         else:
             # Not found under the expected declaring type -- check whether
-            # it was found under a *different* one instead of assuming it's
-            # simply missing. A real crawl found exactly this: Room.Number
-            # is actually declared on the intermediate base class
-            # SpatialElement (Room -> SpatialElement -> Element), which our
-            # own inherited-member attribution correctly resolves to -- that
-            # should read as a confirmed fact, not a coverage gap.
-            other_match = next((m for m in all_members if m.name == member_name and m.declaring_type != declaring_type), None)
+            # it was found under a *confirmed* base type of it instead of
+            # assuming it's simply missing. A real crawl found exactly this:
+            # Room.Number is actually declared on the intermediate base
+            # class SpatialElement (Room -> SpatialElement -> Element),
+            # which our own inherited-member attribution correctly resolves
+            # to -- that should read as a confirmed fact, not a coverage
+            # gap. This is deliberately restricted to declaring_type's own
+            # resolved inheritance chain (not "any same-named member on any
+            # crawled type") -- a common member name like "Name" or
+            # "Number" appears on many unrelated types, and matching any of
+            # them would misreport a genuinely missing member as found on
+            # whatever unrelated type happened to share the name, hiding
+            # the real coverage gap.
+            known_ancestors = known_ancestor_short_names_by_type.get(declaring_type, set())
+            other_match = next(
+                (m for m in all_members if m.name == member_name and _short_type_name(m.declaring_type) in known_ancestors),
+                None,
+            )
             member_found = other_match is not None
             if other_match is not None:
                 actual_declaring_type = other_match.declaring_type
                 lookup_declaring_type = actual_declaring_type
                 resolution_note = (
                     f"found declared on {actual_declaring_type} instead of the expected {declaring_type} "
-                    "(inherited from an intermediate base type); "
+                    "(a confirmed base type in its inheritance chain); "
                 )
 
         edge = next(
@@ -462,8 +485,12 @@ def run_targeted_pipeline(
     Members, Methods/Properties, and every linked property/method page) via
     ``Crawler.discover_targeted``, instead of a full namespace-wide crawl.
     """
-    target_full_type_names = target_full_type_names or DEFAULT_TARGET_CLASSES
-    known_edge_checks = known_edge_checks or DEFAULT_KNOWN_EDGE_CHECKS
+    # `or` would treat an explicitly empty list the same as "not passed" and
+    # silently restore the defaults -- a caller running a focused crawl with
+    # known_edge_checks=[] (no checks wanted) must get zero checks back, not
+    # DEFAULT_KNOWN_EDGE_CHECKS.
+    target_full_type_names = target_full_type_names if target_full_type_names is not None else DEFAULT_TARGET_CLASSES
+    known_edge_checks = known_edge_checks if known_edge_checks is not None else DEFAULT_KNOWN_EDGE_CHECKS
 
     crawler = Crawler(config)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -483,7 +510,7 @@ def run_targeted_pipeline(
     raw_index_entries = list(by_url.values())
 
     target_report = _build_target_report(target_full_type_names, found_map, pages)
-    known_edge_report = _build_known_edge_report(pages, edge_candidates, known_edge_checks)
+    known_edge_report = _build_known_edge_report(pages, edge_candidates, node_candidates, known_edge_checks)
 
     export.write_raw_index(output_dir, raw_index_entries)
     export.write_api_pages(output_dir, pages)
