@@ -1,5 +1,7 @@
 from revit_schema_mapper.models import Kind, MemberKind
 from revit_schema_mapper.parse import (
+    _strip_kind_suffix,
+    _strip_trailing_overload_signature,
     extract_member_links,
     find_members_page_link,
     parse_enum_page,
@@ -213,3 +215,53 @@ def test_resolve_type_name_from_members_index_without_namespace_json(load_fixtur
     # a namespace that isn't in the fixture.
     html = load_fixture("real_wall_members.htm")
     assert resolve_type_name_from_members_index(html) == "Wall"
+
+
+# Real titles from a live overloaded-method page (Element.ChangeTypeId),
+# confirmed via a Raspberry Pi run -- Sandcastle appends the overload's
+# parameter-type list *after* the kind suffix, so a bare `.endswith("Method")`
+# check never matches and these were falling through to "unrecognized page
+# kind ...; skipping" instead of being parsed as Kind.METHOD.
+def test_strip_trailing_overload_signature_single_param():
+    assert _strip_trailing_overload_signature("ChangeTypeId Method (ElementId)") == "ChangeTypeId Method"
+
+
+def test_strip_trailing_overload_signature_nested_parens():
+    # The parameter list itself contains parens (ICollection(ElementId)) --
+    # a naive non-greedy regex would stop at the first ')' and mis-strip.
+    title = "ChangeTypeId Method (Document, ICollection(ElementId), ElementId)"
+    assert _strip_trailing_overload_signature(title) == "ChangeTypeId Method"
+
+
+def test_strip_trailing_overload_signature_no_op_when_no_trailing_parens():
+    assert _strip_trailing_overload_signature("Wall Class") == "Wall Class"
+
+
+def test_strip_kind_suffix_handles_overload_signature():
+    assert _strip_kind_suffix("ChangeTypeId Method (ElementId)") == "ChangeTypeId"
+    assert _strip_kind_suffix("ChangeTypeId Method (Document, ICollection(ElementId), ElementId)") == "ChangeTypeId"
+
+
+def test_sniff_kind_recognizes_overloaded_method_page():
+    html = '<html><body><h4 id="api-title" class="truncate"> ChangeTypeId Method (ElementId) </h4></body></html>'
+    assert sniff_kind(html) is Kind.METHOD
+
+
+def test_parse_member_page_overloaded_method_title():
+    html = """
+    <html><body>
+    <h4 id="api-title" class="truncate"> ChangeTypeId Method (ElementId) </h4>
+    <div id="mainBody">
+    <div class="syntax"><pre class="typeSignature">public void ChangeTypeId(ElementId typeId)</pre></div>
+    </div>
+    </body></html>
+    """
+    page = parse_member_page(
+        html,
+        "https://www.revitapidocs.com/2024/changetypeid-elementid.htm",
+        "2024",
+        declaring_type="Autodesk.Revit.DB.Element",
+    )
+    assert page.kind is Kind.METHOD
+    assert page.type_name == "ChangeTypeId"
+    assert page.members[0].name == "ChangeTypeId"

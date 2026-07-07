@@ -65,6 +65,26 @@ definition-of-done checklist (section 7) as the thing to check first.
    `test_preseeded_inherited_member_url_gets_corrected_by_members_page_parse` (verified to fail
    with the exact false attribution before this second fix, pass after).
 
+### First live confirmation: a real run (Raspberry Pi, 2026-07) found a real parser gap
+
+Namespace-JSON discovery reached real GUID-style pages (confirmed reachable from that
+network), but many logged `unrecognized page kind for <url>; skipping`. Inspecting a cached
+page (`Element.ChangeTypeId`'s overload pages) showed the actual title:
+`ChangeTypeId Method (ElementId)` and `ChangeTypeId Method (Document, ICollection(ElementId),
+ElementId)`. Sandcastle gives each overload of an overloaded method its own page, with the
+parameter-type list appended *after* the kind suffix -- so `_parse_title`'s
+`raw_title.strip().endswith("Method")` check never matched (the title actually ends in `)`),
+and both kind detection and `_strip_kind_suffix`'s name extraction failed for every overloaded
+method's own page. Fixed: `_strip_trailing_overload_signature` walks back from the end of the
+title tracking paren depth (a regex can't do this correctly, since the parameter list itself
+can contain parens, e.g. `ICollection(ElementId)`) and strips a trailing, possibly-nested
+`(...)` group before kind-suffix matching in both `_parse_title` and `_strip_kind_suffix`; the
+returned `raw_title` itself is unchanged. Covered by
+`test_strip_trailing_overload_signature_single_param`,
+`test_strip_trailing_overload_signature_nested_parens`,
+`test_sniff_kind_recognizes_overloaded_method_page`, and
+`test_parse_member_page_overloaded_method_title`, using the exact real titles found on the Pi.
+
 ## Target version: 2027, with a documented fallback
 
 The brief asks to start with Revit 2027 docs on revitapidocs.com and fall back to 2026

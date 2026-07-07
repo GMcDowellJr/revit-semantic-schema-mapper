@@ -85,8 +85,43 @@ def _text_or_empty(tag: Tag | None) -> str:
     return tag.get_text(" ", strip=True) if tag is not None else ""
 
 
+def _strip_trailing_overload_signature(title: str) -> str:
+    """Strip a trailing, possibly-nested "(...)" overload-disambiguation
+    group from a member page title, e.g. "ChangeTypeId Method (ElementId)"
+    or "ChangeTypeId Method (Document, ICollection(ElementId), ElementId)"
+    -> "ChangeTypeId Method" in both cases.
+
+    Confirmed live layout: Sandcastle gives each overload of an overloaded
+    method its own page, titled "<Name> Method (<param types>)" -- the
+    param-type list is appended *after* the kind suffix, so a naive
+    ``.endswith("Method")`` check never matches it, and both kind detection
+    and name extraction need this stripped first. A regex can't do this
+    correctly since the parameter list itself can contain parens (e.g.
+    ``ICollection(ElementId)``); this walks back from the end tracking
+    paren depth instead. Returns the title unchanged if it doesn't end in
+    ``)`` or the parens are unbalanced (rather than guessing).
+    """
+    stripped = title.rstrip()
+    if not stripped.endswith(")"):
+        return title
+    depth = 0
+    for i in range(len(stripped) - 1, -1, -1):
+        char = stripped[i]
+        if char == ")":
+            depth += 1
+        elif char == "(":
+            depth -= 1
+            if depth == 0:
+                return stripped[:i].rstrip()
+    return title  # unbalanced parens -- don't guess
+
+
 def _parse_title(soup: BeautifulSoup) -> tuple[str, Kind, list[str]]:
-    """Returns (raw_title, kind, parser_notes)."""
+    """Returns (raw_title, kind, parser_notes). ``raw_title`` is the full,
+    unmodified title (including any overload signature); only the internal
+    kind-suffix match strips it first -- see
+    ``_strip_trailing_overload_signature``.
+    """
     notes: list[str] = []
     # id="api-title" is what the live site actually uses (an <h4>, not <h1>);
     # h1/#PageHeader/<title> are kept as fallbacks for older cached years.
@@ -96,9 +131,10 @@ def _parse_title(soup: BeautifulSoup) -> tuple[str, Kind, list[str]]:
         notes.append("could not locate a page title element (tried #api-title, h1, #PageHeader, <title>)")
         return "", Kind.UNKNOWN, notes
 
+    kind_match_title = _strip_trailing_overload_signature(raw_title.strip())
     kind = Kind.UNKNOWN
     for suffix, candidate_kind in _TITLE_KIND_SUFFIXES.items():
-        if raw_title.strip().endswith(suffix):
+        if kind_match_title.endswith(suffix):
             kind = candidate_kind
             break
     if kind is Kind.UNKNOWN:
@@ -107,9 +143,10 @@ def _parse_title(soup: BeautifulSoup) -> tuple[str, Kind, list[str]]:
 
 
 def _strip_kind_suffix(raw_title: str) -> str:
+    working = _strip_trailing_overload_signature(raw_title.strip())
     for suffix in _TITLE_KIND_SUFFIXES:
-        if raw_title.strip().endswith(suffix):
-            return raw_title.strip()[: -len(suffix)].strip()
+        if working.endswith(suffix):
+            return working[: -len(suffix)].strip()
     return raw_title.strip()
 
 
