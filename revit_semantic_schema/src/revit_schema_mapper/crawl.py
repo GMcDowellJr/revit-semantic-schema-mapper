@@ -45,6 +45,7 @@ import logging
 import re
 import time
 from dataclasses import dataclass, field
+from xml.etree import ElementTree
 from pathlib import Path
 from urllib.parse import urljoin, urlparse
 
@@ -377,7 +378,7 @@ class Crawler:
         sitemap_url = urljoin(self.config.base_url, "/sitemap.xml")
         try:
             sitemap_text = self.fetch(sitemap_url)
-            found.update(self._links_from_html(sitemap_text, sitemap_url, "sitemap_xml"))
+            found.update(self._links_from_sitemap_xml(sitemap_text, sitemap_url))
         except Exception:  # noqa: BLE001 - optional source
             pass
 
@@ -422,4 +423,27 @@ class Crawler:
                 absolute,
                 {"url": absolute, "link_text": "", "discovered_via": f"{discovered_via}:regex_guid"},
             )
+        return found
+
+    def _links_from_sitemap_xml(self, text: str, source_url: str) -> dict[str, dict]:
+        """A sitemap.xml lists pages as ``<url><loc>...</loc></url>``, not
+        ``<a href>`` -- ``_links_from_html``'s BeautifulSoup/regex approach
+        never matches that shape (and, parsing genuine XML with an HTML
+        parser, only earns a noisy ``XMLParsedAsHTMLWarning``). Extract
+        ``<loc>`` text directly via the stdlib XML parser instead.
+        """
+        found: dict[str, dict] = {}
+        try:
+            root = ElementTree.fromstring(text)
+        except ElementTree.ParseError:
+            return found
+        for element in root.iter():
+            if element.tag.rsplit("}", 1)[-1] != "loc" or not element.text:
+                continue
+            absolute = urljoin(source_url, element.text.strip())
+            if urlparse(absolute).netloc != ALLOWED_HOST:
+                continue
+            if f"/{self.config.version}/" not in absolute:
+                continue
+            found[absolute] = {"url": absolute, "link_text": "", "discovered_via": "sitemap_xml"}
         return found

@@ -191,3 +191,36 @@ def test_discover_index_merges_namespace_json_results(tmp_path):
 
     urls = {e["url"] for e in entries}
     assert "https://www.revitapidocs.com/2024/wall-class.htm" in urls
+
+
+def test_discover_index_finds_urls_in_real_sitemap_xml(tmp_path):
+    config = CrawlConfig(version="2024", namespace_prefix="Autodesk.Revit.DB", cache_dir=tmp_path / "cache")
+    crawler = Crawler(config)
+    _prime_cache(crawler, crawler.namespace_json_url(), json.dumps([]))
+    root_url = crawler.version_root_url()
+    _prime_cache(crawler, root_url, "<html><body></body></html>")
+    for toc_name in ("toc.js", "webtoc.xml", "toc.json", "toc.html"):
+        _prime_cache(crawler, root_url + toc_name, "")
+    # A sitemap.xml lists pages as <url><loc>...</loc></url>, not <a href> --
+    # this is genuine XML, not HTML with anchor tags.
+    sitemap_xml = (
+        '<?xml version="1.0" encoding="UTF-8"?>'
+        '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">'
+        "<url><loc>https://www.revitapidocs.com/2024/wall-class.htm</loc></url>"
+        "<url><loc>https://www.revitapidocs.com/2023/other-version.htm</loc></url>"
+        "</urlset>"
+    )
+    _prime_cache(crawler, "https://www.revitapidocs.com/sitemap.xml", sitemap_xml)
+
+    entries = crawler.discover_index()
+
+    urls = {e["url"] for e in entries}
+    assert "https://www.revitapidocs.com/2024/wall-class.htm" in urls
+    assert "https://www.revitapidocs.com/2023/other-version.htm" not in urls
+
+
+def test_links_from_sitemap_xml_ignores_malformed_content(tmp_path):
+    config = CrawlConfig(version="2024", namespace_prefix="Autodesk.Revit.DB", cache_dir=tmp_path / "cache")
+    crawler = Crawler(config)
+
+    assert crawler._links_from_sitemap_xml("not xml at all", "https://www.revitapidocs.com/sitemap.xml") == {}
