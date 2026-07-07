@@ -1,5 +1,91 @@
-from revit_schema_mapper.classify import classify_member
-from revit_schema_mapper.models import ConfidenceLabel, EdgeType, MemberInfo, MemberKind
+from revit_schema_mapper.classify import classify_class_role, classify_member
+from revit_schema_mapper.models import ApiPage, ClassRole, ConfidenceLabel, EdgeType, IsElementCandidate, Kind, MemberInfo, MemberKind
+
+
+def _page(type_name, kind=Kind.CLASS, members=None, namespace="Autodesk.Revit.DB"):
+    return ApiPage(
+        revit_version="2024",
+        namespace=namespace,
+        type_name=type_name,
+        full_type_name=f"{namespace}.{type_name}",
+        kind=kind,
+        members=members or [],
+        source_url=f"https://www.revitapidocs.com/2024/{type_name.lower()}.htm",
+    )
+
+
+def _method(name):
+    return MemberInfo(
+        name=name,
+        kind=MemberKind.METHOD,
+        declaring_type="Autodesk.Revit.DB.Whatever",
+        raw_signature=f"public void {name}()",
+        source_url="https://www.revitapidocs.com/2024/fake.htm",
+    )
+
+
+def _property(name, return_type="string"):
+    return MemberInfo(
+        name=name,
+        kind=MemberKind.PROPERTY,
+        declaring_type="Autodesk.Revit.DB.Whatever",
+        raw_signature=f"public {return_type} {name} {{ get; }}",
+        return_type=return_type,
+        source_url="https://www.revitapidocs.com/2024/fake.htm",
+    )
+
+
+def test_class_role_enum():
+    page = _page("ACADVersion", kind=Kind.ENUM)
+    assert classify_class_role(page, IsElementCandidate.FALSE) is ClassRole.ENUM
+
+
+def test_class_role_value_object_for_struct():
+    page = _page("XYZ", kind=Kind.STRUCT)
+    assert classify_class_role(page, IsElementCandidate.UNKNOWN) is ClassRole.VALUE_OBJECT
+
+
+def test_class_role_options_class():
+    page = _page("ACADExportOptions")
+    assert classify_class_role(page, IsElementCandidate.FALSE) is ClassRole.OPTIONS_CLASS
+
+
+def test_class_role_element_type_for_element_itself():
+    page = _page("Element")
+    assert classify_class_role(page, IsElementCandidate.TRUE) is ClassRole.ELEMENT_TYPE
+
+
+def test_class_role_element_subtype_when_inheritance_resolves_true():
+    page = _page("FamilyInstance")
+    assert classify_class_role(page, IsElementCandidate.TRUE) is ClassRole.ELEMENT_SUBTYPE
+
+
+def test_class_role_utility_class_by_name_suffix():
+    page = _page("AdaptiveComponentFamilyUtils", members=[_method("GetNumberOfAdaptivePoints")])
+    assert classify_class_role(page, IsElementCandidate.FALSE) is ClassRole.UTILITY_CLASS
+
+
+def test_class_role_utility_class_by_all_static_methods_no_properties():
+    page = _page("SomeHelperBag", members=[_method("DoThing"), _method("DoOtherThing")])
+    assert classify_class_role(page, IsElementCandidate.FALSE) is ClassRole.UTILITY_CLASS
+
+
+def test_class_role_interface_with_only_methods_is_not_utility_class():
+    # A method-only interface is the normal shape for an interface (a
+    # contract), not a static helper bag -- must not be mis-tagged
+    # utility_class just because build_node_candidates includes interfaces.
+    page = _page("IFailuresPreprocessor", kind=Kind.INTERFACE, members=[_method("PreprocessFailures")])
+    assert classify_class_role(page, IsElementCandidate.FALSE) is ClassRole.UNKNOWN
+
+
+def test_class_role_interface_with_utils_like_name_is_not_utility_class():
+    page = _page("IWallUtils", kind=Kind.INTERFACE, members=[_method("DoThing")])
+    assert classify_class_role(page, IsElementCandidate.FALSE) is ClassRole.UNKNOWN
+
+
+def test_class_role_unknown_when_nothing_matches():
+    page = _page("SomeDataHolder", members=[_property("Foo"), _method("DoThing")])
+    assert classify_class_role(page, IsElementCandidate.FALSE) is ClassRole.UNKNOWN
 
 
 def _member(name, return_type, summary="", declaring_type="Autodesk.Revit.DB.View"):

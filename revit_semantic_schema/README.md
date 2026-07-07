@@ -61,11 +61,45 @@ crawl.py    -- polite, cached, resumable HTTP fetching + link discovery, scoped 
                www.revitapidocs.com
 parse.py    -- turns one page's HTML into an ApiPage (class/struct/enum/property/method)
 classify.py -- turns parsed members into NodeCandidate / EdgeCandidate objects, each with
-               a candidate_edge_type (docs/edge_taxonomy_v0.md) and edge_confidence
-               (docs/confidence_model_v0.md)
+               a candidate_edge_type (docs/edge_taxonomy_v0.md), edge_confidence
+               (docs/confidence_model_v0.md), and (for node candidates) a class_role
 export.py   -- writes all outputs/revit_<version>/*.json + summary.md
 pipeline.py -- wires the above into the single command in __main__.py
 ```
+
+## Targeted validation crawl
+
+`python -m revit_schema_mapper --targeted-validation` runs a small, scoped crawl against a
+fixed list of well-understood classes (`Element`, `View`, `FamilyInstance`, `Room`, etc. --
+see `pipeline.DEFAULT_TARGET_CLASSES`) instead of the full `Autodesk.Revit.DB` namespace.
+Use this to validate the crawler/parser/classifier quickly against real pages before trusting
+a full run, or after changing a selector/heuristic. It writes everything a full run does, plus:
+
+- `target_report.json` / section 5 of `validation_summary.md` -- for each target class,
+  whether it was found in the site's namespace index, whether its class page actually parsed,
+  and how many of its member pages parsed; missing/incomplete targets carry an explicit reason.
+- `known_edge_report.json` / section 6 of `validation_summary.md` -- a fixed list of specific
+  expected relationships (`View.ViewTemplateId`, `FamilyInstance.Symbol`,
+  `Room.Number` -- see `pipeline.DEFAULT_KNOWN_EDGE_CHECKS`), each reported as found/missing,
+  and (if found) exactly what `candidate_edge_type`/confidence `classify.py` assigned. Not
+  every check is expected to produce an edge -- `Room.Number` is a plain value property by
+  design (see "Room / Room Number / Room Name" below) and is reported as such rather than as a
+  failure.
+- `validation_summary.md` explicitly separates **crawler coverage** (were pages found/fetched),
+  **parser success** (did `parse.py` extract structured data), and **classifier confidence**
+  (what `classify.py` concluded and how confident it is) into distinct sections, since a low
+  number in one doesn't imply a problem in the others.
+
+Override the target list with `--target-classes "Autodesk.Revit.DB.View,Autodesk.Revit.DB.Wall"`.
+Output defaults to `outputs/revit_<version>_targeted/` (separate from a full run's
+`outputs/revit_<version>/`, so the two don't overwrite each other).
+
+### class_role
+
+Every `NodeCandidate` now also carries a `class_role` (`element_type`, `element_subtype`,
+`utility_class`, `options_class`, `enum`, `value_object`, or `unknown`) -- a coarse structural
+classification, orthogonal to `is_element_candidate`, based on kind/name/member-shape
+heuristics. See `classify.classify_class_role`'s docstring for the precedence rules.
 
 ### Example candidate edges this is designed to surface
 
@@ -89,9 +123,17 @@ concept. `classify.classify_member` never emits an edge candidate for `Room.Numb
 plain `string` property matching no relationship keyword — see
 `tests/test_classify.py::test_room_number_is_not_classified_as_a_relationship`), and
 `export.write_summary` has a dedicated section reporting what's known/found about Room, Name,
-Number, and the relevant `BuiltInParameter` entries each run. See `summary.md` section 10 and
-`docs/crawl_notes.md` for the caveat that this hasn't been checked against a live Room page
-yet.
+Number, and the relevant `BuiltInParameter` entries each run. See `summary.md` section 10.
+
+**Confirmed against a live targeted crawl (Revit 2024)**: the original hypothesis above was
+half right. `Room.Name` is inherited from `Element.Name`, as expected -- but `Room.Number` is
+*not* a Room-specific property either; it's inherited from an intermediate base class between
+`Room` and `Element` (`Room : SpatialElement : Element`), not declared directly on `Room`. So
+`Name` and `Number` reach the object model through the *same* mechanism (an inherited base
+property), just at different levels of the inheritance chain, not two different mechanisms as
+originally guessed. They're still correctly kept as two distinct concepts. (That live run's
+fully-qualified owner name for `SpatialElement` was itself wrong at the time, due to a bug --
+see `docs/crawl_notes.md` for the fix and how the known-edge report resolves this.)
 
 ## Non-goals (this pass)
 

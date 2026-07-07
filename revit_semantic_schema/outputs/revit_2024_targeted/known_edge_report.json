@@ -1,0 +1,83 @@
+[
+  {
+    "declaring_type": "Autodesk.Revit.DB.View",
+    "member_name": "ViewTemplateId",
+    "member_found": true,
+    "edge_produced": true,
+    "edge_type": "CONTROLLED_BY_TEMPLATE",
+    "edge_confidence": "elementid_with_strong_name",
+    "note": "edge produced: CONTROLLED_BY_TEMPLATE (elementid_with_strong_name)"
+  },
+  {
+    "declaring_type": "Autodesk.Revit.DB.FamilyInstance",
+    "member_name": "Symbol",
+    "member_found": true,
+    "edge_produced": true,
+    "edge_type": "INSTANCE_OF",
+    "edge_confidence": "direct_return_type",
+    "note": "edge produced: INSTANCE_OF (direct_return_type)"
+  },
+  {
+    "declaring_type": "Autodesk.Revit.DB.FamilySymbol",
+    "member_name": "Family",
+    "member_found": true,
+    "edge_produced": true,
+    "edge_type": "BELONGS_TO_FAMILY",
+    "edge_confidence": "direct_return_type",
+    "note": "edge produced: BELONGS_TO_FAMILY (direct_return_type)"
+  },
+  {
+    "declaring_type": "Autodesk.Revit.DB.ViewSheet",
+    "member_name": "GetAllPlacedViews",
+    "member_found": true,
+    "edge_produced": true,
+    "edge_type": "RETURNS_ELEMENT_IDS",
+    "edge_confidence": "elementid_collection_with_strong_name",
+    "note": "edge produced: RETURNS_ELEMENT_IDS (elementid_collection_with_strong_name)"
+  },
+  {
+    "declaring_type": "Autodesk.Revit.DB.Viewport",
+    "member_name": "ViewId",
+    "member_found": true,
+    "edge_produced": true,
+    "edge_type": "UNKNOWN_ELEMENTID_REFERENCE",
+    "edge_confidence": "unknown_reference",
+    "note": "edge produced: UNKNOWN_ELEMENTID_REFERENCE (unknown_reference)"
+  },
+  {
+    "declaring_type": "Autodesk.Revit.DB.Element",
+    "member_name": "WorksetId",
+    "member_found": true,
+    "edge_produced": true,
+    "edge_type": "OWNED_BY_WORKSET",
+    "edge_confidence": "name_only_candidate",
+    "note": "edge produced: OWNED_BY_WORKSET (name_only_candidate)"
+  },
+  {
+    "declaring_type": "Autodesk.Revit.DB.Material",
+    "member_name": "SurfacePatternId",
+    "member_found": false,
+    "edge_produced": false,
+    "edge_type": null,
+    "edge_confidence": null,
+    "note": "member page was not crawled/parsed in this run -- not a classifier problem, a coverage gap"
+  },
+  {
+    "declaring_type": "Autodesk.Revit.DB.Material",
+    "member_name": "CutPatternId",
+    "member_found": false,
+    "edge_produced": false,
+    "edge_type": null,
+    "edge_confidence": null,
+    "note": "member page was not crawled/parsed in this run -- not a classifier problem, a coverage gap"
+  },
+  {
+    "declaring_type": "Autodesk.Revit.DB.Architecture.Room",
+    "member_name": "Number",
+    "member_found": false,
+    "edge_produced": false,
+    "edge_type": null,
+    "edge_confidence": null,
+    "note": "member page was not crawled/parsed in this run -- not a classifier problem, a coverage gap"
+  }
+]

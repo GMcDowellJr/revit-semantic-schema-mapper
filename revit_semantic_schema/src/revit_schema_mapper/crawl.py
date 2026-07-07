@@ -253,6 +253,72 @@ class Crawler:
         for child in node.get("children", []) or []:
             self._flatten_namespace_node(child, version_root, out, namespace, declaring_type_hint)
 
+    def discover_targeted(self, target_full_type_names: list[str]) -> tuple[list[dict], dict[str, bool], list[str]]:
+        """Fetch the namespace JSON and flatten only the subtree(s) for
+        specific fully-qualified type names -- for a scoped validation crawl
+        against a short target list instead of a full-namespace crawl.
+
+        Unlike ``discover_via_namespace_json`` (which walks every type under
+        a namespace-prefix match), this walks the *entire* tree looking for
+        an exact fully-qualified-name match, so targets don't need to share
+        a namespace. Returns (entries, found_by_target, notes):
+        ``found_by_target`` maps each requested name to whether a matching
+        Class/Struct/Enum/Interface node was located anywhere in the tree.
+        """
+        notes: list[str] = []
+        target_set = set(target_full_type_names)
+        found: dict[str, bool] = {t: False for t in target_full_type_names}
+
+        url = self.namespace_json_url()
+        try:
+            text = self.fetch(url)
+        except Exception as exc:  # noqa: BLE001 - see discover_index's philosophy
+            msg = f"namespace_json fetch failed: {exc!r} (url={url})"
+            notes.append(msg)
+            logger.warning("discover_targeted: %s", msg)
+            return [], found, notes
+
+        try:
+            tree = json.loads(text)
+        except Exception as exc:  # noqa: BLE001
+            msg = f"namespace_json parse failed: {exc!r}"
+            notes.append(msg)
+            logger.warning("discover_targeted: %s", msg)
+            return [], found, notes
+
+        version_root = self.version_root_url()
+        entries: dict[str, dict] = {}
+
+        def walk(node: dict, namespace: str) -> None:
+            tag = node.get("tag", "")
+            title = node.get("title", "")
+
+            if tag == "Namespace" and title.endswith(" Namespace"):
+                namespace = title[: -len(" Namespace")]
+
+            if tag in self._TYPE_LEVEL_TAGS:
+                short_name = _strip_kind_suffix(title)
+                full_name = f"{namespace}.{short_name}" if namespace else short_name
+                if full_name in target_set:
+                    found[full_name] = True
+                    self._flatten_namespace_node(node, version_root, entries, namespace, None)
+                    return  # already fully flattened (including all descendants) above
+
+            for child in node.get("children", []) or []:
+                walk(child, namespace)
+
+        roots = tree if isinstance(tree, list) else [tree]
+        for root in roots:
+            walk(root, "")
+
+        missing = [t for t, was_found in found.items() if not was_found]
+        if missing:
+            notes.append(f"target class(es) not found in namespace_json tree: {missing}")
+        if not entries:
+            notes.append("no target class pages found -- see 'target class(es) not found' note above, if any")
+
+        return list(entries.values()), found, notes
+
     def discover_index(self) -> list[dict]:
         """Discover candidate page URLs for the configured namespace.
 

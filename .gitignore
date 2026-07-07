@@ -4,3 +4,11 @@ __pycache__/
 .pytest_cache/
 build/
 dist/
+revit_semantic_schema/outputs/*/cache/
+revit_semantic_schema/outputs/*/api_pages.json
+revit_semantic_schema/outputs/*/raw_index.json
+revit_semantic_schema/outputs/*/candidate_edges.json
+revit_semantic_schema/outputs/*/property_relationship_candidates.json
+revit_semantic_schema/outputs/*/method_relationship_candidates.json
+revit_semantic_schema/outputs/*/node_type_candidates.json
+revit_semantic_schema/outputs/*/enum_catalogs.json

@@ -1,5 +1,169 @@
 # Crawl notes
 
+## Targeted validation crawl (`--targeted-validation`)
+
+Built on `claude/targeted-validation-crawl` (branched off the crawler/parser fix work in PR #1)
+in a session that again had no live network access to revitapidocs.com or its CDN (confirmed
+blocked, same as the "Network access limitation" section below). Everything --
+`Crawler.discover_targeted`, the `TargetReportEntry`/`KnownEdgeCheckResult` reporting,
+`classify.classify_class_role`, `run_targeted_pipeline`, and `validation_summary.md` -- is
+unit-tested against synthetic namespace-JSON trees and HTML fixtures modeled on the real
+markup confirmed earlier in this file, but **has not yet been run against the live site**. The
+target list (`pipeline.DEFAULT_TARGET_CLASSES`) and known-edge checks
+(`pipeline.DEFAULT_KNOWN_EDGE_CHECKS`) are exactly what the brief specified; running
+`python -m revit_schema_mapper --version 2024 --targeted-validation --verbose` (with
+`REVIT_SCHEMA_MAPPER_RELAX_TLS_STRICT=1` if needed) against a network-enabled environment and
+reading `validation_summary.md` is the next real validation step -- treat its
+definition-of-done checklist (section 7) as the thing to check first.
+
+### Two bugs found and fixed by code review before any live run
+
+1. **Interfaces mis-tagged `utility_class`.** `build_node_candidates` includes `Kind.INTERFACE`
+   pages, and `classify_class_role`'s "every member is a method, no properties" heuristic is
+   exactly the normal shape of an interface (a contract), not a static helper bag. Any
+   method-only interface (there are many in `Autodesk.Revit.DB`) would have been mis-tagged.
+   Fixed: the utility-class checks (both the name-suffix and all-methods-no-properties ones)
+   are now skipped entirely for `Kind.INTERFACE`, which falls through to `unknown` instead.
+   Covered by `test_class_role_interface_with_only_methods_is_not_utility_class` and
+   `test_class_role_interface_with_utils_like_name_is_not_utility_class`.
+2. **Inherited members were mis-attributed to the wrong declaring type.** A real Members page
+   lists both members declared on the type itself and members inherited from a base type (e.g.
+   the real `Wall Members` page fixture lists `ArePhasesModifiable`, inherited from `Element`,
+   with `data="public;inherited;notNetfw;"` and "(Inherited from Element.)" in its description
+   cell). `parse_members_index_page`/`extract_member_links` previously ignored this and always
+   returned the *current* type as the link's declaring type, which `pipeline.py` used verbatim
+   whenever the inherited member's URL wasn't already known (e.g. a `--max-pages`-truncated
+   smoke crawl, or a targeted crawl of `Wall` alone that never reaches `Element`) --
+   fabricating false pages/edges like `Autodesk.Revit.DB.Wall.ArePhasesModifiable`. In a full
+   crawl covering both types this was usually masked (whichever type's Members page was
+   processed *first* won the URL in `by_url`), which is why it wasn't caught earlier. Fixed:
+   both functions now check each row's `data` attribute for `inherited` and, when set, resolve
+   the real owner from the row's own "(Inherited from X.)" text (regex `_row_inherited_from`),
+   emitting a `declaring_type_hint` that `pipeline.py`'s `enqueue_member_links` now prefers over
+   the caller-supplied type name. A row that's inherited but has no parseable owner text is
+   skipped entirely rather than guessed. Covered by
+   `test_parse_members_index_page_resolves_full_namespace_for_inherited_row`,
+   `test_extract_member_links_preserves_inherited_ownership`, and an end-to-end regression test,
+   `test_targeted_crawl_of_wall_alone_attributes_inherited_member_to_element` (verified to fail
+   with the exact false attribution before the fix, pass after).
+
+   **A second review pass found the "already known" guard in `enqueue_member_links` still let
+   this leak through.** The namespace JSON's flatten (`Crawler._flatten_namespace_node`)
+   structurally nests every page it finds under whichever type node contains it, without any
+   notion of inheritance -- if it lists an inherited member (e.g. `ArePhasesModifiable`) directly
+   under the *derived* type's own subtree (plausible/likely, mirroring what the Members page
+   itself displays), that URL lands in `by_url` with `declaring_type_hint="...Wall"` *before* the
+   real Members page is ever fetched. The original fix only set `declaring_type_hint` when
+   creating a *new* `by_url` entry (`if url not in by_url`); when the real Members-page row parse
+   later resolved the true owner (`Element`), the `elif`-less guard silently discarded that
+   correction because the URL was already known, leaving the stale `Wall` hint in place. Fixed:
+   `enqueue_member_links` now updates an existing `by_url` entry's `declaring_type_hint` in place
+   when a row supplies its own explicit, resolved hint that differs from what's stored (only for
+   a URL not yet fetched); the per-iteration lookup in the crawl loop also now checks `by_url`
+   before the `member_queue` list, so a correction always wins over whatever was recorded at
+   enqueue time. Covered by
+   `test_preseeded_inherited_member_url_gets_corrected_by_members_page_parse` (verified to fail
+   with the exact false attribution before this second fix, pass after).
+
+### First live confirmation: a real run (Raspberry Pi, 2026-07) found a real parser gap
+
+Namespace-JSON discovery reached real GUID-style pages (confirmed reachable from that
+network), but many logged `unrecognized page kind for <url>; skipping`. Inspecting a cached
+page (`Element.ChangeTypeId`'s overload pages) showed the actual title:
+`ChangeTypeId Method (ElementId)` and `ChangeTypeId Method (Document, ICollection(ElementId),
+ElementId)`. Sandcastle gives each overload of an overloaded method its own page, with the
+parameter-type list appended *after* the kind suffix -- so `_parse_title`'s
+`raw_title.strip().endswith("Method")` check never matched (the title actually ends in `)`),
+and both kind detection and `_strip_kind_suffix`'s name extraction failed for every overloaded
+method's own page. Fixed: `_strip_trailing_overload_signature` walks back from the end of the
+title tracking paren depth (a regex can't do this correctly, since the parameter list itself
+can contain parens, e.g. `ICollection(ElementId)`) and strips a trailing, possibly-nested
+`(...)` group before kind-suffix matching in both `_parse_title` and `_strip_kind_suffix`; the
+returned `raw_title` itself is unchanged. Covered by
+`test_strip_trailing_overload_signature_single_param`,
+`test_strip_trailing_overload_signature_nested_parens`,
+`test_sniff_kind_recognizes_overloaded_method_page`, and
+`test_parse_member_page_overloaded_method_title`, using the exact real titles found on the Pi.
+
+### First full targeted-validation-crawl run (Raspberry Pi, 2024): clean, plus two real findings
+
+After the two fixes above, a full `--targeted-validation` run against Revit 2024 came back
+clean: **13/13 target classes found and parsed, 508 pages discovered, 469 parsed, 0 failed
+pages, 165 edge candidates** (48 property-based, 117 method-based). All definition-of-done
+checklist items passed. Two of the nine known-edge checks initially looked like coverage gaps
+but turned out to be real, useful findings rather than bugs:
+
+1. **`Material.SurfacePatternId`/`CutPatternId` don't exist in the real Revit 2024 API.**
+   Confirmed by listing every member actually found under `Material` in that run: the real
+   properties are `CutBackgroundPatternId`, `CutForegroundPatternId`,
+   `SurfaceBackgroundPatternId`, and `SurfaceForegroundPatternId` -- Revit apparently split
+   each pattern into separate background/foreground layers at some point, deprecating the
+   singular names. `DEFAULT_KNOWN_EDGE_CHECKS` deliberately keeps checking the original
+   (brief-specified, "if present") names rather than the confirmed real ones, since the
+   check's job is to honestly report whether that exact hypothesis holds, not to quietly
+   correct itself -- and it now correctly reports "member page was not crawled/parsed" for
+   both, which is the accurate answer.
+2. **`Room.Number` is inherited from an intermediate base class between `Room` and `Element`,
+   not declared on `Room` itself** (`Room : SpatialElement : Element`) -- confirmed by finding
+   the parsed `Number` property page's `declaring_type` directly. This refines the "Room / Room
+   Number / Room Name" hypothesis in the README: `Name` (from `Element`) and `Number` (from
+   `SpatialElement`) reach the object model through the *same* mechanism (an inherited base
+   property), just at different levels of the inheritance chain, not two different mechanisms
+   as originally guessed. This exposed a real reporting bug: `_build_known_edge_report` was
+   reporting this as "**NOT CRAWLED**" (implying a coverage gap) when the member had, in fact,
+   been crawled and correctly attributed -- just not to the type the check happened to name.
+   Fixed: when the exact (declaring_type, member_name) pair isn't found, the report now also
+   checks whether that member name was found under a *different* declaring type before
+   concluding it's genuinely missing, and reports `actual_declaring_type` plus an explanatory
+   note when so. Covered by
+   `test_known_edge_report_resolves_member_found_under_different_declaring_type` and
+   `test_known_edge_report_genuinely_missing_member_is_not_confused_with_cross_type_match`.
+
+   **Correction**: that live run's exact fully-qualified name for the resolved owner --
+   `Autodesk.Revit.DB.Architecture.SpatialElement` -- was itself wrong, produced by the
+   namespace-mis-qualification bug described just below. A re-run with that fix should report
+   the corrected fully-qualified name instead (most likely `Autodesk.Revit.DB.SpatialElement`,
+   given that's where fundamental base types like `Element` live, but that's still an
+   unconfirmed guess until an actual re-run says so).
+
+### Three more bugs found by code review after the first live run
+
+1. **Inherited owners were mis-qualified with the current page's own (sub-)namespace.**
+   `Autodesk.Revit.DB.Architecture.Room`'s real base types (`Element`, `SpatialElement`) live in
+   the top-level `Autodesk.Revit.DB` namespace, not in `.Architecture` -- but both
+   `extract_member_links` and `parse_members_index_page` blindly prefixed an inherited row's
+   owner with the *current page's* namespace, fabricating a nonexistent
+   `Autodesk.Revit.DB.Architecture.Element`/`...SpatialElement` instead of the real
+   `Autodesk.Revit.DB.Element`/`Autodesk.Revit.DB.SpatialElement`. This is exactly what produced
+   the wrong fully-qualified name in finding 2 above. Fixed: `_resolve_inherited_owner_namespace`
+   is a heuristic (documented as such) that falls back to the top-level `Autodesk.Revit.DB`
+   namespace whenever the current page's own namespace is a sub-namespace of it -- the common
+   real-world pattern (fundamental base types live at the top level) -- and only reuses the
+   current namespace unchanged otherwise. Covered by
+   `test_parse_members_index_page_does_not_qualify_inherited_owner_with_sub_namespace`
+   (verified to fail with the exact fabricated sub-namespace owner before the fix, pass after).
+2. **`known_edge_checks=[]` (an explicit "run no known-edge checks") was silently replaced with
+   `DEFAULT_KNOWN_EDGE_CHECKS`.** `run_targeted_pipeline` used `known_edge_checks or
+   DEFAULT_KNOWN_EDGE_CHECKS`, and `or` treats an empty list the same as `None` -- a caller
+   deliberately passing `known_edge_checks=[]` (as the existing Wall-only tests already did) got
+   9 unrelated default checks reported as "not crawled" in `known_edge_report.json`/
+   `validation_summary.md` instead of an empty report. Fixed: explicit `is None` checks for both
+   `known_edge_checks` and `target_full_type_names` (the same bug pattern applied to both
+   parameters). Both existing Wall-only tests now assert `result.known_edge_report == []`
+   (verified to fail with the leaked defaults before the fix, pass after).
+3. **The known-edge cross-declaring-type fallback (finding 2's fix, above) matched *any*
+   same-named member anywhere in the crawl, not just a confirmed base type of the expected
+   type.** A common member name like `Name` or `Number` appears on many unrelated types; the
+   fallback would have reported a genuinely missing check as "found" on whatever unrelated type
+   happened to share the name, hiding the real coverage gap instead of reporting it honestly.
+   Fixed: `_build_known_edge_report` now takes `node_candidates` too and restricts the fallback
+   to declaring types in the expected type's own `NodeCandidate.inheritance_chain` (comparing by
+   short name, since chain entries are sometimes short and sometimes fully-qualified depending
+   on how much of the chain `classify.py` could resolve). Covered by
+   `test_known_edge_report_rejects_same_named_member_on_unrelated_type` (verified to fail with
+   an unrelated `Wall.Number` incorrectly matching a `Room.Number` check before the fix, pass
+   after).
+
 ## Target version: 2027, with a documented fallback
 
 The brief asks to start with Revit 2027 docs on revitapidocs.com and fall back to 2026

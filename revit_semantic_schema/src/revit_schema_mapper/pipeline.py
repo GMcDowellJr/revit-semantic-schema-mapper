@@ -2,18 +2,26 @@
 
 This is the "one command" referenced in the project's definition of done.
 See ``python -m revit_schema_mapper --help`` (src/revit_schema_mapper/__main__.py).
+
+``run_targeted_pipeline`` is a second entry point: a scoped validation crawl
+against a short, explicit list of target classes (see
+``DEFAULT_TARGET_CLASSES``) plus a "known edge" report checking specific
+expected property/method relationships (``DEFAULT_KNOWN_EDGE_CHECKS``),
+instead of a broad namespace-wide crawl. Use this to validate the
+crawler/parser/classifier against a small, well-understood set of real
+pages before trusting a full run.
 """
 
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from urllib.parse import urlparse
 
 from . import classify, export
 from .crawl import ALLOWED_HOST, CrawlConfig, Crawler
-from .models import ApiPage, Kind
+from .models import ApiPage, EdgeCandidate, Kind, NodeCandidate
 from .parse import (
     extract_member_links,
     find_members_page_link,
@@ -37,13 +45,15 @@ class PipelineResult:
     failed_urls: list[str]
 
 
-def run_pipeline(config: CrawlConfig, output_dir: Path, fallback_reason: str | None = None) -> PipelineResult:
-    crawler = Crawler(config)
-    output_dir.mkdir(parents=True, exist_ok=True)
-
-    raw_index_entries = crawler.discover_index()
-    by_url = {e["url"]: e for e in raw_index_entries}
-
+def _crawl_and_parse(crawler: Crawler, config: CrawlConfig, by_url: dict[str, dict]) -> tuple[list[ApiPage], list[str]]:
+    """Fetch/sniff/parse every URL in ``by_url``, following class ->
+    Members-page links and enqueueing newly-discovered member pages as it
+    goes. ``by_url`` is mutated in place (new entries are added for anything
+    discovered along the way) -- shared by both ``run_pipeline`` (broad
+    crawl) and ``run_targeted_pipeline`` (scoped validation crawl), which
+    differ only in how they seed ``by_url`` and what they do with the
+    results afterward.
+    """
     pages: list[ApiPage] = []
     failed_urls: list[str] = []
     # queue of (url, declaring_type_hint) for pages we know are member pages
@@ -52,6 +62,26 @@ def run_pipeline(config: CrawlConfig, output_dir: Path, fallback_reason: str | N
     visited: set[str] = set()
 
     def enqueue_member_links(links: list[dict], declaring_full_type_name: str, discovered_via_prefix: str) -> None:
+        """``links`` come from ``parse.extract_member_links``/
+        ``parse.parse_members_index_page``, whose row-level parsing can
+        supply an explicit ``declaring_type_hint`` for a member inherited
+        from a base type (e.g. ``ArePhasesModifiable`` on ``Wall``, actually
+        declared on ``Element``) -- see those functions' docstrings.
+
+        A URL can already be in ``by_url`` before that hint is known: the
+        namespace JSON's flatten structurally nests every page it finds
+        under whichever type node contains it (see
+        ``Crawler._flatten_namespace_node``), which doesn't distinguish
+        inherited from declared, so it seeds an inherited member's URL under
+        the *derived* type with that type as declaring_type_hint. When the
+        real Members-page row parse later resolves the true owner, that
+        stale hint must be corrected in place -- not left alone just because
+        the URL is already known -- or the member ends up permanently
+        mis-attributed (e.g. a false ``Wall.ArePhasesModifiable``) as soon as
+        it's fetched. Only correct when this call supplies its own explicit,
+        row-derived hint (not the generic per-call default), and only for a
+        URL not yet fetched (``visited``) -- once fetched, it's too late.
+        """
         for link in links:
             url = link["url"]
             if urlparse(url).netloc != ALLOWED_HOST:
@@ -59,14 +89,24 @@ def run_pipeline(config: CrawlConfig, output_dir: Path, fallback_reason: str | N
                 # ToString) out to MSDN instead of rendering them as plain text;
                 # out of scope by design, not a fetch failure.
                 continue
-            if url not in visited and url not in by_url:
+            if url in visited:
+                continue
+
+            row_declaring_type_hint = link.get("declaring_type_hint")
+            declaring_type = row_declaring_type_hint or declaring_full_type_name
+
+            if url not in by_url:
                 by_url[url] = {
                     "url": url,
                     "link_text": link["name"],
-                    "discovered_via": f"{discovered_via_prefix}:{declaring_full_type_name}",
+                    "discovered_via": f"{discovered_via_prefix}:{declaring_type}",
+                    "declaring_type_hint": declaring_type,
                 }
-                member_queue.append((url, declaring_full_type_name))
+                member_queue.append((url, declaring_type))
                 queue.append(url)
+            elif row_declaring_type_hint and by_url[url].get("declaring_type_hint") != row_declaring_type_hint:
+                by_url[url]["declaring_type_hint"] = row_declaring_type_hint
+                by_url[url]["discovered_via"] = f"{discovered_via_prefix}:{row_declaring_type_hint}"
 
     queue = list(by_url.keys())
     while queue:
@@ -77,13 +117,16 @@ def run_pipeline(config: CrawlConfig, output_dir: Path, fallback_reason: str | N
         if config.max_pages is not None and len(visited) > config.max_pages:
             break
 
-        declaring_type_hint = next((dt for u, dt in member_queue if u == url), None)
+        # by_url's declaring_type_hint is checked first (and is the only one
+        # enqueue_member_links corrects in place -- see its docstring), so a
+        # correction made after this URL was first seeded always wins over a
+        # possibly-stale member_queue entry recorded at that earlier time.
+        declaring_type_hint = by_url.get(url, {}).get("declaring_type_hint")
         if declaring_type_hint is None:
-            # Not reached by following a class's Members-page link -- e.g.
-            # discovered directly via the namespace JSON, which carries its
-            # own declaring_type_hint computed at flatten time (see
-            # Crawler._flatten_namespace_node).
-            declaring_type_hint = by_url.get(url, {}).get("declaring_type_hint")
+            # Not reached by following a class's Members-page link and not
+            # seeded via the namespace JSON either -- fall back to whatever
+            # enqueue_member_links recorded at enqueue time.
+            declaring_type_hint = next((dt for u, dt in member_queue if u == url), None)
 
         try:
             html = crawler.fetch(url)
@@ -116,9 +159,14 @@ def run_pipeline(config: CrawlConfig, output_dir: Path, fallback_reason: str | N
                             logger.info("members index page %s: %s", members_url, note)
                         enqueue_member_links(member_links, page.full_type_name, "members_index_page_of")
             elif kind is Kind.MEMBERS_INDEX:
-                # Reached independently (not via its class page) -- derive the
-                # owning type name from this page itself rather than skipping.
-                declaring_full_type_name = resolve_type_name_from_members_index(html)
+                # Prefer the already-known declaring_type_hint (from the
+                # namespace JSON's flatten, or from following a class's
+                # Members-page link) over re-deriving it from this page's own
+                # HTML -- the latter depends on an embedded JSON blob that
+                # isn't guaranteed present on every page/year (see
+                # resolve_type_name_from_members_index's docstring), so it's
+                # a fallback, not the primary source.
+                declaring_full_type_name = declaring_type_hint or resolve_type_name_from_members_index(html)
                 member_links, member_notes = parse_members_index_page(html, url)
                 for note in member_notes:
                     logger.info("members index page %s: %s", url, note)
@@ -138,6 +186,18 @@ def run_pipeline(config: CrawlConfig, output_dir: Path, fallback_reason: str | N
         except Exception as exc:  # noqa: BLE001
             logger.warning("failed to parse %s: %r", url, exc)
             failed_urls.append(url)
+
+    return pages, failed_urls
+
+
+def run_pipeline(config: CrawlConfig, output_dir: Path, fallback_reason: str | None = None) -> PipelineResult:
+    crawler = Crawler(config)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    raw_index_entries = crawler.discover_index()
+    by_url = {e["url"]: e for e in raw_index_entries}
+
+    pages, failed_urls = _crawl_and_parse(crawler, config, by_url)
 
     in_scope_pages = [p for p in pages if not p.namespace or p.namespace.startswith(config.namespace_prefix)]
 
@@ -208,4 +268,278 @@ def run_pipeline(config: CrawlConfig, output_dir: Path, fallback_reason: str | N
         node_candidates=node_candidates,
         edge_candidates=edge_candidates,
         failed_urls=failed_urls,
+    )
+
+
+# -- targeted validation crawl -------------------------------------------------
+
+DEFAULT_TARGET_CLASSES: list[str] = [
+    "Autodesk.Revit.DB.Element",
+    "Autodesk.Revit.DB.ElementType",
+    "Autodesk.Revit.DB.View",
+    "Autodesk.Revit.DB.ViewSheet",
+    "Autodesk.Revit.DB.Viewport",
+    "Autodesk.Revit.DB.Family",
+    "Autodesk.Revit.DB.FamilySymbol",
+    "Autodesk.Revit.DB.FamilyInstance",
+    "Autodesk.Revit.DB.Material",
+    "Autodesk.Revit.DB.FillPatternElement",
+    "Autodesk.Revit.DB.LinePatternElement",
+    "Autodesk.Revit.DB.ParameterFilterElement",
+    "Autodesk.Revit.DB.Architecture.Room",
+]
+
+# (declaring_type, member_name) pairs to specifically check for. Room.Number
+# is expected to produce NO edge (a plain string property, by design -- see
+# classify.classify_member and docs/edge_taxonomy_v0.md); everything else is
+# expected to produce one.
+DEFAULT_KNOWN_EDGE_CHECKS: list[tuple[str, str]] = [
+    ("Autodesk.Revit.DB.View", "ViewTemplateId"),
+    ("Autodesk.Revit.DB.FamilyInstance", "Symbol"),
+    ("Autodesk.Revit.DB.FamilySymbol", "Family"),
+    ("Autodesk.Revit.DB.ViewSheet", "GetAllPlacedViews"),
+    ("Autodesk.Revit.DB.Viewport", "ViewId"),
+    ("Autodesk.Revit.DB.Element", "WorksetId"),
+    ("Autodesk.Revit.DB.Material", "SurfacePatternId"),
+    ("Autodesk.Revit.DB.Material", "CutPatternId"),
+    ("Autodesk.Revit.DB.Architecture.Room", "Number"),
+]
+
+_EXPECTED_NO_EDGE: set[tuple[str, str]] = {("Autodesk.Revit.DB.Architecture.Room", "Number")}
+
+
+@dataclass
+class TargetReportEntry:
+    full_type_name: str
+    found_in_namespace_json: bool
+    class_page_parsed: bool
+    member_pages_parsed: int
+    member_count: int
+    reason: str | None = None
+
+
+@dataclass
+class KnownEdgeCheckResult:
+    declaring_type: str
+    member_name: str
+    member_found: bool
+    edge_produced: bool
+    edge_type: str | None
+    edge_confidence: str | None
+    note: str
+    # Set only when the member was found under a *different* declaring type
+    # than expected -- e.g. Room.Number is actually declared on the
+    # intermediate base class SpatialElement, not Room itself. None means
+    # either an exact match or not found at all (see member_found/note).
+    actual_declaring_type: str | None = None
+
+
+@dataclass
+class TargetedPipelineResult:
+    raw_index_entries: list[dict]
+    pages: list[ApiPage]
+    node_candidates: list[NodeCandidate]
+    edge_candidates: list[EdgeCandidate]
+    failed_urls: list[str]
+    target_report: list[TargetReportEntry]
+    known_edge_report: list[KnownEdgeCheckResult]
+    discovery_notes: list[str] = field(default_factory=list)
+
+
+def _build_target_report(
+    target_full_type_names: list[str],
+    found_map: dict[str, bool],
+    pages: list[ApiPage],
+) -> list[TargetReportEntry]:
+    type_pages_by_name = {p.full_type_name: p for p in pages if p.kind in (Kind.CLASS, Kind.STRUCT, Kind.ENUM, Kind.INTERFACE)}
+    member_pages = [p for p in pages if p.kind in (Kind.PROPERTY, Kind.METHOD, Kind.CONSTRUCTOR)]
+
+    results: list[TargetReportEntry] = []
+    for target in target_full_type_names:
+        found_in_json = found_map.get(target, False)
+        class_page = type_pages_by_name.get(target)
+        class_page_parsed = class_page is not None
+        member_pages_for_target = [p for p in member_pages if p.declaring_type == target]
+        # + any lightweight member stubs recorded directly on the class page
+        # itself (the defensive inline-table fallback path in parse_type_page).
+        member_count = len(member_pages_for_target) + (len(class_page.members) if class_page else 0)
+
+        reason = None
+        if not found_in_json:
+            reason = "not found in the namespace_json tree -- see discovery notes"
+        elif not class_page_parsed:
+            reason = "found in the index but its class page failed to fetch/parse -- see failed_urls/parser_notes"
+
+        results.append(
+            TargetReportEntry(
+                full_type_name=target,
+                found_in_namespace_json=found_in_json,
+                class_page_parsed=class_page_parsed,
+                member_pages_parsed=len(member_pages_for_target),
+                member_count=member_count,
+                reason=reason,
+            )
+        )
+    return results
+
+
+def _short_type_name(full_or_short: str) -> str:
+    return full_or_short.rsplit(".", 1)[-1]
+
+
+def _build_known_edge_report(
+    pages: list[ApiPage],
+    edge_candidates: list[EdgeCandidate],
+    node_candidates: list[NodeCandidate],
+    checks: list[tuple[str, str]],
+) -> list[KnownEdgeCheckResult]:
+    all_members = [m for p in pages for m in p.members]
+    # NodeCandidate.inheritance_chain entries are sometimes short names
+    # (e.g. "Element") and sometimes fully-qualified (e.g. when the base
+    # type was independently crawled), depending on how much of the chain
+    # classify.py could resolve -- compare by short name to handle both.
+    known_ancestor_short_names_by_type = {
+        n.full_type_name: {_short_type_name(a) for a in n.inheritance_chain} for n in node_candidates
+    }
+
+    results: list[KnownEdgeCheckResult] = []
+    for declaring_type, member_name in checks:
+        exact_match = any(m.declaring_type == declaring_type and m.name == member_name for m in all_members)
+
+        actual_declaring_type: str | None = None
+        resolution_note = ""
+        lookup_declaring_type = declaring_type
+        if exact_match:
+            member_found = True
+        else:
+            # Not found under the expected declaring type -- check whether
+            # it was found under a *confirmed* base type of it instead of
+            # assuming it's simply missing. A real crawl found exactly this:
+            # Room.Number is actually declared on the intermediate base
+            # class SpatialElement (Room -> SpatialElement -> Element),
+            # which our own inherited-member attribution correctly resolves
+            # to -- that should read as a confirmed fact, not a coverage
+            # gap. This is deliberately restricted to declaring_type's own
+            # resolved inheritance chain (not "any same-named member on any
+            # crawled type") -- a common member name like "Name" or
+            # "Number" appears on many unrelated types, and matching any of
+            # them would misreport a genuinely missing member as found on
+            # whatever unrelated type happened to share the name, hiding
+            # the real coverage gap.
+            known_ancestors = known_ancestor_short_names_by_type.get(declaring_type, set())
+            other_match = next(
+                (m for m in all_members if m.name == member_name and _short_type_name(m.declaring_type) in known_ancestors),
+                None,
+            )
+            member_found = other_match is not None
+            if other_match is not None:
+                actual_declaring_type = other_match.declaring_type
+                lookup_declaring_type = actual_declaring_type
+                resolution_note = (
+                    f"found declared on {actual_declaring_type} instead of the expected {declaring_type} "
+                    "(a confirmed base type in its inheritance chain); "
+                )
+
+        edge = next(
+            (e for e in edge_candidates if e.source_type == lookup_declaring_type and e.member_name == member_name),
+            None,
+        )
+        edge_produced = edge is not None
+        expected_no_edge = (declaring_type, member_name) in _EXPECTED_NO_EDGE
+
+        if not member_found:
+            note = "member page was not crawled/parsed in this run -- not a classifier problem, a coverage gap"
+        elif expected_no_edge:
+            note = (
+                "as expected: no relationship edge (plain value property, by design)"
+                if not edge_produced
+                else "UNEXPECTED: an edge was produced for a member expected to have none -- check classify.py"
+            )
+        elif edge_produced:
+            note = f"edge produced: {edge.candidate_edge_type.value} ({edge.edge_confidence.value})"
+        else:
+            note = "member found but no relationship edge was produced -- check classify.py's keyword/type rules"
+
+        results.append(
+            KnownEdgeCheckResult(
+                declaring_type=declaring_type,
+                member_name=member_name,
+                member_found=member_found,
+                edge_produced=edge_produced,
+                edge_type=edge.candidate_edge_type.value if edge else None,
+                edge_confidence=edge.edge_confidence.value if edge else None,
+                note=resolution_note + note,
+                actual_declaring_type=actual_declaring_type,
+            )
+        )
+    return results
+
+
+def run_targeted_pipeline(
+    config: CrawlConfig,
+    output_dir: Path,
+    target_full_type_names: list[str] | None = None,
+    known_edge_checks: list[tuple[str, str]] | None = None,
+) -> TargetedPipelineResult:
+    """Scoped validation crawl: fetch only the target classes' pages (class,
+    Members, Methods/Properties, and every linked property/method page) via
+    ``Crawler.discover_targeted``, instead of a full namespace-wide crawl.
+    """
+    # `or` would treat an explicitly empty list the same as "not passed" and
+    # silently restore the defaults -- a caller running a focused crawl with
+    # known_edge_checks=[] (no checks wanted) must get zero checks back, not
+    # DEFAULT_KNOWN_EDGE_CHECKS.
+    target_full_type_names = target_full_type_names if target_full_type_names is not None else DEFAULT_TARGET_CLASSES
+    known_edge_checks = known_edge_checks if known_edge_checks is not None else DEFAULT_KNOWN_EDGE_CHECKS
+
+    crawler = Crawler(config)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    # discover_targeted already logs fetch/parse failures itself; notes here
+    # also cover "target not found" cases, which aren't separately logged
+    # there since they're expected/routine, not an error -- surfaced via
+    # target_report/validation_summary.md instead.
+    entries, found_map, discovery_notes = crawler.discover_targeted(target_full_type_names)
+
+    by_url = {e["url"]: e for e in entries}
+    pages, failed_urls = _crawl_and_parse(crawler, config, by_url)
+
+    node_candidates = classify.build_node_candidates(pages)
+    edge_candidates = classify.build_edge_candidates(pages)
+
+    raw_index_entries = list(by_url.values())
+
+    target_report = _build_target_report(target_full_type_names, found_map, pages)
+    known_edge_report = _build_known_edge_report(pages, edge_candidates, node_candidates, known_edge_checks)
+
+    export.write_raw_index(output_dir, raw_index_entries)
+    export.write_api_pages(output_dir, pages)
+    export.write_node_candidates(output_dir, node_candidates)
+    export.write_edge_candidates(output_dir, edge_candidates)
+    export.write_enum_catalogs(output_dir, pages)
+    export.write_target_report(output_dir, target_report)
+    export.write_known_edge_report(output_dir, known_edge_report)
+    export.write_validation_summary(
+        output_dir,
+        revit_version=config.version,
+        target_full_type_names=target_full_type_names,
+        target_report=target_report,
+        known_edge_report=known_edge_report,
+        raw_index_entries=raw_index_entries,
+        pages=pages,
+        node_candidates=node_candidates,
+        edge_candidates=edge_candidates,
+        failed_urls=failed_urls,
+        discovery_notes=discovery_notes,
+    )
+
+    return TargetedPipelineResult(
+        raw_index_entries=raw_index_entries,
+        pages=pages,
+        node_candidates=node_candidates,
+        edge_candidates=edge_candidates,
+        failed_urls=failed_urls,
+        target_report=target_report,
+        known_edge_report=known_edge_report,
+        discovery_notes=discovery_notes,
     )

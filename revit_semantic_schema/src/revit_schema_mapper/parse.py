@@ -85,8 +85,43 @@ def _text_or_empty(tag: Tag | None) -> str:
     return tag.get_text(" ", strip=True) if tag is not None else ""
 
 
+def _strip_trailing_overload_signature(title: str) -> str:
+    """Strip a trailing, possibly-nested "(...)" overload-disambiguation
+    group from a member page title, e.g. "ChangeTypeId Method (ElementId)"
+    or "ChangeTypeId Method (Document, ICollection(ElementId), ElementId)"
+    -> "ChangeTypeId Method" in both cases.
+
+    Confirmed live layout: Sandcastle gives each overload of an overloaded
+    method its own page, titled "<Name> Method (<param types>)" -- the
+    param-type list is appended *after* the kind suffix, so a naive
+    ``.endswith("Method")`` check never matches it, and both kind detection
+    and name extraction need this stripped first. A regex can't do this
+    correctly since the parameter list itself can contain parens (e.g.
+    ``ICollection(ElementId)``); this walks back from the end tracking
+    paren depth instead. Returns the title unchanged if it doesn't end in
+    ``)`` or the parens are unbalanced (rather than guessing).
+    """
+    stripped = title.rstrip()
+    if not stripped.endswith(")"):
+        return title
+    depth = 0
+    for i in range(len(stripped) - 1, -1, -1):
+        char = stripped[i]
+        if char == ")":
+            depth += 1
+        elif char == "(":
+            depth -= 1
+            if depth == 0:
+                return stripped[:i].rstrip()
+    return title  # unbalanced parens -- don't guess
+
+
 def _parse_title(soup: BeautifulSoup) -> tuple[str, Kind, list[str]]:
-    """Returns (raw_title, kind, parser_notes)."""
+    """Returns (raw_title, kind, parser_notes). ``raw_title`` is the full,
+    unmodified title (including any overload signature); only the internal
+    kind-suffix match strips it first -- see
+    ``_strip_trailing_overload_signature``.
+    """
     notes: list[str] = []
     # id="api-title" is what the live site actually uses (an <h4>, not <h1>);
     # h1/#PageHeader/<title> are kept as fallbacks for older cached years.
@@ -96,9 +131,10 @@ def _parse_title(soup: BeautifulSoup) -> tuple[str, Kind, list[str]]:
         notes.append("could not locate a page title element (tried #api-title, h1, #PageHeader, <title>)")
         return "", Kind.UNKNOWN, notes
 
+    kind_match_title = _strip_trailing_overload_signature(raw_title.strip())
     kind = Kind.UNKNOWN
     for suffix, candidate_kind in _TITLE_KIND_SUFFIXES.items():
-        if raw_title.strip().endswith(suffix):
+        if kind_match_title.endswith(suffix):
             kind = candidate_kind
             break
     if kind is Kind.UNKNOWN:
@@ -107,9 +143,10 @@ def _parse_title(soup: BeautifulSoup) -> tuple[str, Kind, list[str]]:
 
 
 def _strip_kind_suffix(raw_title: str) -> str:
+    working = _strip_trailing_overload_signature(raw_title.strip())
     for suffix in _TITLE_KIND_SUFFIXES:
-        if raw_title.strip().endswith(suffix):
-            return raw_title.strip()[: -len(suffix)].strip()
+        if working.endswith(suffix):
+            return working[: -len(suffix)].strip()
     return raw_title.strip()
 
 
@@ -262,6 +299,57 @@ def _member_name_cell(cells: list) -> "Tag | None":
     if cells:
         return cells[0]
     return None
+
+
+_INHERITED_FROM_RE = re.compile(r"Inherited from\s+([A-Za-z_]\w*)")
+
+
+def _row_is_inherited(row: Tag) -> bool:
+    """Confirmed live layout: a member row's ``data`` attribute is a
+    semicolon-separated flag list, e.g. ``public;inherited;notNetfw;`` for a
+    member declared on a base type vs. ``public;declared;notNetfw;`` for one
+    declared directly on this type.
+    """
+    data_attr = row.get("data", "") or ""
+    return "inherited" in [part.strip() for part in data_attr.split(";")]
+
+
+def _row_inherited_from(cells: list) -> str | None:
+    """Best-effort short name of the type an inherited row's member is
+    actually declared on, from the description cell's trailing "(Inherited
+    from <a>Element</a>.)" (or ``<span class=nolink>Object</span>`` for
+    universal .NET Object members). Returns None if that text isn't found,
+    so the caller can decide not to guess.
+    """
+    if not cells:
+        return None
+    match = _INHERITED_FROM_RE.search(cells[-1].get_text(" ", strip=True))
+    return match.group(1) if match else None
+
+
+_TOP_LEVEL_DB_NAMESPACE = "Autodesk.Revit.DB"
+
+
+def _resolve_inherited_owner_namespace(current_page_namespace: str) -> str:
+    """Best-effort namespace for an inherited row's owner type, given the
+    *current* page's own namespace.
+
+    Confirmed live layout: a type in a sub-namespace (e.g.
+    ``Autodesk.Revit.DB.Architecture.Room``) commonly inherits from a base
+    type declared in the top-level ``Autodesk.Revit.DB`` namespace (e.g.
+    ``Element``, ``SpatialElement``), not in that sub-namespace itself.
+    Blindly reusing the current page's own namespace would fabricate a
+    nonexistent owner (``Autodesk.Revit.DB.Architecture.Element`` instead of
+    the real ``Autodesk.Revit.DB.Element``). This is a heuristic, not a
+    verified fact for every case: it assumes the common pattern (a
+    sub-namespace type's bases live one level up, in the shared top-level
+    namespace) and returns the current namespace unchanged when it isn't
+    already under ``Autodesk.Revit.DB`` -- there's nothing more specific to
+    fall back to in that case.
+    """
+    if current_page_namespace == _TOP_LEVEL_DB_NAMESPACE or not current_page_namespace.startswith(f"{_TOP_LEVEL_DB_NAMESPACE}."):
+        return current_page_namespace
+    return _TOP_LEVEL_DB_NAMESPACE
 
 
 def _parse_see_also(soup: BeautifulSoup) -> list[str]:
@@ -482,10 +570,20 @@ def extract_member_links(html: str, base_url: str) -> list[dict]:
     members table usually isn't on the type page itself (see
     ``find_members_page_link``/``parse_members_index_page``); this is kept as
     a defensive fallback for pages/years that do inline it.
+
+    A row inherited from a base type (e.g. ``ArePhasesModifiable`` inherited
+    from ``Element`` on a ``Wall`` page) is *not* declared on this type --
+    including it here with this page's own type as declaring type would
+    mis-attribute it (e.g. a false ``Wall.ArePhasesModifiable``). Such rows
+    get a ``declaring_type_hint`` resolved from the row's own "(Inherited
+    from X.)" text instead of the caller's default, or are skipped entirely
+    if that text can't be parsed (better to lose the row than mis-attribute
+    it).
     """
     from urllib.parse import urljoin
 
     soup = BeautifulSoup(html, "html.parser")
+    namespace, _ = _parse_namespace(soup, html)
     table = _first_match(soup, _MEMBERS_TABLE_SELECTORS)
     if table is None:
         return []
@@ -500,7 +598,14 @@ def extract_member_links(html: str, base_url: str) -> list[dict]:
         anchor = name_cell.find("a", href=True)
         if anchor is None:
             continue
-        links.append({"name": anchor.get_text(strip=True), "url": urljoin(base_url, anchor["href"])})
+        link = {"name": anchor.get_text(strip=True), "url": urljoin(base_url, anchor["href"])}
+        if _row_is_inherited(row):
+            inherited_from = _row_inherited_from(cells)
+            if inherited_from is None:
+                continue  # inherited but from an unknown type -- don't guess
+            owner_namespace = _resolve_inherited_owner_namespace(namespace) if namespace else ""
+            link["declaring_type_hint"] = f"{owner_namespace}.{inherited_from}" if owner_namespace else inherited_from
+        links.append(link)
     return links
 
 
@@ -545,11 +650,21 @@ def parse_members_index_page(html: str, base_url: str) -> tuple[list[dict], list
     section heading wasn't recognized). Entries with no link (e.g. inherited
     `Object` members like ``Equals``/``GetHashCode``, which have no page of
     their own) are omitted.
+
+    A row inherited from a base type (e.g. ``ArePhasesModifiable`` inherited
+    from ``Element`` on the real ``Wall`` page -- ``data="...;inherited;..."``)
+    is *not* declared on this type; including it with this page's own type
+    as declaring type would mis-attribute it (e.g. a false
+    ``Wall.ArePhasesModifiable``). Such rows carry a ``declaring_type_hint``
+    resolved from the row's own "(Inherited from X.)" text instead, or are
+    skipped entirely if that text can't be parsed (better to lose the row
+    than mis-attribute it).
     """
     from urllib.parse import urljoin
 
     notes: list[str] = []
     soup = BeautifulSoup(html, "html.parser")
+    namespace, _ = _parse_namespace(soup, html)
     container = soup.find(id="mainBody") or soup.find(id="mainSection") or soup
 
     links: list[dict] = []
@@ -581,13 +696,18 @@ def parse_members_index_page(html: str, base_url: str) -> tuple[list[dict], list
             anchor = name_cell.find("a", href=True)
             if anchor is None:
                 continue  # no page of its own (e.g. inherited Object.Equals)
-            links.append(
-                {
-                    "name": anchor.get_text(strip=True),
-                    "url": urljoin(base_url, anchor["href"]),
-                    "member_kind": member_kind,
-                }
-            )
+            link = {
+                "name": anchor.get_text(strip=True),
+                "url": urljoin(base_url, anchor["href"]),
+                "member_kind": member_kind,
+            }
+            if _row_is_inherited(row):
+                inherited_from = _row_inherited_from(cells)
+                if inherited_from is None:
+                    continue  # inherited but from an unknown type -- don't guess
+                owner_namespace = _resolve_inherited_owner_namespace(namespace) if namespace else ""
+                link["declaring_type_hint"] = f"{owner_namespace}.{inherited_from}" if owner_namespace else inherited_from
+            links.append(link)
     if not links:
         notes.append("no member rows with links found on members index page")
     return links, notes

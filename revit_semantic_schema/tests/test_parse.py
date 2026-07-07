@@ -1,5 +1,7 @@
 from revit_schema_mapper.models import Kind, MemberKind
 from revit_schema_mapper.parse import (
+    _strip_kind_suffix,
+    _strip_trailing_overload_signature,
     extract_member_links,
     find_members_page_link,
     parse_enum_page,
@@ -33,6 +35,34 @@ def test_extract_member_links(load_fixture):
     assert "Symbol" in names
     symbol_link = next(link for link in links if link["name"] == "Symbol")
     assert symbol_link["url"].endswith("property_familyinstance_symbol.htm")
+
+
+_INLINE_TABLE_CLASS_PAGE_WITH_INHERITED_ROWS = """
+<html><body>
+<h1 id="PageHeader">Wall Class</h1>
+<div id="TopicPathClassic"><a href="/2024/ns_db.htm">Autodesk.Revit.DB</a> Namespace</div>
+<div class="syntax"><pre class="typeSignature">public class Wall : HostObject</pre></div>
+<table class="members" id="memberList">
+<tr><th>Icon</th><th>Name</th><th>Description</th></tr>
+<tr data="public;inherited;notNetfw;"><td><img></td><td><a href="arephasesmodifiable.htm">ArePhasesModifiable</a></td><td>Returns true if... (Inherited from <a href="element.htm">Element</a>.)</td></tr>
+<tr data="public;declared;notNetfw;"><td><img></td><td><a href="flip.htm">Flip</a></td><td>Flips the wall.</td></tr>
+<tr data="public;inherited;notNetfw;"><td><img></td><td><a href="mystery.htm">MysteryInherited</a></td><td>No parseable owner text here.</td></tr>
+</table>
+</body></html>
+"""
+
+
+def test_extract_member_links_preserves_inherited_ownership():
+    links = extract_member_links(
+        _INLINE_TABLE_CLASS_PAGE_WITH_INHERITED_ROWS,
+        "https://www.revitapidocs.com/2024/wall-class.htm",
+    )
+    by_name = {link["name"]: link for link in links}
+
+    assert by_name["ArePhasesModifiable"]["declaring_type_hint"] == "Autodesk.Revit.DB.Element"
+    assert "declaring_type_hint" not in by_name["Flip"]
+    # Inherited but with no parseable owner: don't guess Wall, drop the row.
+    assert "MysteryInherited" not in by_name
 
 
 def test_parse_property_page_direct_return_type(load_fixture):
@@ -122,6 +152,87 @@ def test_parse_members_index_page_splits_methods_and_properties(load_fixture):
     # be omitted, not crawled as if they had a URL.
     assert "Equals" not in by_name
 
+    # ArePhasesModifiable is real markup inherited from Element (data=
+    # "public;inherited;notNetfw;"), not declared on Wall -- it must carry
+    # Element as its declaring type, not Wall, so pipeline.py doesn't
+    # attribute it to the wrong type. This fixture has no embedded namespace
+    # JSON, so only the short name resolves here (see
+    # test_parse_members_index_page_resolves_full_namespace_for_inherited_row
+    # for the fully-qualified case).
+    assert by_name["ArePhasesModifiable"]["declaring_type_hint"] == "Element"
+    # Declared-on-Wall members must NOT get a declaring_type_hint override --
+    # the caller's default (the current type) is correct for them.
+    assert "declaring_type_hint" not in by_name["CrossSection"]
+    assert "declaring_type_hint" not in by_name["Width"]
+
+
+_MEMBERS_PAGE_WITH_NAMESPACE_AND_INHERITED_ROWS = """
+<html><body>
+<div id="TopicPathClassic"><a href="/2024/ns_db.htm">Autodesk.Revit.DB</a> Namespace</div>
+<h4 id="api-title" class="truncate"> Wall Members </h4>
+<div id="mainBody">
+<h1 class="heading">Methods</h1>
+<table class="members" id="memberList">
+<tr><th>Icon</th><th>Name</th><th>Description</th></tr>
+<tr data="public;inherited;notNetfw;"><td><img></td><td><a href="arephasesmodifiable.htm">ArePhasesModifiable</a></td><td>Returns true if... (Inherited from <a href="element.htm">Element</a>.)</td></tr>
+<tr data="public;declared;notNetfw;"><td><img></td><td><a href="flip.htm">Flip</a></td><td>Flips the wall.</td></tr>
+<tr data="public;inherited;notNetfw;"><td><img></td><td><a href="mystery.htm">MysteryInherited</a></td><td>No parseable owner text here.</td></tr>
+</table>
+</div>
+</body></html>
+"""
+
+
+def test_parse_members_index_page_resolves_full_namespace_for_inherited_row():
+    links, notes = parse_members_index_page(
+        _MEMBERS_PAGE_WITH_NAMESPACE_AND_INHERITED_ROWS,
+        "https://www.revitapidocs.com/2024/wall-members.htm",
+    )
+    by_name = {link["name"]: link for link in links}
+
+    assert by_name["ArePhasesModifiable"]["declaring_type_hint"] == "Autodesk.Revit.DB.Element"
+    assert "declaring_type_hint" not in by_name["Flip"]
+
+    # Inherited but with no parseable "(Inherited from X.)" text: better to
+    # drop the row than mis-attribute it to Wall.
+    assert "MysteryInherited" not in by_name
+    assert notes == []
+
+
+_ROOM_MEMBERS_PAGE_SUB_NAMESPACE_WITH_INHERITED_ROWS = """
+<html><body>
+<div id="TopicPathClassic"><a href="/2024/ns_db_architecture.htm">Autodesk.Revit.DB.Architecture</a> Namespace</div>
+<h4 id="api-title" class="truncate"> Room Members </h4>
+<div id="mainBody">
+<h1 class="heading">Properties</h1>
+<table class="members" id="memberList">
+<tr><th>Icon</th><th>Name</th><th>Description</th></tr>
+<tr data="public;inherited;notNetfw;"><td><img></td><td><a href="number.htm">Number</a></td><td>The room number. (Inherited from <a href="spatialelement.htm">SpatialElement</a>.)</td></tr>
+<tr data="public;declared;notNetfw;"><td><img></td><td><a href="volume.htm">Volume</a></td><td>The room volume.</td></tr>
+</table>
+</div>
+</body></html>
+"""
+
+
+def test_parse_members_index_page_does_not_qualify_inherited_owner_with_sub_namespace():
+    """Regression test: Room lives in Autodesk.Revit.DB.Architecture, but its
+    real base types (SpatialElement, Element) live in the top-level
+    Autodesk.Revit.DB namespace, not in .Architecture. Blindly prefixing the
+    inherited owner with the *current page's* namespace would fabricate a
+    nonexistent Autodesk.Revit.DB.Architecture.SpatialElement instead of the
+    real Autodesk.Revit.DB.SpatialElement.
+    """
+    links, notes = parse_members_index_page(
+        _ROOM_MEMBERS_PAGE_SUB_NAMESPACE_WITH_INHERITED_ROWS,
+        "https://www.revitapidocs.com/2024/room-members.htm",
+    )
+    by_name = {link["name"]: link for link in links}
+
+    assert by_name["Number"]["declaring_type_hint"] == "Autodesk.Revit.DB.SpatialElement"
+    assert "declaring_type_hint" not in by_name["Volume"]
+    assert notes == []
+
 
 def test_find_members_page_link(load_fixture):
     html = load_fixture("real_wall_members.htm")
@@ -139,3 +250,53 @@ def test_resolve_type_name_from_members_index_without_namespace_json(load_fixtur
     # a namespace that isn't in the fixture.
     html = load_fixture("real_wall_members.htm")
     assert resolve_type_name_from_members_index(html) == "Wall"
+
+
+# Real titles from a live overloaded-method page (Element.ChangeTypeId),
+# confirmed via a Raspberry Pi run -- Sandcastle appends the overload's
+# parameter-type list *after* the kind suffix, so a bare `.endswith("Method")`
+# check never matches and these were falling through to "unrecognized page
+# kind ...; skipping" instead of being parsed as Kind.METHOD.
+def test_strip_trailing_overload_signature_single_param():
+    assert _strip_trailing_overload_signature("ChangeTypeId Method (ElementId)") == "ChangeTypeId Method"
+
+
+def test_strip_trailing_overload_signature_nested_parens():
+    # The parameter list itself contains parens (ICollection(ElementId)) --
+    # a naive non-greedy regex would stop at the first ')' and mis-strip.
+    title = "ChangeTypeId Method (Document, ICollection(ElementId), ElementId)"
+    assert _strip_trailing_overload_signature(title) == "ChangeTypeId Method"
+
+
+def test_strip_trailing_overload_signature_no_op_when_no_trailing_parens():
+    assert _strip_trailing_overload_signature("Wall Class") == "Wall Class"
+
+
+def test_strip_kind_suffix_handles_overload_signature():
+    assert _strip_kind_suffix("ChangeTypeId Method (ElementId)") == "ChangeTypeId"
+    assert _strip_kind_suffix("ChangeTypeId Method (Document, ICollection(ElementId), ElementId)") == "ChangeTypeId"
+
+
+def test_sniff_kind_recognizes_overloaded_method_page():
+    html = '<html><body><h4 id="api-title" class="truncate"> ChangeTypeId Method (ElementId) </h4></body></html>'
+    assert sniff_kind(html) is Kind.METHOD
+
+
+def test_parse_member_page_overloaded_method_title():
+    html = """
+    <html><body>
+    <h4 id="api-title" class="truncate"> ChangeTypeId Method (ElementId) </h4>
+    <div id="mainBody">
+    <div class="syntax"><pre class="typeSignature">public void ChangeTypeId(ElementId typeId)</pre></div>
+    </div>
+    </body></html>
+    """
+    page = parse_member_page(
+        html,
+        "https://www.revitapidocs.com/2024/changetypeid-elementid.htm",
+        "2024",
+        declaring_type="Autodesk.Revit.DB.Element",
+    )
+    assert page.kind is Kind.METHOD
+    assert page.type_name == "ChangeTypeId"
+    assert page.members[0].name == "ChangeTypeId"
