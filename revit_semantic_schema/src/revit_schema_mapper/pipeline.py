@@ -23,7 +23,7 @@ from urllib.parse import urlparse
 
 from . import classify, export
 from .crawl import ALLOWED_HOST, CrawlConfig, Crawler
-from .graph import build_graph
+from .graph import GraphBuildResult, build_graph
 from .models import ApiPage, EdgeCandidate, Kind, NodeCandidate
 from .parse import (
     extract_member_links,
@@ -82,6 +82,32 @@ def run_discovery(config: CrawlConfig, output_dir: Path | None = None) -> Discov
         discovery_errors=crawler.last_discovery_errors,
         counts_by_source=counts_by_source,
     )
+
+
+def run_graph_only(output_dir: Path, revit_version: str) -> GraphBuildResult:
+    """Recompute ``graph.json``/``graph_core.json`` (and refresh the
+    'Knowledge graph materialization' section of whichever summary file
+    exists) from an existing run's already-written
+    ``node_type_candidates.json``/``candidate_edges.json`` -- no crawling,
+    fetching, or re-parsing of any page.
+
+    A full re-run reuses cached HTML (skips fetching) but still re-parses
+    and re-classifies every page from scratch, which is itself the slow
+    part on constrained hardware (e.g. a Raspberry Pi working through tens
+    of thousands of cached pages) -- this mode is for iterating on graph.py
+    alone without paying that cost again.
+    """
+    node_candidates = export.read_node_candidates(output_dir)
+    edge_candidates = export.read_edge_candidates(output_dir)
+    result = build_graph(node_candidates, edge_candidates)
+
+    export.write_graph(output_dir, result, revit_version=revit_version)
+    # Try both -- a no-op for whichever summary filename isn't this
+    # directory's kind (full run vs. --targeted-validation).
+    export.refresh_graph_section_in_file(output_dir / "summary.md", result, section_number=14)
+    export.refresh_graph_section_in_file(output_dir / "validation_summary.md", result, section_number=9)
+
+    return result
 
 
 def _crawl_and_parse(

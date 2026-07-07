@@ -2,10 +2,29 @@ import json
 
 import pytest
 
+from revit_schema_mapper import export
 from revit_schema_mapper import pipeline as pipeline_module
 from revit_schema_mapper.crawl import CrawlConfig, Crawler
-from revit_schema_mapper.models import ApiPage, ClassRole, IsElementCandidate, Kind, MemberInfo, MemberKind, NodeCandidate
-from revit_schema_mapper.pipeline import _build_known_edge_report, _crawl_and_parse, run_discovery, run_pipeline, run_targeted_pipeline
+from revit_schema_mapper.models import (
+    ApiPage,
+    ClassRole,
+    ConfidenceLabel,
+    EdgeCandidate,
+    EdgeType,
+    IsElementCandidate,
+    Kind,
+    MemberInfo,
+    MemberKind,
+    NodeCandidate,
+)
+from revit_schema_mapper.pipeline import (
+    _build_known_edge_report,
+    _crawl_and_parse,
+    run_discovery,
+    run_graph_only,
+    run_pipeline,
+    run_targeted_pipeline,
+)
 
 _WIDGET_NAMESPACE_TREE = [
     {
@@ -707,6 +726,49 @@ def test_known_edge_report_rejects_same_named_member_on_unrelated_type():
     assert result.member_found is False
     assert result.actual_declaring_type is None
     assert "not crawled/parsed" in result.note
+
+
+def _edge_candidate(source_type: str, target: str, edge_type: EdgeType, confidence: ConfidenceLabel) -> EdgeCandidate:
+    return EdgeCandidate(
+        source_type=source_type,
+        member_name="SomeMember",
+        member_kind=MemberKind.PROPERTY,
+        raw_signature="x",
+        return_type=target,
+        parameter_types=[],
+        candidate_target_type=target,
+        candidate_edge_type=edge_type,
+        edge_confidence=confidence,
+        evidence=[],
+        source_url="https://www.revitapidocs.com/2024/fake.htm",
+    )
+
+
+def test_run_graph_only_rebuilds_graph_and_refreshes_summary_without_crawling(tmp_path):
+    """--graph-only's whole point is to skip crawling/parsing entirely --
+    this only touches node_type_candidates.json/candidate_edges.json/
+    summary.md on disk, never Crawler/CrawlConfig.
+    """
+    nodes = [_node_candidate("Autodesk.Revit.DB.View", []), _node_candidate("Autodesk.Revit.DB.ViewSheet", [])]
+    edges = [_edge_candidate("Autodesk.Revit.DB.View", "Autodesk.Revit.DB.ViewSheet", EdgeType.PLACED_ON_SHEET, ConfidenceLabel.DIRECT_RETURN_TYPE)]
+    export.write_node_candidates(tmp_path, nodes)
+    export.write_edge_candidates(tmp_path, edges)
+    (tmp_path / "summary.md").write_text("# Old summary\n\n## 14. Knowledge graph materialization\n\nSTALE\n", encoding="utf-8")
+
+    result = run_graph_only(tmp_path, revit_version="2024")
+
+    assert len(result.nodes) == 2
+    assert len(result.edges) == 1
+
+    graph_json = json.loads((tmp_path / "graph.json").read_text())
+    assert graph_json["metadata"]["edge_count"] == 1
+    core_json = json.loads((tmp_path / "graph_core.json").read_text())
+    assert core_json["metadata"]["edge_count"] == 1
+
+    summary_text = (tmp_path / "summary.md").read_text()
+    assert "STALE" not in summary_text
+    assert "# Old summary" in summary_text
+    assert summary_text.count("## 14. Knowledge graph materialization") == 1
 
 
 def test_known_edge_report_genuinely_missing_member_is_not_confused_with_cross_type_match():

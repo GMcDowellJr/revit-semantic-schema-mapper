@@ -66,6 +66,48 @@ Outputs land in `outputs/revit_<version>/`: `raw_index.json`, `api_pages.json`,
 under `outputs/revit_<version>/cache/` and is not re-fetched on subsequent runs unless
 `--force-refresh` is passed.
 
+### CLI flags
+
+`python -m revit_schema_mapper [flags]` -- every flag `argparse` knows about (see
+`__main__.py`):
+
+| Flag | Default | Meaning |
+|---|---|---|
+| `--version VERSION` | `2027` | Revit version path segment on revitapidocs.com |
+| `--output-dir DIR` | `outputs/revit_<version>[_targeted]/` | Where all output files are written |
+| `--cache-dir DIR` | `<output-dir>/cache` | Where fetched HTML is cached |
+| `--namespace-prefix PREFIX` | `Autodesk.Revit.DB` | Only keep pages whose namespace starts with this |
+| `--throttle-seconds N` | `1.5` | Minimum delay between HTTP requests (politeness) |
+| `--max-pages N` | unlimited | Cap on total pages fetched -- for smoke tests |
+| `--force-refresh` | off | Re-fetch pages even if already cached |
+| `--fallback-reason TEXT` | none | Records why this run is a documented version fallback (e.g. 2027 -> 2026); shown in `summary.md` |
+| `--targeted-validation` | off | Scoped crawl against `pipeline.DEFAULT_TARGET_CLASSES` + a known-edge report, instead of a full namespace crawl -- see "Targeted validation crawl" below |
+| `--target-classes "A,B,C"` | `DEFAULT_TARGET_CLASSES` | Comma-separated fully-qualified class names, overriding the default target list (implies `--targeted-validation`) |
+| `--discover-only` | off | Only run page discovery and report how many pages a full run would fetch; writes just `raw_index.json`, no fetching/parsing of individual pages |
+| `--graph-only` | off | Recompute `graph.json`/`graph_core.json` (and refresh the summary's graph section) from an existing `--output-dir`'s already-written `node_type_candidates.json`/`candidate_edges.json`, without crawling or re-parsing anything -- see "Recomputing just the graph" below |
+| `--include-doc-text` | off | Include full summary/remarks/code-example text (copied from the docs site) in `api_pages.json`; omitted by default since it's prose/code, not derived facts -- for local debugging only, don't republish the result |
+| `-v`, `--verbose` | off | INFO-level logging (HTTP/HTML backend in use, crawl progress heartbeat, robots.txt rules, etc.) |
+
+### Recomputing just the graph
+
+`graph.json`/`graph_core.json` are cheap to recompute from a previous run's
+`node_type_candidates.json`/`candidate_edges.json` -- no network access, no re-parsing HTML.
+This matters because a full re-run reuses cached HTML (skips re-*fetching*) but still
+re-parses and re-classifies every page from scratch, which is itself the slow part on
+constrained hardware (e.g. tens of thousands of cached pages on a Raspberry Pi). If you've
+only changed `graph.py` (or just want to regenerate `graph.json` after editing
+`node_type_candidates.json`/`candidate_edges.json` by hand), skip straight to:
+
+```bash
+python -m revit_schema_mapper --version 2024 --graph-only
+```
+
+This requires `node_type_candidates.json` and `candidate_edges.json` to already exist in
+`--output-dir` (from a previous full or `--targeted-validation` run) -- it errors out if
+they're missing rather than silently doing nothing. It also refreshes the "Knowledge graph
+materialization" section of whichever summary file exists (`summary.md` or
+`validation_summary.md`) in place, without touching the rest of that file.
+
 ## How it works
 
 ```

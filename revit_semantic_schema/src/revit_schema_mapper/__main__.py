@@ -15,7 +15,14 @@ from pathlib import Path
 
 from .crawl import CrawlConfig
 from .http_compat import HAVE_REQUESTS
-from .pipeline import DEFAULT_KNOWN_EDGE_CHECKS, DEFAULT_TARGET_CLASSES, run_discovery, run_pipeline, run_targeted_pipeline
+from .pipeline import (
+    DEFAULT_KNOWN_EDGE_CHECKS,
+    DEFAULT_TARGET_CLASSES,
+    run_discovery,
+    run_graph_only,
+    run_pipeline,
+    run_targeted_pipeline,
+)
 
 try:
     import bs4 as _bs4  # noqa: F401
@@ -57,6 +64,15 @@ def main(argv: list[str] | None = None) -> int:
         "does not fetch/parse individual pages or write anything but raw_index.json",
     )
     parser.add_argument(
+        "--graph-only",
+        action="store_true",
+        help="Recompute graph.json/graph_core.json (and refresh the summary's graph section) from "
+        "this output directory's existing node_type_candidates.json/candidate_edges.json, without "
+        "crawling or re-parsing anything -- much faster than a full re-run when only graph.py "
+        "changed, especially on slow hardware. Requires a previous run's output to already exist "
+        "in --output-dir.",
+    )
+    parser.add_argument(
         "--include-doc-text",
         action="store_true",
         help="Include full summary/remarks/code-example text (copied from the docs site) in "
@@ -77,6 +93,17 @@ def main(argv: list[str] | None = None) -> int:
     default_output_name = f"revit_{args.version}_targeted" if targeted else f"revit_{args.version}"
     output_dir = Path(args.output_dir) if args.output_dir else Path(f"outputs/{default_output_name}")
     cache_dir = Path(args.cache_dir) if args.cache_dir else output_dir / "cache"
+
+    if args.graph_only:
+        if not (output_dir / "node_type_candidates.json").exists() or not (output_dir / "candidate_edges.json").exists():
+            print(f"error: {output_dir} has no node_type_candidates.json/candidate_edges.json to rebuild from -- run a real crawl first", file=sys.stderr)
+            return 1
+        result = run_graph_only(output_dir, revit_version=args.version)
+        print(f"Nodes:              {len(result.nodes)} ({result.external_node_count} external)")
+        print(f"Edges:              {len(result.edges)}")
+        print(f"Target resolution:  {result.target_resolution_counts}")
+        print(f"Outputs written to: {output_dir / 'graph.json'} / {output_dir / 'graph_core.json'}")
+        return 0
 
     config = CrawlConfig(
         version=args.version,

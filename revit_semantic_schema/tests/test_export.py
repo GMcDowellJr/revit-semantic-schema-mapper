@@ -1,7 +1,18 @@
 import json
 
-from revit_schema_mapper import export
-from revit_schema_mapper.models import ApiPage, ConfidenceLabel, EdgeCandidate, EdgeType, Kind, MemberInfo, MemberKind
+from revit_schema_mapper import export, graph
+from revit_schema_mapper.models import (
+    ApiPage,
+    ClassRole,
+    ConfidenceLabel,
+    EdgeCandidate,
+    EdgeType,
+    IsElementCandidate,
+    Kind,
+    MemberInfo,
+    MemberKind,
+    NodeCandidate,
+)
 
 
 def _edge(
@@ -145,3 +156,93 @@ def test_write_summary_unknown_target_type_breakdown(tmp_path):
     assert "`Autodesk.Revit.DB.FailureDefinitionId`: 1" in section_10
     # The USES_MATERIAL edge isn't UNKNOWN_* and must not appear in this breakdown.
     assert "Autodesk.Revit.DB.Material" not in section_10
+
+
+def _node(full_type_name: str) -> NodeCandidate:
+    return NodeCandidate(
+        full_type_name=full_type_name,
+        short_name=full_type_name.rsplit(".", 1)[-1],
+        kind=Kind.CLASS,
+        namespace="Autodesk.Revit.DB",
+        base_type=None,
+        inheritance_chain=[],
+        is_element_candidate=IsElementCandidate.UNKNOWN,
+        class_role=ClassRole.UNKNOWN,
+        evidence=[],
+        source_url="https://www.revitapidocs.com/2024/x.htm",
+    )
+
+
+def test_write_graph_core_metadata_reflects_only_filtered_edges(tmp_path):
+    """graph_core.json's metadata must describe graph_core.json's own
+    nodes/edges, not the full graph's -- a consumer sizing/validating the
+    filtered file from its own metadata block would otherwise see
+    confidence_tier_counts including likely/unverified_reference (edges
+    that aren't actually present in graph_core.json) and an
+    external_node_count computed against the full node set.
+    """
+    nodes = [_node("Autodesk.Revit.DB.FamilyInstance"), _node("Autodesk.Revit.DB.FamilySymbol")]
+    edges = [
+        _edge("Symbol", EdgeType.INSTANCE_OF, ConfidenceLabel.DIRECT_RETURN_TYPE, "Autodesk.Revit.DB.FamilySymbol"),
+        _edge("GetMaterialIds", EdgeType.USES_MATERIAL, ConfidenceLabel.NAME_ONLY_CANDIDATE, "Autodesk.Revit.DB.Material"),
+    ]
+    for e in edges:
+        e.source_type = "Autodesk.Revit.DB.FamilyInstance"
+
+    result = graph.build_graph(nodes, edges)
+    export.write_graph(tmp_path, result, revit_version="2024")
+
+    core = json.loads((tmp_path / "graph_core.json").read_text())
+    # Only the INSTANCE_OF edge is core tier (NAME_ONLY_CANDIDATE is 'likely').
+    assert core["metadata"]["edge_count"] == 1
+    assert core["metadata"]["confidence_tier_counts"] == {"core": 1}
+    assert core["metadata"]["external_node_count"] == 0
+    assert len(core["edges"]) == 1
+    assert core["edges"][0]["edge_type"] == "INSTANCE_OF"
+
+
+def test_read_node_candidates_round_trips_through_write(tmp_path):
+    nodes = [_node("Autodesk.Revit.DB.View")]
+    export.write_node_candidates(tmp_path, nodes)
+
+    read_back = export.read_node_candidates(tmp_path)
+
+    assert read_back == nodes
+
+
+def test_read_edge_candidates_round_trips_through_write(tmp_path):
+    edges = [_edge("ViewTemplateId", EdgeType.CONTROLLED_BY_TEMPLATE, ConfidenceLabel.ELEMENTID_WITH_STRONG_NAME, "Autodesk.Revit.DB.View")]
+    export.write_edge_candidates(tmp_path, edges)
+
+    read_back = export.read_edge_candidates(tmp_path)
+
+    assert read_back == edges
+
+
+def test_refresh_graph_section_replaces_stale_section_not_duplicates(tmp_path):
+    summary_path = tmp_path / "summary.md"
+    summary_path.write_text(
+        "# Title\n\n## 14. Knowledge graph materialization\n\nSTALE CONTENT\n",
+        encoding="utf-8",
+    )
+    nodes = [_node("Autodesk.Revit.DB.View")]
+    edges = [_edge("ViewTemplateId", EdgeType.CONTROLLED_BY_TEMPLATE, ConfidenceLabel.ELEMENTID_WITH_STRONG_NAME, "Autodesk.Revit.DB.View")]
+    for e in edges:
+        e.source_type = "Autodesk.Revit.DB.View"
+    result = graph.build_graph(nodes, edges)
+
+    export.refresh_graph_section_in_file(summary_path, result, section_number=14)
+
+    text = summary_path.read_text()
+    assert text.count("## 14. Knowledge graph materialization") == 1
+    assert "STALE CONTENT" not in text
+    assert "# Title" in text
+
+
+def test_refresh_graph_section_is_noop_when_file_missing(tmp_path):
+    missing = tmp_path / "summary.md"
+    result = graph.build_graph([], [])
+
+    export.refresh_graph_section_in_file(missing, result, section_number=14)
+
+    assert not missing.exists()

@@ -4,11 +4,22 @@ from __future__ import annotations
 
 import dataclasses
 import json
+import re
 from enum import Enum
 from pathlib import Path
 
 from .graph import GraphBuildResult, filter_core
-from .models import ApiPage, EdgeCandidate, MemberKind, NodeCandidate
+from .models import (
+    ApiPage,
+    ClassRole,
+    ConfidenceLabel,
+    EdgeCandidate,
+    EdgeType,
+    IsElementCandidate,
+    Kind,
+    MemberKind,
+    NodeCandidate,
+)
 
 
 def _to_jsonable(obj):
@@ -56,6 +67,52 @@ def write_node_candidates(output_dir: Path, nodes: list[NodeCandidate]) -> None:
     _write_json(output_dir / "node_type_candidates.json", nodes)
 
 
+def read_node_candidates(output_dir: Path) -> list[NodeCandidate]:
+    """Inverse of ``write_node_candidates`` -- lets ``--graph-only`` rebuild
+    the graph from a previous run's output without re-crawling/re-parsing.
+    """
+    raw = json.loads((output_dir / "node_type_candidates.json").read_text(encoding="utf-8"))
+    return [
+        NodeCandidate(
+            full_type_name=r["full_type_name"],
+            short_name=r["short_name"],
+            kind=Kind(r["kind"]),
+            namespace=r["namespace"],
+            base_type=r.get("base_type"),
+            inheritance_chain=r.get("inheritance_chain", []),
+            is_element_candidate=IsElementCandidate(r["is_element_candidate"]),
+            class_role=ClassRole(r["class_role"]),
+            evidence=r.get("evidence", []),
+            source_url=r.get("source_url", ""),
+        )
+        for r in raw
+    ]
+
+
+def read_edge_candidates(output_dir: Path) -> list[EdgeCandidate]:
+    """Inverse of ``write_edge_candidates`` (reads ``candidate_edges.json``,
+    the union of both property/method files) -- see ``read_node_candidates``.
+    """
+    raw = json.loads((output_dir / "candidate_edges.json").read_text(encoding="utf-8"))
+    return [
+        EdgeCandidate(
+            source_type=r["source_type"],
+            member_name=r["member_name"],
+            member_kind=MemberKind(r["member_kind"]),
+            raw_signature=r["raw_signature"],
+            return_type=r.get("return_type"),
+            parameter_types=r.get("parameter_types", []),
+            candidate_target_type=r.get("candidate_target_type"),
+            candidate_edge_type=EdgeType(r["candidate_edge_type"]),
+            edge_confidence=ConfidenceLabel(r["edge_confidence"]),
+            evidence=r.get("evidence", []),
+            source_url=r.get("source_url", ""),
+            parser_notes=r.get("parser_notes", []),
+        )
+        for r in raw
+    ]
+
+
 def write_edge_candidates(output_dir: Path, edges: list[EdgeCandidate]) -> None:
     properties = [e for e in edges if e.member_kind is MemberKind.PROPERTY]
     methods = [e for e in edges if e.member_kind is MemberKind.METHOD]
@@ -74,6 +131,31 @@ def write_enum_catalogs(output_dir: Path, pages: list[ApiPage]) -> None:
     _write_json(output_dir / "enum_catalogs.json", catalog)
 
 
+def _graph_metadata(nodes: list, edges: list, *, revit_version: str) -> dict:
+    """Metadata block for a graph.json/graph_core.json -- always derived
+    from the exact ``nodes``/``edges`` being written, never copied from a
+    different (e.g. unfiltered) node/edge set. graph_core.json's edges are
+    all confidence_tier=core by construction, but target_resolution still
+    varies (a core edge can still have an external/short-name-fallback
+    target) and is worth reporting accurately rather than inherited from
+    the full graph.
+    """
+    resolution_counts: dict[str, int] = {}
+    tier_counts: dict[str, int] = {}
+    for e in edges:
+        resolution_counts[e.target_resolution.value] = resolution_counts.get(e.target_resolution.value, 0) + 1
+        tier_counts[e.confidence_tier.value] = tier_counts.get(e.confidence_tier.value, 0) + 1
+
+    return {
+        "revit_version": revit_version,
+        "node_count": len(nodes),
+        "edge_count": len(edges),
+        "external_node_count": sum(1 for n in nodes if n.external),
+        "target_resolution_counts": resolution_counts,
+        "confidence_tier_counts": tier_counts,
+    }
+
+
 def write_graph(output_dir: Path, result: GraphBuildResult, *, revit_version: str) -> None:
     """Write ``graph.json``: the full materialized graph (see graph.py),
     plus ``graph_core.json``, the same graph filtered to just the
@@ -81,22 +163,11 @@ def write_graph(output_dir: Path, result: GraphBuildResult, *, revit_version: st
     trust without first re-implementing the confidence-tier filtering
     itself.
     """
-    tier_counts: dict[str, int] = {}
-    for e in result.edges:
-        tier_counts[e.confidence_tier.value] = tier_counts.get(e.confidence_tier.value, 0) + 1
-
-    metadata = {
-        "revit_version": revit_version,
-        "node_count": len(result.nodes),
-        "edge_count": len(result.edges),
-        "external_node_count": result.external_node_count,
-        "target_resolution_counts": result.target_resolution_counts,
-        "confidence_tier_counts": tier_counts,
-    }
+    metadata = _graph_metadata(result.nodes, result.edges, revit_version=revit_version)
     _write_json(output_dir / "graph.json", {"metadata": metadata, "nodes": result.nodes, "edges": result.edges})
 
     core_nodes, core_edges = filter_core(result)
-    core_metadata = dict(metadata, node_count=len(core_nodes), edge_count=len(core_edges))
+    core_metadata = _graph_metadata(core_nodes, core_edges, revit_version=revit_version)
     _write_json(output_dir / "graph_core.json", {"metadata": core_metadata, "nodes": core_nodes, "edges": core_edges})
 
 
@@ -218,6 +289,29 @@ def _graph_section(result: GraphBuildResult | None, *, section_number: int) -> l
     lines.append(f"- `graph_core.json` (confidence_tier=core only): {len(core_nodes)} nodes, {len(core_edges)} edges")
     lines.append("")
     return lines
+
+
+_GRAPH_SECTION_HEADING_RE = re.compile(r"^## \d+\. Knowledge graph materialization\s*$", re.MULTILINE)
+
+
+def refresh_graph_section_in_file(path: Path, result: GraphBuildResult, *, section_number: int) -> None:
+    """Replace (or append, if absent) the 'Knowledge graph materialization'
+    section of an already-written ``summary.md``/``validation_summary.md``
+    with one reflecting ``result`` -- used by ``--graph-only`` so the
+    summary doesn't go stale relative to a freshly recomputed graph.json
+    without needing to regenerate the rest of the summary (which needs the
+    full page/index data this mode deliberately skips). A no-op if ``path``
+    doesn't exist, so callers can try both summary filenames unconditionally
+    without knowing in advance whether this was a full or targeted run.
+    """
+    if not path.exists():
+        return
+    text = path.read_text(encoding="utf-8")
+    match = _GRAPH_SECTION_HEADING_RE.search(text)
+    if match:
+        text = text[: match.start()]
+    section = _graph_section(result, section_number=section_number)
+    path.write_text(text.rstrip("\n") + "\n\n" + "\n".join(section) + "\n", encoding="utf-8")
 
 
 def write_summary(
