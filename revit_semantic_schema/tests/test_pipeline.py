@@ -218,7 +218,12 @@ def test_crawl_and_parse_calls_checkpoint_periodically_with_growing_state(tmp_pa
     def spy_checkpoint(pages, failed_urls):
         calls.append((len(pages), len(failed_urls)))
 
-    pages, failed_urls = _crawl_and_parse(crawler, config, by_url, checkpoint=spy_checkpoint, checkpoint_interval=1)
+    # checkpoint_min_interval_seconds=0 disables the wall-clock gate (see
+    # test_crawl_and_parse_checkpoint_is_rate_limited_by_wall_clock_time
+    # below), so this isolates the page-count cadence.
+    pages, failed_urls = _crawl_and_parse(
+        crawler, config, by_url, checkpoint=spy_checkpoint, checkpoint_interval=1, checkpoint_min_interval_seconds=0
+    )
 
     assert len(pages) == 2  # Widget class page + Symbol property page (the Properties index page isn't itself a page)
     assert len(calls) == 3  # checkpoint_interval=1, 3 total pages fetched
@@ -226,6 +231,43 @@ def test_crawl_and_parse_calls_checkpoint_periodically_with_growing_state(tmp_pa
     # incremental snapshots taken while the crawl was still in progress,
     # not the same final state recorded three times.
     assert len({c[0] for c in calls}) > 1
+
+
+def test_crawl_and_parse_checkpoint_is_rate_limited_by_wall_clock_time(tmp_path):
+    """Regression test: checkpoint() runs a full classify+export pass over
+    everything parsed so far, so its cost grows with page count. Gating it
+    purely by checkpoint_interval (a page count) meant a large crawl's total
+    checkpoint overhead grew roughly quadratically -- verified against a real
+    ~23k-page crawl, a single classify+export pass took ~15s, and firing
+    that every 25 pages (~930 times) projected to well over an hour of pure
+    overhead. checkpoint_min_interval_seconds must suppress periodic firing
+    faster than that, regardless of how small checkpoint_interval is.
+    """
+    output_dir = tmp_path / "output"
+    config = CrawlConfig(version="2024", namespace_prefix="Autodesk.Revit.DB", cache_dir=output_dir / "cache")
+    crawler = Crawler(config)
+
+    _prime_cache(crawler, crawler.namespace_json_url(), json.dumps(_WIDGET_NAMESPACE_TREE))
+    _prime_cache(crawler, "https://www.revitapidocs.com/2024/widget-class.htm", _CLASS_HTML)
+    _prime_cache(crawler, "https://www.revitapidocs.com/2024/widget-properties.htm", _PROPERTIES_INDEX_HTML)
+    _prime_cache(crawler, "https://www.revitapidocs.com/2024/symbol-property.htm", _PROPERTY_HTML)
+
+    entries, _ = crawler.discover_via_namespace_json()
+    by_url = {e["url"]: e for e in entries}
+
+    calls: list[tuple[int, int]] = []
+
+    def spy_checkpoint(pages, failed_urls):
+        calls.append((len(pages), len(failed_urls)))
+
+    # checkpoint_interval=1 would fire on every single page (as proven
+    # above) if not for the time gate; a large checkpoint_min_interval_seconds
+    # must suppress all of that periodic firing within this fast test run.
+    _crawl_and_parse(
+        crawler, config, by_url, checkpoint=spy_checkpoint, checkpoint_interval=1, checkpoint_min_interval_seconds=9999
+    )
+
+    assert calls == []
 
 
 def test_crawl_and_parse_writes_final_checkpoint_on_interrupt(tmp_path, monkeypatch):
