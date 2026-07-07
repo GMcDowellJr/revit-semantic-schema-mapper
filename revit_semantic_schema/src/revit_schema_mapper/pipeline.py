@@ -109,6 +109,7 @@ def _crawl_and_parse(crawler: Crawler, config: CrawlConfig, by_url: dict[str, di
                 by_url[url]["discovered_via"] = f"{discovered_via_prefix}:{row_declaring_type_hint}"
 
     queue = list(by_url.keys())
+    progress_interval = 25
     while queue:
         url = queue.pop(0)
         if url in visited:
@@ -116,6 +117,11 @@ def _crawl_and_parse(crawler: Crawler, config: CrawlConfig, by_url: dict[str, di
         visited.add(url)
         if config.max_pages is not None and len(visited) > config.max_pages:
             break
+        if len(visited) % progress_interval == 0:
+            logger.info(
+                "progress: %d pages fetched, %d queued, %d parsed, %d failed",
+                len(visited), len(queue), len(pages), len(failed_urls),
+            )
 
         # by_url's declaring_type_hint is checked first (and is the only one
         # enqueue_member_links corrects in place -- see its docstring), so a
