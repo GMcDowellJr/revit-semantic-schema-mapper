@@ -172,10 +172,52 @@ concern per file, wired together in `pipeline.py`):
 *docs alone* imply a relationship exists (return type, naming convention, prose). DLL
 verification is orthogonal to that, the same way `needs_runtime_validation` is already
 documented as "a distinct axis (verifiability) rather than a point further down the same
-confidence ranking." Proposal: add `dll_verified: Optional[bool]` to `NodeCandidate` and
-`EdgeCandidate` — `None` until a cross-validation pass runs, `True`/`False` after. Set only
-by `ground_truth.py`, never by `classify.py`, keeping the docs-classification and
-DLL-cross-check concerns as separate as crawling/parsing/classifying already are.
+confidence ranking."
+
+A single `dll_verified: Optional[bool]` collapses two genuinely different facts into one flag:
+"does this member exist with a matching signature" and "is this the right relationship" (e.g.
+an edge can be signature-verified yet still only exist because it's inherited from a base type
+everything else also inherits it from — the exact `Wall`/`Floor`/`Door`-all-`HAS_PARAMETER`
+fan-out problem). Revised proposal, keeping those visible separately:
+
+- On `NodeCandidate`: `dll_type_verified: Optional[bool] = None` — `True` once the manifest
+  confirms `full_type_name` exists (via the same exact/short-name resolution
+  `graph.build_graph` already uses), `False` if it's `DOC_ONLY`, `None` until a
+  cross-validation pass runs.
+- On `EdgeCandidate`, three orthogonal fields instead of one:
+  - `dll_signature_verified: Optional[bool]` — the member exists (on the resolved type or an
+    ancestor in its `inheritance_chain`) with a normalized signature match (return type +
+    parameter types). `ground_truth_report.json` also records *which* kind of `False` it was
+    (`SIGNATURE_MISMATCH` vs `MEMBER_NOT_FOUND`) per edge — collapsing those two into one bool
+    would hide a real distinction.
+  - `dll_relationship_scope: Optional[str]` — `"declared"` if the manifest's `declaring_type`
+    for that member equals the edge's own `source_type`, `"inherited"` if it only matched via a
+    different entry in `source_type`'s `inheritance_chain`. An edge with `relationship_scope:
+    inherited` is the machine-checkable signal for "this relationship probably belongs on the
+    base type, not repeated on every subclass" — the same ontology cleanup called out in the
+    other review, now a field instead of a manual observation.
+  - `dll_semantic_verified: Optional[bool]` — reserved, **not set by anything in this design**.
+    `signature_verified=True` only proves the member exists and returns the claimed
+    type/shape (e.g. `ICollection<ElementId>`); it does not prove those ids resolve to the
+    claimed target type in a real document — that needs a later runtime-verification stage,
+    which crosses this project's Non-goal on ever requiring a running Revit process (see
+    below) and is deliberately out of scope here. The field exists now so that axis is visible
+    in the data model even before anything populates it, rather than silently folding
+    "signature-true" and "semantically-true" into the same flag once that stage does exist.
+- `dll_verified_status: Optional[str]` on both — a convenience rollup `ground_truth.py`
+  computes from the fields above for `summary.md`/spot-checking, e.g. `not_found`,
+  `signature_mismatch`, `signature_verified_declared`, `signature_verified_inherited` — always
+  derived, never hand-set.
+
+**Does this require changes to `crawl.py`?** No. None of the fields above are ever touched by
+`crawl.py`/`parse.py`/`classify.py` — they are purely additive, defaulted (`None`) fields on
+`NodeCandidate`/`EdgeCandidate` in `models.py`, appended after the existing fields. Every
+existing `classify.py` construction call site already builds these objects by keyword, so
+adding trailing defaulted fields doesn't require touching a single one of those call sites —
+they simply never pass the new kwargs, and the dataclass default (`None`) applies. The only
+code that ever *writes* to them is the new `ground_truth.py`, run as an explicit separate pass
+(`--cross-validate-dll`) after a crawl already exists — cross-validation is layered on top of
+the crawl, same as the Stage A/Stage B split above, not mixed into it.
 
 ### Normalization is the hard part, not the lookup
 
@@ -231,3 +273,19 @@ for.
 - **Multiple Revit versions.** This design is per-version (`ground_truth_manifest_2024.json`,
   `..._2025.json`, etc.), matching the existing per-version `outputs/revit_<version>/`
   layout — no cross-version logic is in scope here.
+
+## Related project (not yet in scope): RevitLookup
+
+[`lookup-foundation/RevitLookup`](https://github.com/lookup-foundation/RevitLookup) is a real,
+separate open-source Revit add-in for interactively inspecting live API objects inside a
+running Revit session. A prior review pass of an earlier draft of this design surfaced claims
+about a local `Fingerprint` repo carrying cached RevitLookup "descriptor" reference files
+already mapped to this project's domains — none of that exists in *this* repo (confirmed: no
+`fingerprint`/`revitlookup` hits anywhere in `revit-semantic-schema-mapper`'s source), so none
+of those specifics are corroborated here. If that repository is ever actually added to this
+workspace, it could plausibly become a *third* evidence source (docs crawl → DLL reflection →
+RevitLookup's proven traversal patterns) feeding the reserved `dll_semantic_verified` field
+above via a later, explicitly-scoped runtime-verification stage — but that would mean
+deliberately crossing this project's own Non-goal of never requiring a running Revit process,
+which should be a conscious, separate decision, not something this design backs into. Nothing
+is built on this until then.
