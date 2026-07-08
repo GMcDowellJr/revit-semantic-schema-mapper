@@ -258,7 +258,7 @@ building the full diff report on top of it — a wrong normalizer would silently
 `SIGNATURE_MISMATCH` noise across the whole report, the exact opposite of what this stage is
 for.
 
-## Stage C (proposed): mining RevitLookup's descriptor *source* as a third static evidence layer
+## Stage C: mining RevitLookup's descriptor *source* as a third static evidence layer
 
 The earlier review of this design filed RevitLookup under "runtime tooling," on the same side
 of the non-goal boundary as actually opening Revit. That conflates two different things:
@@ -272,64 +272,116 @@ of the non-goal boundary as actually opening Revit. That conflates two different
   directly, MIT-licensed) and sits entirely inside the docs-first, no-live-Revit boundary —
   it never runs Revit, RevitLookup, or `RevitAPI.dll`.
 
-That makes Stage C a genuinely near-term addition, not a someday item: `DescriptorsMap.cs`'s
-`switch` is a curated list of ~80+ `Autodesk.Revit.DB` types RevitLookup's own maintainers
-judged worth a hand-written descriptor (confirmed directly from three real descriptor files:
-`DescriptorsMap.cs`, `ViewDescriptor.cs`, `CompoundStructureDescriptor.cs`). Within a type's
-descriptor, static parsing can extract three signals, none requiring Revit to run:
+**Version pinning is not optional here, and the first real check caught a live mistake.**
+RevitLookup tags releases per Revit year (`<year>.<major>.<minor>`, e.g. `2024.0.13`), and its
+`develop` branch tracks whatever the *next* Revit version is (2027, as of this writing) —
+mining `develop` describes a later Revit version's API surface, not 2024's, the version this
+project's `ground_truth_manifest_2024.json` was actually reflected from. Confirmed directly:
+fetching `develop`'s current `ViewDescriptor.cs`/`CompoundStructureDescriptor.cs` (the earlier
+review's own two named examples) showed a `Configure(IMemberConfigurator configuration)` /
+`.Member()`/`.Extension()` fluent API — but **neither file exists at all** at the actual
+`2024.0.13` tag, which instead has the `Resolve(Document, string, ParameterInfo[])`/
+`RegisterExtensions(IExtensionManager)` shape described below. Mining `develop` would have
+silently produced a reference file describing RevitLookup's *current* Revit-version support,
+not Revit 2024's — always mine the tag matching the target Revit version, record it
+(`revitlookup_tag` below) verbatim, and re-sync deliberately, never silently re-point at
+`develop` or "whatever's newest." See `crawl_notes.md` for the full real-version-mismatch
+finding.
 
-1. **Positive corroboration.** Every `nameof(X.Member) => ...` case inside a `Resolve()` method
-   names a member RevitLookup's authors specifically wrote custom resolution logic for, as
-   opposed to letting it fall through to generic reflection display. An `EdgeCandidate` whose
-   `member_name` shows up as a named case is corroborated by an independent, actively-maintained
-   project's authors having judged that exact member's return value doesn't speak for itself
-   generically — a different kind of evidence than anything docs-derived or DLL-derived.
-   Absence proves nothing (RevitLookup doesn't special-case everything) — this is a
-   positive-only signal, never used to argue an edge is wrong.
-2. **Guard-condition / cardinality mining, for free.** Resolver bodies already encode the "why
-   is this hard to verify generically" reasoning from the confidence-model discussion, as
-   working code: `CompoundStructureDescriptor.Resolve` wraps `GetMaterialId`/`GetLayerFunction`/
-   etc. in `VariantsResolver.ResolveIndex(compoundStructure.LayerCount, ...)` (cardinality is
-   per-layer-index, not a single value); `ViewDescriptor.Resolve` needs
-   `view.Document.Settings...`/`new FilteredWorksetCollector(view.Document)` (meaningless
-   without a live document). Statically detecting which resolver bodies reference `.Document`/
-   collectors/other document-scoped calls is a cheap textual proxy for
-   `revitlookup_requires_document_context: true` — i.e. "this edge is real, but its two-line
-   confidence-model story ('the docs say X') is incomplete without a document," a signal for
-   `needs_runtime_validation` that comes from working code instead of first-principles
-   reasoning about each member individually.
-3. **Synthetic-member exclusion.** Some descriptors add members via `RegisterExtensions` that
-   don't exist on the real type at all (`ViewDescriptor.RegisterExtensions` adds `"GetInstances"`,
-   which wraps `view.Document.CollectElements(view.Id)...` — not a real `View` member). These
-   must be excluded from Stage C's own output entirely; if left in, Stage B's DLL
-   cross-validation would see them as a "member," fail to find them in
-   `ground_truth_manifest_<version>.json` (they were never in the compiled assembly to begin
-   with), and misreport a `MEMBER_NOT_FOUND` that's actually just RevitLookup's own UI
-   convenience, not a gap in the crawl.
+At `2024.0.13`, `DescriptorMap.cs`'s (singular "Descriptor", confirmed real file name at this
+tag — `source/RevitLookup/Core/ComponentModel/DescriptorMap.cs`) `FindDescriptor` switch is a
+curated list of 60 real cases in total (confirmed by direct count), 45 of them under the
+`Root`/`APIObjects`/`IDisposables`/`Enumerator` section headers that correspond to real
+`Autodesk.Revit.DB` API objects — the rest are plain BCL/UI-framework types (`System`/`Internal`/
+`Media`/`ComponentManager` sections) also worth a hand-written descriptor but not part of the
+Revit DB object model itself — mapping a type to a hand-written descriptor class, each
+implementing `IDescriptorResolver`/`IDescriptorExtension` (confirmed directly from real
+descriptor files: `ElementDescriptor.cs`, `HostObjectDescriptor.cs`,
+`FamilyManagerDescriptor.cs`, all under
+`source/RevitLookup/Core/ComponentModel/Descriptors/`). Within a descriptor, static parsing
+extracts three signals, none requiring Revit to run — implemented in
+`src/revit_schema_mapper/revitlookup.py`, tested against these exact real files in
+`tests/fixtures/revitlookup/`:
 
-`revitlookup_reference.json` shape — entirely derived by parsing RevitLookup's C# source text,
-no Revit or `RevitAPI.dll` involved in producing it:
+1. **Positive corroboration.** Every `nameof(Type.Member) => ...` (or bare string-literal, e.g.
+   `"BoundingBox" =>`, likely a human-readable label rather than the exact real member name —
+   tracked separately via a `name_source` field, `"nameof"` vs. `"string_literal"`) case inside a
+   `Resolve(Document context, string target, ParameterInfo[] parameters)` method names a member
+   RevitLookup's authors specifically wrote custom resolution logic for, as opposed to letting
+   it fall through to generic reflection display. Absence proves nothing (RevitLookup doesn't
+   special-case everything) — this is a positive-only signal, never used to argue an edge is
+   wrong.
+2. **Guard-condition / cardinality mining, for free.** Real resolver bodies (`ElementDescriptor`'s
+   `GetMaterialArea`/`GetMaterialVolume`, `FamilyManagerDescriptor`'s
+   `GetAssociatedFamilyParameter`) build multiple results via `.AppendVariant(...)` — cardinality
+   is per-item, not a single value, confirmed directly rather than via the design's original
+   `CompoundStructureDescriptor`/`VariantsResolver.ResolveIndex` example (which doesn't exist at
+   this tag). Detecting `.AppendVariant(` textually is the cheap proxy. **Real subtlety found
+   while confirming this**: a case's *inline* expression is often just a bare call to a
+   separately-defined local function (e.g. `nameof(Element.GetMaterialArea) =>
+   ResolveGetMaterialArea(),`), with the actual `.AppendVariant`/document-context logic living in
+   that named local function later in the same method body, not inline in the case itself — the
+   parser follows that indirection (`_find_local_function_body`) rather than only inspecting the
+   inline case text, which would otherwise silently miss the real signal.
+3. **Document-context detection.** The confirmed real accessors in this version's code are
+   `RevitApi.ActiveView`/`RevitApi.Document` (static/global accessors — the `Resolve()` method's
+   own `context` parameter is declared but often unused in favor of these), plus `.Document`/
+   `FilteredWorksetCollector`/`Schema.ListSchemas` — a cheap textual proxy for "this edge is real,
+   but incomplete without a live document," the same signal `needs_runtime_validation` describes.
+4. **Synthetic-member exclusion.** `RegisterExtensions(IExtensionManager manager)` registers names
+   (via `extension.Name = nameof(...)` or a literal string) that don't exist on the real type at
+   all — confirmed real example: `HostObjectDescriptor`'s extensions (`GetBottomFaces`/
+   `GetTopFaces`/`GetSideFaces`) are all named via `nameof(HostExtensions.X)`, where
+   `HostExtensions` is a *separate* extension-method holder class, not `HostObject` itself. These
+   must stay excluded from anything compared against a DLL manifest — Stage B would otherwise see
+   one as a "member," fail to find it (never in the compiled assembly), and misreport
+   `MEMBER_NOT_FOUND` for what's actually just a UI convenience, not a crawl gap.
+
+`revitlookup_reference.json` shape (`dataclasses.asdict` of `RevitLookupReference` —
+`src/revit_schema_mapper/revitlookup.py`), entirely derived by parsing RevitLookup's C# source
+text, no Revit or `RevitAPI.dll` involved in producing it:
 
 ```json
 {
-  "revitlookup_commit": "2401d82e4da1f95ab2648834597cb29f4842aa5d",
+  "revitlookup_tag": "2024.0.13",
+  "descriptor_map": [
+    {"target_type_short_name": "Element", "descriptor_class": "ElementDescriptor", "section": "IDisposables"}
+  ],
   "descriptors": [
     {
-      "descriptor_class": "ViewDescriptor",
-      "target_type": "Autodesk.Revit.DB.View",
+      "descriptor_class": "ElementDescriptor",
       "resolved_members": [
-        {"member_name": "GetFilterOverrides", "requires_document_context": true},
-        {"member_name": "IsValidViewTemplate", "requires_document_context": true}
+        {"member_name": "CanBeHidden", "name_source": "nameof", "requires_document_context": true, "has_multiple_variants": false},
+        {"member_name": "GetMaterialArea", "name_source": "nameof", "requires_document_context": false, "has_multiple_variants": true}
       ],
-      "synthetic_extensions": ["GetInstances"]
+      "synthetic_extensions": ["CanBeMirrored", "GetJoinedElements"],
+      "parser_notes": []
     }
   ]
 }
 ```
 
-Same caution as the confirmed-facts note elsewhere in this document: whatever commit gets
-mined should be recorded (`revitlookup_commit` above) and re-synced deliberately, not silently
-assumed current — RevitLookup is an actively developed project.
+`descriptor_map`'s `section` field is the file's own `//SectionName` comment header
+(`System`/`Root`/`Enumerator`/`APIObjects`/`IDisposables`/`Internal`/`Media`/`ComponentManager`,
+confirmed real section names at this tag) — every switch case is recorded, not just the ones
+that look like real `Autodesk.Revit.DB` types; filtering to "real API types only" (e.g.
+excluding `System`/`Internal`/`Media`/`ComponentManager`) is left to whoever consumes this file,
+since that judgment call could shift release to release and shouldn't be silently baked into
+the parser itself. `parser_notes` is populated (rather than silently leaving `resolved_members`
+empty) when a file references `IDescriptorResolver`/`IDescriptorExtension` but this parser
+couldn't find/parse the expected method shape — the same "explicit, checkable fact instead of a
+silent assumption" this design's earlier open question called for.
+
+Not yet built: a CLI-driven local-checkout workflow beyond the standalone
+`python -m revit_schema_mapper.revitlookup --source-dir <checkout> --tag <tag> --out <path>`
+entry point (mirrors `reflect_revit_api.ps1`'s own "operate on a local directory" shape) —
+wiring this into `python -m revit_schema_mapper`'s own argument parser is left for later, the
+same not-yet-integrated state Stage B's own `--cross-validate-dll` flag is still in (see
+"Workflow once built" below). Also not yet built: anything that actually *combines*
+`revitlookup_reference.json` with `ground_truth_report.json`/`candidate_edges.json` into the
+`revitlookup_referenced`/`revitlookup_requires_document_context` `EdgeCandidate` fields
+`docs/dll_reflection_v0.md`'s Stage B section proposes — this stage only produces the reference
+file itself so far.
 
 ## Workflow once built
 
