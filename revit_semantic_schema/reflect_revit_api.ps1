@@ -638,16 +638,6 @@ function Invoke-CoreReflection {
         Write-Warning $warnMsg
     }
 
-    # PathAssemblyResolver takes every candidate path directly, duplicate simple names included --
-    # its own Resolve() opens each candidate's real metadata to find the best match for a
-    # requested (name, version) itself, unlike this script's own by-simple-name resolvers
-    # (Get-DotNetSharedFrameworkIndex, Invoke-DesktopReflection's $byName), which only ever keep
-    # one path per key. Deduping to "first path wins per simple name" before handing paths to it
-    # would throw away exactly the version disambiguation (e.g. a System.Runtime reference that
-    # could be satisfied by either an installed 6.x or 8.x shared-framework folder) it's designed
-    # to do on its own.
-    $allCandidatePaths = @($DllPaths) + @($frameworkRefDlls) + @($dotNetSharedDlls) + @($runtimeDlls)
-
     # mscorlib is the right root whenever the caller explicitly passed
     # -NetFrameworkReferenceAssembliesDir -- the older, .NET-Framework-targeted case (an earlier
     # Revit version reflected via this path). Deciding this by "which reference source actually
@@ -661,6 +651,25 @@ function Invoke-CoreReflection {
     # intent here, not which list ended up non-empty. Otherwise (Revit 2025+, or this function's
     # original non-Revit-BCL use case) default to System.Private.CoreLib.
     $coreAssemblyName = if ($ExtraRefDir) { "mscorlib" } else { "System.Private.CoreLib" }
+
+    # PathAssemblyResolver takes every candidate path directly, duplicate simple names included --
+    # its own Resolve() opens each candidate's real metadata to find the best match for a
+    # requested (name, version) itself, unlike this script's own by-simple-name resolvers
+    # (Get-DotNetSharedFrameworkIndex, Invoke-DesktopReflection's $byName), which only ever keep
+    # one path per key. Deduping to "first path wins per simple name" before handing paths to it
+    # would throw away exactly the version disambiguation (e.g. a System.Runtime reference that
+    # could be satisfied by either an installed 6.x or 8.x shared-framework folder) it's designed
+    # to do on its own -- BUT confirmed a real, separate bug from that same behavior (automated PR
+    # review, after the coreAssemblyName fix above): PathAssemblyResolver prefers the *highest*
+    # version among same-named candidates, not the one belonging to whichever family
+    # $coreAssemblyName actually selected. Handing it both families together -- e.g. mscorlib
+    # chosen, but a .NET-8-shared-framework System.Runtime.dll still in the candidate pool from
+    # -DotNetSharedFrameworkRoot's auto-default -- could resolve an individual reference from the
+    # *wrong* family even with the right root declared, silently mixing mscorlib- and
+    # CoreLib-rooted types in the same context. Only the family matching $coreAssemblyName is
+    # included below; the other is left out of the pool entirely, not just out of the root choice.
+    $familyRefDlls = if ($coreAssemblyName -eq "mscorlib") { $frameworkRefDlls } else { $dotNetSharedDlls }
+    $allCandidatePaths = @($DllPaths) + @($familyRefDlls) + @($runtimeDlls)
     $resolver = New-Object System.Reflection.PathAssemblyResolver (, [string[]]$allCandidatePaths)
     $mlc = New-Object System.Reflection.MetadataLoadContext($resolver, $coreAssemblyName)
 
