@@ -156,6 +156,12 @@ class NodeCandidate:
     class_role: ClassRole
     evidence: list[str]
     source_url: str
+    # Set by ground_truth.cross_validate_dll (docs/dll_reflection_v0.md, Stage B)
+    # -- True once a DLL reflection manifest confirms full_type_name really
+    # exists in the compiled API, False if the manifest was checked and it
+    # doesn't (docs claim a type reflection can't find -- stale docs, or a
+    # deprecated/renamed type), None until that optional pass ever runs.
+    dll_type_verified: Optional[bool] = None
 
 
 @dataclass
@@ -172,6 +178,34 @@ class EdgeCandidate:
     evidence: list[str]
     source_url: str
     parser_notes: list[str] = field(default_factory=list)
+    # The four fields below are set by ground_truth.cross_validate_dll
+    # (docs/dll_reflection_v0.md, Stage B) -- a distinct "is this backed by
+    # the compiled API" axis, orthogonal to edge_confidence's "how strongly
+    # do the docs alone imply this" axis. All stay None until that optional
+    # pass runs.
+    #
+    # The member exists (on the resolved type or an ancestor in its
+    # inheritance_chain) with a normalized signature match (return type +
+    # parameter types) -- False can mean either the member wasn't found at
+    # all or it was found with a different signature; dll_verified_status
+    # (and ground_truth_report.json) records which.
+    dll_signature_verified: Optional[bool] = None
+    # "declared" if the manifest's declaring_type for this member equals
+    # source_type itself, "inherited" if it only matched via a different
+    # entry in source_type's inheritance_chain -- the machine-checkable
+    # signal for "this relationship probably belongs on the base type, not
+    # repeated on every subclass." None when the member wasn't found at all.
+    dll_relationship_scope: Optional[str] = None
+    # Reserved, not set by anything yet: dll_signature_verified only proves
+    # the member exists and returns the claimed type/shape, not that it
+    # resolves to the claimed target type in a real document -- that needs a
+    # later runtime-verification stage, out of scope here (see
+    # docs/dll_reflection_v0.md).
+    dll_semantic_verified: Optional[bool] = None
+    # Convenience rollup ground_truth.py computes from the fields above, e.g.
+    # "not_found" / "signature_mismatch" / "signature_verified_declared" /
+    # "signature_verified_inherited" -- always derived, never hand-set.
+    dll_verified_status: Optional[str] = None
 
 
 class ConfidenceTier(str, Enum):

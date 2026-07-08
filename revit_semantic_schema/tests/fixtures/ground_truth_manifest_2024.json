@@ -1,0 +1,155 @@
+{
+  "revit_version": "2024",
+  "generated_at": "2026-07-08T00:00:00Z",
+  "namespace_prefix": "Autodesk.Revit.DB",
+  "assemblies_scanned": [
+    {"path": "C:\\Program Files\\Autodesk\\Revit 2024\\RevitAPI.dll", "name": "RevitAPI", "matched": true}
+  ],
+  "types": [
+    {
+      "full_type_name": "Autodesk.Revit.DB.Element",
+      "assembly": "RevitAPI",
+      "kind": "class",
+      "is_abstract": false,
+      "base_type": null,
+      "inheritance_chain": [],
+      "implemented_interfaces": [],
+      "members": [
+        {"name": "Id", "kind": "property", "declaring_type": "Autodesk.Revit.DB.Element", "return_type": "Autodesk.Revit.DB.ElementId", "parameters": []},
+        {"name": "WorksetId", "kind": "property", "declaring_type": "Autodesk.Revit.DB.Element", "return_type": "Autodesk.Revit.DB.WorksetId", "parameters": []}
+      ],
+      "enum_members": []
+    },
+    {
+      "full_type_name": "Autodesk.Revit.DB.SpatialElement",
+      "assembly": "RevitAPI",
+      "kind": "class",
+      "is_abstract": true,
+      "base_type": "Autodesk.Revit.DB.Element",
+      "inheritance_chain": ["Autodesk.Revit.DB.Element"],
+      "implemented_interfaces": [],
+      "members": [
+        {"name": "Number", "kind": "property", "declaring_type": "Autodesk.Revit.DB.SpatialElement", "return_type": "System.String", "parameters": []}
+      ],
+      "enum_members": []
+    },
+    {
+      "full_type_name": "Autodesk.Revit.DB.Architecture.Room",
+      "assembly": "RevitAPI",
+      "kind": "class",
+      "is_abstract": false,
+      "base_type": "Autodesk.Revit.DB.SpatialElement",
+      "inheritance_chain": ["Autodesk.Revit.DB.SpatialElement", "Autodesk.Revit.DB.Element"],
+      "implemented_interfaces": [],
+      "members": [],
+      "enum_members": []
+    },
+    {
+      "full_type_name": "Autodesk.Revit.DB.ElementType",
+      "assembly": "RevitAPI",
+      "kind": "class",
+      "is_abstract": false,
+      "base_type": "Autodesk.Revit.DB.Element",
+      "inheritance_chain": ["Autodesk.Revit.DB.Element"],
+      "implemented_interfaces": [],
+      "members": [],
+      "enum_members": []
+    },
+    {
+      "full_type_name": "Autodesk.Revit.DB.Family",
+      "assembly": "RevitAPI",
+      "kind": "class",
+      "is_abstract": false,
+      "base_type": "Autodesk.Revit.DB.Element",
+      "inheritance_chain": ["Autodesk.Revit.DB.Element"],
+      "implemented_interfaces": [],
+      "members": [],
+      "enum_members": []
+    },
+    {
+      "full_type_name": "Autodesk.Revit.DB.FamilySymbol",
+      "assembly": "RevitAPI",
+      "kind": "class",
+      "is_abstract": false,
+      "base_type": "Autodesk.Revit.DB.ElementType",
+      "inheritance_chain": ["Autodesk.Revit.DB.ElementType", "Autodesk.Revit.DB.Element"],
+      "implemented_interfaces": [],
+      "members": [
+        {"name": "Family", "kind": "property", "declaring_type": "Autodesk.Revit.DB.FamilySymbol", "return_type": "Autodesk.Revit.DB.Family", "parameters": []}
+      ],
+      "enum_members": []
+    },
+    {
+      "full_type_name": "Autodesk.Revit.DB.FamilyInstance",
+      "assembly": "RevitAPI",
+      "kind": "class",
+      "is_abstract": false,
+      "base_type": "Autodesk.Revit.DB.Element",
+      "inheritance_chain": ["Autodesk.Revit.DB.Element"],
+      "implemented_interfaces": [],
+      "members": [
+        {"name": "Symbol", "kind": "property", "declaring_type": "Autodesk.Revit.DB.FamilyInstance", "return_type": "Autodesk.Revit.DB.FamilySymbol", "parameters": []}
+      ],
+      "enum_members": []
+    },
+    {
+      "full_type_name": "Autodesk.Revit.DB.View",
+      "assembly": "RevitAPI",
+      "kind": "class",
+      "is_abstract": true,
+      "base_type": "Autodesk.Revit.DB.Element",
+      "inheritance_chain": ["Autodesk.Revit.DB.Element"],
+      "implemented_interfaces": [],
+      "members": [
+        {"name": "ViewTemplateId", "kind": "property", "declaring_type": "Autodesk.Revit.DB.View", "return_type": "Autodesk.Revit.DB.ElementId", "parameters": []}
+      ],
+      "enum_members": []
+    },
+    {
+      "full_type_name": "Autodesk.Revit.DB.ViewSheet",
+      "assembly": "RevitAPI",
+      "kind": "class",
+      "is_abstract": false,
+      "base_type": "Autodesk.Revit.DB.View",
+      "inheritance_chain": ["Autodesk.Revit.DB.View", "Autodesk.Revit.DB.Element"],
+      "implemented_interfaces": [],
+      "members": [
+        {
+          "name": "GetAllPlacedViews",
+          "kind": "method",
+          "declaring_type": "Autodesk.Revit.DB.ViewSheet",
+          "return_type": "System.Collections.Generic.ICollection`1[[Autodesk.Revit.DB.ElementId, RevitAPI, Version=1.0.0.0, Culture=neutral, PublicKeyToken=null]]",
+          "parameters": []
+        }
+      ],
+      "enum_members": []
+    },
+    {
+      "full_type_name": "Autodesk.Revit.DB.Material",
+      "assembly": "RevitAPI",
+      "kind": "class",
+      "is_abstract": false,
+      "base_type": "Autodesk.Revit.DB.Element",
+      "inheritance_chain": ["Autodesk.Revit.DB.Element"],
+      "implemented_interfaces": [],
+      "members": [
+        {"name": "CutBackgroundPatternId", "kind": "property", "declaring_type": "Autodesk.Revit.DB.Material", "return_type": "Autodesk.Revit.DB.ElementId", "parameters": []},
+        {"name": "CutForegroundPatternId", "kind": "property", "declaring_type": "Autodesk.Revit.DB.Material", "return_type": "Autodesk.Revit.DB.ElementId", "parameters": []},
+        {"name": "SurfaceBackgroundPatternId", "kind": "property", "declaring_type": "Autodesk.Revit.DB.Material", "return_type": "Autodesk.Revit.DB.ElementId", "parameters": []},
+        {"name": "SurfaceForegroundPatternId", "kind": "property", "declaring_type": "Autodesk.Revit.DB.Material", "return_type": "Autodesk.Revit.DB.ElementId", "parameters": []}
+      ],
+      "enum_members": []
+    },
+    {
+      "full_type_name": "Autodesk.Revit.DB.WorksetId",
+      "assembly": "RevitAPI",
+      "kind": "struct",
+      "is_abstract": false,
+      "base_type": null,
+      "inheritance_chain": [],
+      "implemented_interfaces": [],
+      "members": [],
+      "enum_members": []
+    }
+  ]
+}
