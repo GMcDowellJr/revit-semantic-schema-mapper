@@ -17,3 +17,18 @@ revit_semantic_schema/outputs/*/graph_core.json
 *.tar.gz
 revit_semantic_schema/outputs/*/graph.html
 revit_semantic_schema/outputs/*/semantic_relationship_map.html
+# Per-version-suffixed equivalents of the patterns above (e.g. graph_2024.json,
+# graph_core_2025.json) -- real runs write these when a copy is renamed for
+# standalone sharing/comparison across versions, but they're exactly as
+# regenerable as their unsuffixed siblings and don't belong in git either.
+revit_semantic_schema/outputs/*/graph_*.json
+revit_semantic_schema/outputs/*/graph_core_*.json
+# Stage A (reflect_revit_api.ps1) and Stage C (revitlookup.py) outputs: always
+# version-suffixed by convention (ground_truth_manifest_2024.json,
+# revitlookup_reference_2024.json, ...) since these two are meant to be
+# pulled out of their outputs/revit_<version>/ folder and compared/shared
+# standalone -- never hardcoded by name in this project's own Python code
+# (see ground_truth.load_manifest's Path argument), so nothing here depends
+# on them being present in the repo.
+revit_semantic_schema/outputs/*/ground_truth_manifest_*.json
+revit_semantic_schema/outputs/*/revitlookup_reference*.json
