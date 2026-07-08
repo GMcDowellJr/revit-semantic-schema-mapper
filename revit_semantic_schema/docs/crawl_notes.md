@@ -1063,3 +1063,270 @@ second, generally more reliable discovery source and queues them alongside whate
 `discover_index()` found from the root page / TOC / sitemap, tagging them
 `members_table_of:<FullTypeName>` in `raw_index.json` so it's traceable which page a given
 member URL came from.
+
+## Stage C: RevitLookup's real source has moved on from the design doc's assumptions (2026-07-08)
+
+Before writing any Stage C parser, fetched RevitLookup's actual current `develop`-branch source
+(same "smallest real test before scaling up" discipline as Stage A) rather than trusting
+`docs/dll_reflection_v0.md`'s description, which was itself based on whatever commit an earlier
+review pass happened to see. Two access-path findings first:
+
+- `api.github.com` and `codeload.github.com` are blanket-blocked by this sandbox's proxy for any
+  repo not already in this session's explicit scope (`add_repo`'s MCP call itself returned
+  `"MCP tool call requires approval"` and didn't resolve) -- confirmed this is a blanket policy,
+  not RevitLookup-specific, by getting an identical denial for `torvalds/linux`.
+- `raw.githubusercontent.com` (individual file fetches, once the path is known) and the
+  `WebFetch` tool against `github.com`'s own rendered pages **both work fine** through the
+  proxy. Directory browsing via `WebFetch` on `.../tree/<branch>/<path>` pages is real but
+  occasionally unreliable (one nested path 404'd twice in a row for no apparent reason, then a
+  sibling path at the same depth worked immediately) -- treat a single 404 from this path as
+  inconclusive, not definitive, and cross-check via a sibling directory or a direct
+  `raw.githubusercontent.com` guess before concluding a path doesn't exist.
+
+**The repository has been substantially restructured since whatever commit the design doc's
+"three real descriptor files" review was based on.** It's now a multi-project split
+(`LookupEngine`, `LookupEngine.UI`, `RevitLookup.Abstractions`, `RevitLookup.Common`, plus the
+main `RevitLookup` UI project), and the descriptor system itself now lives at
+`source/RevitLookup/Core/Decomposition/` (not wherever the design doc's review saw it), with a
+fundamentally different shape than described:
+
+- **No `Resolve()` override or `switch` inside each descriptor.** Each descriptor class now
+  implements `Configure(IMemberConfigurator configuration)` and calls a fluent API:
+  `configuration.Member(nameof(Type.Member)).Resolve(() => ...)` /
+  `.Defer(() => ...)` / `.Disable()`, and `configuration.Extension("Name").Register(() => ...)` /
+  `.Extension(nameof(X)).NotSupported()`. Confirmed directly against the current real
+  `ViewDescriptor.cs` and `CompoundStructureDescriptor.cs` (both fetched from
+  `source/RevitLookup/Core/Decomposition/Descriptors/`).
+- **`DescriptorsMap.cs`'s core mapping idea is unchanged in spirit**: a single
+  `FindDescriptor(object? obj, Type? type)` switch expression, `Type value when ... =>
+  new TypeDescriptor(value)` per case, mapping real `Autodesk.Revit.DB`-namespaced types (and a
+  few UI/`Autodesk.Windows` ones) to their descriptor class -- still a genuinely curated list
+  (roughly 90+ real-namespace cases, in the same ballpark as the design doc's "~80+"), just a
+  different method name/signature (`FindDescriptor`, not whatever the earlier review saw) and
+  file location (`source/RevitLookup/Core/Decomposition/DescriptorsMap.cs`).
+- **New signal categories the design doc never anticipated**, found directly in the two real
+  files fetched:
+  - `.Member(nameof(X)).Disable()` -- a member explicitly hidden from generic display (e.g.
+    `View.Dispose`, `CompoundStructure.Dispose`). Different in kind from "resolved": this is a
+    negative/exclusion signal, not "the authors wrote custom resolution logic for this."
+  - `.Member(nameof(X)).When(predicate).Resolve(...)` -- an explicit overload-disambiguation
+    mechanism (`CompoundStructureDescriptor`'s `GetWidth` config uses
+    `.When(parameters => parameters.Length == 1)`, since `GetWidth` is overloaded). The original
+    design's `resolved_members` shape (one entry per member name) doesn't have anywhere to put
+    this -- it would need to be per-(member, parameter-shape), not per-member-name alone.
+  - `.Extension(name).NotSupported()` -- distinct from both `.Register()` (a working synthetic
+    extension) and never mentioning the name at all. A third state, not two.
+  - The "cardinality is per-index" reasoning (originally described via
+    `VariantsResolver.ResolveIndex`) is still present and still mineable, just renamed/reshaped:
+    `Variants.Values<T>(count)` / `.Add(result, label)` / `.Consume()`, built inside small
+    private `ResolveRange`/`ResolveFilters`/`ResolveWorksets`/`ResolveCategories`-style helper
+    methods rather than one central resolver call.
+  - The "needs a live document" signal is still directly mineable the same way the design doc
+    described (`view.Document.Settings...`, `new FilteredWorksetCollector(view.Document)`,
+    `view.Document.CollectElements(...)` all appear verbatim in the real `ViewDescriptor.cs`).
+
+**Not yet decided**: whether to adapt `revitlookup_reference.json`'s proposed schema to add the
+new `Disable`/`When`-qualified-overload/`NotSupported` categories before writing a parser
+against this real shape, or start with a narrower first cut (e.g. just `DescriptorsMap.cs`'s
+type-to-descriptor mapping, deferring per-member `Configure()` parsing to a second pass) --
+checking with the project owner before committing to either, since the real shape differs
+enough from the original design that this is a genuine design decision, not just an
+implementation detail.
+
+## Stage C implemented: pinned to the real Revit-2024-matched tag, not `develop` (2026-07-08)
+
+Continuing from the finding above, the project owner asked specifically whether RevitLookup was
+versioned to the same Revit release this project's actual `ground_truth_manifest_2024.json` was
+reflected from -- it was not (the previous check had only browsed `develop`, which is not
+version-matched to anything). Checking this directly, rather than assuming `develop` was close
+enough, turned up a real, consequential mismatch:
+
+**RevitLookup tags releases per Revit year** (`<year>.<major>.<minor>`, confirmed via the repo's
+own `/tags` page): `2027.0.3` down through `2024.0.13`, `2024.0.12`, `2024.0.11`. The latest tag
+matching Revit 2024 is **`2024.0.13`** (Feb 10, 2024). `develop` is currently on `2027.x` and has
+been substantially refactored since 2024.0.13 (the `LookupEngine`/`Configure()`/`.Member()`/
+`.Extension()` shape found in the earlier check). Directly confirmed the two files the earlier,
+unpinned check happened to name as its examples (`ViewDescriptor.cs`,
+`CompoundStructureDescriptor.cs`) **do not exist at all** at `2024.0.13` -- `View` and
+`CompoundStructure` aren't even in that tag's `DescriptorMap.cs` switch. Mining `develop` would
+have silently produced a reference file describing whatever Revit version RevitLookup currently
+targets, not 2024's -- exactly the kind of version mismatch that would make Stage C's
+`revitlookup_referenced`/`requires_document_context` signals apply to the wrong API surface
+entirely, with nothing in the output itself flagging the mismatch.
+
+**At `2024.0.13`, the real shape is much closer to the original design doc's assumption** than
+`develop`'s. Confirmed directly from real files
+(`source/RevitLookup/Core/ComponentModel/DescriptorMap.cs` -- singular "Descriptor", a different
+file name/path than either the design doc's guess or `develop`'s
+`Core/Decomposition/DescriptorsMap.cs` -- plus `ElementDescriptor.cs`,
+`HostObjectDescriptor.cs`, `FamilyManagerDescriptor.cs`, all under
+`.../ComponentModel/Descriptors/`):
+
+- `DescriptorMap.FindDescriptor(object obj, Type type)` -- a single switch expression, 60 real
+  cases in the complete real file (confirmed by direct count: 62 `=> new` occurrences minus the
+  2 intentional `_`/`null` wildcard-fallback cases the parser skips), 45 of them under section
+  headers (`Root`/`APIObjects`/`IDisposables`/`Enumerator`) that correspond to real
+  `Autodesk.Revit.DB` types -- the initial "~80+"/"~90" estimates in the design doc and this
+  file's own earlier entry were both off; corrected here to the actual counted numbers. Each
+  case is tagged by its own `//SectionName` comment header (`System`, `Root`, `Enumerator`,
+  `APIObjects`, `IDisposables`, `Internal`, `Media`, `ComponentManager` -- all confirmed real
+  section names, not guessed).
+- Each descriptor class implements `IDescriptorResolver`/`IDescriptorExtension` with a real
+  `Resolve(Document context, string target, ParameterInfo[] parameters)` method (a `target
+  switch` on `nameof(Type.Member)` or bare string-literal cases) and/or a
+  `RegisterExtensions(IExtensionManager manager)` method -- much closer to the design doc's
+  *original* Resolve()-switch assumption than the newer fluent API found on `develop`.
+
+Implemented as `src/revit_schema_mapper/revitlookup.py` (`parse_descriptor_map`,
+`parse_descriptor_file`, `mine_revitlookup_source`), tested against real, unmodified fixture
+files copied directly from the `2024.0.13` tag (`tests/fixtures/revitlookup/*.cs` --
+`DescriptorMap.cs`, `ElementDescriptor.cs`, `HostObjectDescriptor.cs`,
+`FamilyManagerDescriptor.cs`). Two real parsing gotchas found and fixed by running against
+these real files, not by inspection:
+
+1. **The switch-arm regex failed on every case with a `when` clause** (the large majority of real
+   cases) -- `[^=]*?` (deliberately excluding `=` to "safely" skip past the `when` clause without
+   overrunning into the `=>`) breaks the moment the `when` clause itself contains `==` (e.g.
+   `type == typeof(string)`), which is nearly always, since that's exactly what these `when`
+   clauses do. First real run parsed only 13 of 60 real cases (everything *without* a `when`
+   clause) before this was caught. Fixed by switching to a plain non-greedy `.*?`, which correctly
+   stops at the first `=>` regardless of what's inside the `when` clause.
+2. **A resolved member's real logic can live in a separately-defined local function, not inline
+   in its switch case** -- confirmed real examples: `ElementDescriptor.GetMaterialArea`'s case is
+   just `=> ResolveGetMaterialArea(),`; the actual `.AppendVariant(...)`/cardinality logic is in a
+   same-named local function defined later in the same `Resolve()` method body.
+   `FamilyManagerDescriptor.GetAssociatedFamilyParameter` is the same shape, with
+   `RevitApi.Document` (a document-context signal) inside its own local function. A parser that
+   only inspected each case's inline expression text would silently miss both signals for any
+   member using this (common) pattern. Fixed by detecting a bare `FunctionName()` call as the
+   inline body, then searching the rest of the method's text for a same-named local function
+   definition (`_find_local_function_body`, using the same brace-depth-tracking approach as
+   `_extract_balanced_block` -- the brace-matching analog of `parse.py`'s existing
+   paren-depth-tracking precedent, since a naive regex can't correctly bound a block containing
+   nested braces) and folding its body into the signal search too.
+
+Also confirmed real, useful nuances along the way:
+- `HostObjectDescriptor`'s synthetic extensions (`GetBottomFaces`/`GetTopFaces`/`GetSideFaces`)
+  are all named via `nameof(HostExtensions.X)` -- `HostExtensions` is a *separate*
+  extension-method holder class, not `HostObject` itself. Extraction takes just the member-name
+  part, not assuming the `nameof(...)` always refers to the target type.
+- Some resolved-member case keys are bare string literals (`"BoundingBox"`, `"Geometry"` in
+  `ElementDescriptor.cs`), not `nameof(...)` -- likely a human-readable label for a real member
+  (probably `Element.get_BoundingBox`) rather than its exact runtime name. Tracked via a
+  `name_source` field (`"nameof"` vs. `"string_literal"`) so this lower-confidence signal isn't
+  silently conflated with a compiler-checked one.
+- The confirmed real document-context accessor in this version's code is
+  `RevitApi.ActiveView`/`RevitApi.Document` (static/global), not the `Resolve()` method's own
+  `context` parameter, which is declared but frequently unused in the real cases checked.
+
+Access-path notes for future sessions needing GitHub content without `add_repo` access:
+`api.github.com`/`codeload.github.com` are blanket-blocked for any repo not in this session's
+explicit scope; `raw.githubusercontent.com` (once the exact file path is known) and `WebFetch`
+against `github.com`'s own rendered pages (`/tree/<ref>/<path>`, `/tags`) both work. `WebFetch`
+against nested tree paths was occasionally flaky (one path 404'd twice, a sibling at the same
+depth worked immediately) -- treat a single 404 as inconclusive and cross-check a sibling path
+or a direct `raw.githubusercontent.com` guess before concluding a path doesn't exist.
+
+All 179 tests pass (16 new). Not yet done: wiring `revitlookup.py` into
+`python -m revit_schema_mapper`'s own CLI (Stage B's `--cross-validate-dll` flag is in the same
+not-yet-integrated state), and anything that actually combines `revitlookup_reference.json` with
+`ground_truth_report.json`/`candidate_edges.json` into the `revitlookup_referenced`/
+`revitlookup_requires_document_context` `EdgeCandidate` fields the design doc proposes.
+
+## Hardened Stage C against a subtler version of the Fingerprint sync script's mistake (2026-07-08)
+
+The project owner separately maintains a `Fingerprint` project with its own
+`sync_revitlookup_reference.py` script that copies RevitLookup descriptor files into that repo
+as reference material (not via git clone/fork -- it uses the GitHub REST API to list and fetch
+individual files, a lighter-weight vendoring approach, reasonable for embedding a curated
+reference subset in another repo). Reviewing it surfaced the *exact* real mistake this session
+already found and fixed for Stage C: a hardcoded `BRANCH = "develop"` constant, meaning every
+sync silently re-points at whatever Revit version RevitLookup's `develop` branch currently
+targets (2027 as of this writing) rather than the version Fingerprint's own extractors are
+written against -- noted back to the user as a Fingerprint-side issue to fix there, not
+something this repo needed to change.
+
+Checking Stage C's own code for the same class of mistake: `--tag` is `required=True` with no
+default, so `revitlookup.py` can never silently fall back to `develop` the way the Fingerprint
+script's hardcoded branch does -- the *root* version of the bug was already ruled out by
+construction. But a **subtler version of the same risk** was still open: nothing verified that
+a caller's `--tag` claim actually matched what was really checked out in `--source-dir`. Passing
+`--tag 2024.0.13` while forgetting to `git checkout 2024.0.13` first (still sitting on `develop`,
+or checked out at the wrong tag) would silently produce output *labeled* 2024.0.13 that wasn't
+actually mined from that version at all -- the same fundamental problem (recorded version label
+doesn't match what was really mined), just introduced by a human mistake at the call site
+instead of a hardcoded constant in the script itself.
+
+Fixed with `verify_tag_match(source_dir, claimed_tag)`: a best-effort check (git isn't a hard
+requirement of this module -- `mine_revitlookup_source` operates on "any local directory," e.g.
+a plain extracted-from-a-tag-archive folder with no `.git` at all, which stays unverifiable and
+is *not* treated as an error) that runs `git -C <source_dir> describe --tags --exact-match` and
+refuses (`SystemExit`, in `_main()`) if the checkout's real tag doesn't match the claimed one, or
+if it's on some other ref entirely (a branch, or an untagged commit). Confirmed against real git
+repos (not mocked) in `tests/test_revitlookup.py`: a genuine tag match, a checkout at a
+*different* real tag, and an untagged commit all produce the correct result, plus a plain
+non-git directory correctly stays unverifiable rather than being flagged as a mismatch. Also ran
+the actual CLI end-to-end against a real throwaway git repo: `--tag 2024.0.13` against a
+checkout really at that tag succeeds; `--tag 2025.0.1` against the same checkout (really at
+`2024.0.13`) refuses with a clear error and a non-zero exit code.
+
+All 183 tests pass (4 new).
+
+## Four more real Stage C gaps, found by review of the shipped parser (2026-07-08)
+
+Found by code review against real files at tag `2024.0.13` (not by a fresh run turning up
+surprises) -- each one confirmed against genuine RevitLookup source before and after the fix,
+same discipline as everything else in this stage.
+
+1. **Guarded resolver switch arms were silently skipped.** The real `ParameterDescriptor.cs` has
+   `nameof(Parameter.ClearValue) when parameters.Length == 0 => ResolveSet.Append(false,
+   "Overridden"),` -- an overload-disambiguating `when` guard between the case key and `=>`.
+   `_CASE_START_RE` only allowed whitespace there, so this case (and the real `DocumentDescriptor.
+   cs`'s two guarded cases, `Close`/`PlanTopologies`) were dropped from `resolved_members`
+   entirely, with no `parser_notes` entry to flag the loss -- exactly the silent
+   under-reporting `docs/dll_reflection_v0.md`'s "Stage C's C#-parsing surface" open question
+   warned about. Root cause is the same one already fixed once in `_SWITCH_ARM_RE`
+   (`DescriptorMap.cs`'s own `when` clauses): a guard condition contains `==` (`parameters.Length
+   == 0`), and an exclude-`=`-characters pattern can't match through it. Fixed the same way, a
+   plain non-greedy `.*?` in `_CASE_START_RE` too. Confirmed against both real files: all of
+   `ClearValue`/`Close`/`PlanTopologies`/`GetUnusedElements` now found in one file
+   (`DocumentDescriptor.cs`), not just the unguarded ones.
+2. **`using` aliases weren't resolved before truncating a switch case's type token to its short
+   name.** `DescriptorMap.cs` has `using RevitApplication =
+   Autodesk.Revit.ApplicationServices.Application;`, then `RevitApplication value when ... =>
+   new ApplicationDescriptor(value),` in the switch. Naively taking
+   `"RevitApplication".rsplit(".", 1)[-1]` gives `"RevitApplication"` itself -- not the real CLR
+   short name `"Application"` -- which would never short-name-match against a DLL manifest's own
+   type list (`ground_truth._ManifestTypeResolver`'s whole mechanism), silently making this
+   `descriptor_map` entry unusable downstream with no error anywhere. Fixed by parsing every
+   `using Alias = Fully.Qualified.Name;` directive up front and resolving a bare (non-dotted)
+   switch-case type token through that alias map before taking its short name. Confirmed this
+   doesn't break the adjacent, structurally-similar-looking case where an alias's name already
+   equals the real short name (`using RibbonItem = Autodesk.Revit.UI.RibbonItem;`), nor the
+   *separate*, non-aliased `Autodesk.Windows.RibbonItem` case elsewhere in the same switch
+   (dotted tokens never match an alias key, since C# alias names are always simple identifiers).
+3. **The `Resolve()` method's own `Document` parameter wasn't checked as a document-context
+   signal.** The existing marker list (`RevitApi.Document`/`RevitApi.ActiveView`/`.Document`/
+   etc.) covers the dominant pattern in `ElementDescriptor.cs`/`FamilyManagerDescriptor.cs`
+   (static accessors, `context` declared but unused) -- but the real `DocumentDescriptor.cs` case
+   `nameof(Document.GetUnusedElements) => ResolveSet.Append(context.GetUnusedElements(...))`
+   uses the parameter directly, and none of the existing markers match `context.` at all. Fixed
+   by capturing the parameter's actual name from the real `Resolve(Document context, ...)`
+   signature (via a new `context_param` regex group -- not hardcoding `"context"`, since that
+   name isn't confirmed fixed across every descriptor) and checking for `f"{context_param}."` as
+   an additional marker. Confirmed `GetUnusedElements` is now correctly flagged, and confirmed
+   this doesn't over-match: `PlanTopologies`' local function uses `_document.IsReadOnly` (a
+   private field, lowercase, distinct from both the `context` parameter and the existing
+   `.Document` marker's required capitalization) and is correctly *not* flagged.
+4. **`verify_tag_match` didn't catch a dirty working tree at the right tag.** `git describe
+   --tags --exact-match` only checks which commit `HEAD` is at -- a checkout exactly at
+   `2024.0.13` with a locally modified or untracked descriptor file still passes that check,
+   producing a reference file *labeled* `2024.0.13` from content that was never actually part of
+   that tag. Fixed by also running `git status --porcelain` after confirming the tag match, and
+   refusing (same `SystemExit` path in `_main()`) if the working tree isn't clean. Confirmed
+   against real git repos: both a modified tracked file and an untracked file are caught, and
+   confirmed end-to-end via the actual CLI (appending a line to a real checkout's
+   `DescriptorMap.cs` after tagging it correctly, then re-running -- refused with a clear error
+   and a non-zero exit code, same as the earlier wrong-tag reproduction).
+
+All 191 tests pass (8 new).
