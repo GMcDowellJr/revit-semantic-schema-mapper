@@ -1,0 +1,403 @@
+#Requires -Version 5.1
+<#
+.SYNOPSIS
+    Stage A of docs/dll_reflection_v0.md: reflects over already-compiled
+    Autodesk.Revit.DB assemblies and emits ground_truth_manifest_<version>.json.
+
+.DESCRIPTION
+    Recursively enumerates every *.dll under -InstallDir, metadata-only-loads each one
+    (never running a static initializer, never requiring Revit's unmanaged dependencies to
+    resolve), keeps the assemblies that expose at least one type under -NamespacePrefix, and
+    reflects each matched assembly's types/members into the JSON schema documented in
+    docs/dll_reflection_v0.md ("Stage A: the reflection tool" -> "Manifest schema").
+
+    Two hosts are supported, since which one is actually available on a given Windows/Revit
+    machine should never be assumed (see docs/dll_reflection_v0.md's "Open questions"):
+
+      - Windows PowerShell 5.1 ("Desktop" edition, .NET Framework): uses
+        [System.Reflection.Assembly]::ReflectionOnlyLoadFrom, which is built in and needs no
+        extra install. This is the primary, best-supported path, and the only one that has
+        actually been exercised against real (non-Revit) DLLs so far -- see crawl_notes.md.
+      - PowerShell 7+ ("Core" edition, .NET / .NET Core): uses
+        System.Reflection.MetadataLoadContext, a separate NuGet package (not built in) --
+        pass its path via -MetadataLoadContextAssembly. Confirmed working end-to-end against
+        real (non-Revit) BCL assemblies in this project's own dev sandbox (a Linux box with
+        no Windows/Revit access at all), but cross-framework resolution against Revit's real
+        net48-targeted RevitAPI.dll has NOT been verified: MetadataLoadContext needs reference
+        assemblies matching the *target* assembly's framework (mscorlib etc. for net48), not
+        just the host runtime's own core assemblies -- pass a folder of those via
+        -NetFrameworkReferenceAssembliesDir if this path is used against Revit. See
+        crawl_notes.md for exactly what was and wasn't confirmed.
+
+.PARAMETER InstallDir
+    Root directory to recursively scan for *.dll (e.g. "C:\Program Files\Autodesk\Revit 2024").
+
+.PARAMETER NamespacePrefix
+    Only assemblies exposing at least one type under this namespace are kept. Default matches
+    the existing docs crawler's own --namespace-prefix default/flag name for consistency.
+
+.PARAMETER Out
+    Path to write the manifest JSON to.
+
+.PARAMETER RevitVersion
+    Recorded in the manifest's "revit_version" field. If omitted, it's guessed from the last
+    run of digits in -InstallDir's own folder name (e.g. "Revit 2024" -> "2024") -- an explicit,
+    checkable guess, not a silent one: the script prints what it guessed and why.
+
+.PARAMETER MetadataLoadContextAssembly
+    Path to System.Reflection.MetadataLoadContext.dll (only needed/used on PowerShell 7+ /
+    "Core" edition; ignored on Windows PowerShell 5.1 / "Desktop" edition, which has
+    ReflectionOnlyLoadFrom built in).
+
+.PARAMETER NetFrameworkReferenceAssembliesDir
+    Only used on the Core/MetadataLoadContext path. Extra directory of reference assemblies
+    (mscorlib.dll, System.dll, etc.) to seed the resolver with, needed because Revit's DLLs
+    target .NET Framework while a PowerShell 7 host runs .NET/.NET Core -- the host's own core
+    assemblies are a different framework and won't satisfy that resolution on their own.
+#>
+[CmdletBinding()]
+param(
+    [Parameter(Mandatory = $true)]
+    [string] $InstallDir,
+
+    [string] $NamespacePrefix = "Autodesk.Revit.DB",
+
+    [Parameter(Mandatory = $true)]
+    [string] $Out,
+
+    [string] $RevitVersion,
+
+    [string] $MetadataLoadContextAssembly,
+
+    [string] $NetFrameworkReferenceAssembliesDir
+)
+
+$ErrorActionPreference = "Stop"
+
+if (-not (Test-Path -LiteralPath $InstallDir -PathType Container)) {
+    throw "InstallDir not found or not a directory: $InstallDir"
+}
+
+if (-not $RevitVersion) {
+    $folderName = Split-Path -Leaf ($InstallDir.TrimEnd('\', '/'))
+    $m = [regex]::Match($folderName, '(\d{4})')
+    if ($m.Success) {
+        $RevitVersion = $m.Groups[1].Value
+        Write-Verbose "RevitVersion not specified; guessed '$RevitVersion' from InstallDir folder name '$folderName'."
+    } else {
+        throw "Could not guess -RevitVersion from InstallDir folder name '$folderName'; pass -RevitVersion explicitly."
+    }
+}
+
+$isCore = $PSVersionTable.PSEdition -eq 'Core'
+Write-Verbose "PowerShell host: $($PSVersionTable.PSEdition) $($PSVersionTable.PSVersion) -- using $(if ($isCore) { 'MetadataLoadContext' } else { 'ReflectionOnlyLoadFrom' })"
+
+
+# -- shared: enumerate dlls ----------------------------------------------------
+
+function Get-DllPaths([string] $Root) {
+    Write-Verbose "Enumerating *.dll recursively under $Root ..."
+    $sw = [System.Diagnostics.Stopwatch]::StartNew()
+    $paths = @(Get-ChildItem -LiteralPath $Root -Filter *.dll -Recurse -ErrorAction SilentlyContinue |
+        Select-Object -ExpandProperty FullName)
+    Write-Verbose "Found $($paths.Count) dlls in $([math]::Round($sw.Elapsed.TotalSeconds, 2))s"
+    return $paths
+}
+
+
+# -- shared: type/member -> manifest shape -------------------------------------
+#
+# Deliberately close to models.NodeCandidate/MemberInfo's shape -- see
+# docs/dll_reflection_v0.md, "Manifest schema". Every conversion here reads real,
+# asserted-by-the-compiler metadata (Type/PropertyInfo/MethodInfo), not a guess.
+
+function Get-TypeKindString([Type] $Type) {
+    if ($Type.IsEnum) { return "enum" }
+    if ($Type.IsInterface) { return "interface" }
+    if ($Type.IsValueType) { return "struct" }
+    return "class"
+}
+
+function Get-InheritanceChainNames([Type] $Type) {
+    $chain = New-Object System.Collections.Generic.List[string]
+    $cur = $Type.BaseType
+    while ($null -ne $cur) {
+        [void]$chain.Add($cur.FullName)
+        $cur = $cur.BaseType
+    }
+    return @($chain)
+}
+
+function Get-ReturnTypeString($ReturnType) {
+    # A method with no return value reports "System.Void" from reflection; the manifest
+    # records that as null (no return type), the same way a docs page never lists a return
+    # type for a void method -- see crawl_notes.md-style note in the accompanying markdown.
+    if ($null -eq $ReturnType) { return $null }
+    if ($ReturnType.FullName -eq "System.Void") { return $null }
+    return $ReturnType.ToString()
+}
+
+function Convert-ParametersToManifest($Parameters) {
+    return @($Parameters | ForEach-Object {
+        [ordered]@{ name = $_.Name; type = $_.ParameterType.ToString() }
+    })
+}
+
+function Convert-MembersToManifest([Type] $Type) {
+    # DeclaredOnly: each type's own "members" list holds only members it directly declares.
+    # Inherited members are reconstructed by Stage B (ground_truth._find_members) walking
+    # inheritance_chain -- the same mechanism pipeline._build_known_edge_report already uses
+    # for its nine hand-picked known-edge checks, generalized to every edge. This also keeps
+    # the manifest's size from exploding across a deep hierarchy (Wall -> HostObject ->
+    # Element -> ...), where flattening would repeat every ancestor member on every subclass.
+    $flags = [System.Reflection.BindingFlags]::Public -bor `
+        [System.Reflection.BindingFlags]::Instance -bor `
+        [System.Reflection.BindingFlags]::Static -bor `
+        [System.Reflection.BindingFlags]::DeclaredOnly
+
+    $members = New-Object System.Collections.Generic.List[object]
+
+    foreach ($prop in $Type.GetProperties($flags)) {
+        $accessor = $prop.GetGetMethod($true)
+        if ($null -eq $accessor) { $accessor = $prop.GetSetMethod($true) }
+        [void]$members.Add([ordered]@{
+            name           = $prop.Name
+            kind           = "property"
+            declaring_type = $prop.DeclaringType.FullName
+            return_type    = Get-ReturnTypeString $prop.PropertyType
+            # @(...) here is load-bearing, not defensive style: PowerShell collapses a
+            # function's 0- or 1-item return value to $null/a bare scalar when captured
+            # across the call boundary (confirmed empirically -- a real 0- or 1-parameter
+            # member serialized as "parameters": null / a bare object instead of an array
+            # before this was added; see crawl_notes.md). Every call site below that
+            # captures a collection-returning helper's result needs the same wrap.
+            parameters     = @(Convert-ParametersToManifest $prop.GetIndexParameters())
+            is_static      = if ($null -ne $accessor) { [bool]$accessor.IsStatic } else { $false }
+        })
+    }
+
+    foreach ($method in $Type.GetMethods($flags)) {
+        # IsSpecialName excludes property/event accessors (get_X/set_X/add_X/remove_X) and
+        # operator overloads -- these aren't distinct "members" a docs page would list
+        # separately from the property/event/operator itself.
+        if ($method.IsSpecialName) { continue }
+        [void]$members.Add([ordered]@{
+            name           = $method.Name
+            kind           = "method"
+            declaring_type = $method.DeclaringType.FullName
+            return_type    = Get-ReturnTypeString $method.ReturnType
+            parameters     = @(Convert-ParametersToManifest $method.GetParameters())
+            is_static      = [bool]$method.IsStatic
+        })
+    }
+
+    return @($members.ToArray())
+}
+
+function Convert-EnumMembersToManifest([Type] $Type) {
+    if (-not $Type.IsEnum) { return @() }
+    # Enum.GetNames/GetValues need to construct real values and throw on a reflection-only
+    # type ("The requested operation cannot be used on objects loaded by a
+    # MetadataLoadContext.", confirmed empirically -- see crawl_notes.md). Reading the
+    # type's own public static fields is metadata-only and works on both hosts: an enum's
+    # named values are exactly its public static fields (confirmed against a real
+    # reflection-only-loaded enum type in this project's dev sandbox).
+    $flags = [System.Reflection.BindingFlags]::Public -bor [System.Reflection.BindingFlags]::Static
+    return @($Type.GetFields($flags) | ForEach-Object { $_.Name })
+}
+
+function Convert-TypeToManifest([Type] $Type, [string] $AssemblyName) {
+    return [ordered]@{
+        full_type_name          = $Type.FullName
+        assembly                = $AssemblyName
+        kind                    = Get-TypeKindString $Type
+        is_abstract             = [bool]$Type.IsAbstract
+        base_type               = if ($null -ne $Type.BaseType) { $Type.BaseType.FullName } else { $null }
+        # See the comment on the "parameters" assignment above -- @() wrapping at every
+        # collection-returning-helper call site is load-bearing, confirmed by a real run
+        # that serialized a single-ancestor inheritance_chain as a bare string instead of a
+        # 1-element array before this was added.
+        inheritance_chain       = @(Get-InheritanceChainNames $Type)
+        implemented_interfaces  = @($Type.GetInterfaces() | ForEach-Object { $_.FullName })
+        members                 = @(Convert-MembersToManifest $Type)
+        enum_members            = @(Convert-EnumMembersToManifest $Type)
+    }
+}
+
+function Test-NamespaceMatch([Type] $Type, [string] $Prefix) {
+    return $Type.IsVisible -and $Type.Namespace -and $Type.Namespace.StartsWith($Prefix)
+}
+
+function Get-LoadableTypes([System.Reflection.Assembly] $Assembly) {
+    # A reflection-only-loaded assembly can still fail GetTypes() if some referenced type
+    # can't be resolved (ReflectionOnlyAssemblyResolve/PathAssemblyResolver came up empty for
+    # it) -- ReflectionTypeLoadException still carries every type that *did* load in its
+    # .Types array (with nulls for the ones that didn't), so this is not treated as a hard
+    # failure of the whole assembly. See docs/dll_reflection_v0.md's "external, not further
+    # inspected" principle.
+    try {
+        return $Assembly.GetTypes()
+    } catch [System.Reflection.ReflectionTypeLoadException] {
+        return @($_.Exception.Types | Where-Object { $null -ne $_ })
+    }
+}
+
+
+# -- Desktop (PowerShell 5.1 / .NET Framework) path ----------------------------
+
+function Invoke-DesktopReflection {
+    param([string[]] $DllPaths, [string] $Prefix)
+
+    $byName = @{}
+    foreach ($p in $DllPaths) {
+        $name = [System.IO.Path]::GetFileNameWithoutExtension($p)
+        if (-not $byName.ContainsKey($name)) { $byName[$name] = $p }
+    }
+
+    # Cross-assembly references aren't auto-resolved by reflection-only loading -- redirect
+    # any unresolved reference to the matching DLL already found under InstallDir, by simple
+    # name. See docs/dll_reflection_v0.md, "Cross-assembly type references and
+    # ReflectionOnlyAssemblyResolve".
+    $resolveHandler = [ResolveEventHandler] {
+        param($sender, $e)
+        $simpleName = ($e.Name -split ',')[0].Trim()
+        if ($byName.ContainsKey($simpleName)) {
+            try { return [System.Reflection.Assembly]::ReflectionOnlyLoadFrom($byName[$simpleName]) }
+            catch { return $null }
+        }
+        return $null
+    }
+    [System.AppDomain]::CurrentDomain.add_ReflectionOnlyAssemblyResolve($resolveHandler)
+
+    $assembliesScanned = New-Object System.Collections.Generic.List[object]
+    $typeEntries = New-Object System.Collections.Generic.List[object]
+    $loadFailures = 0
+
+    foreach ($path in $DllPaths) {
+        $name = [System.IO.Path]::GetFileNameWithoutExtension($path)
+        try {
+            $asm = [System.Reflection.Assembly]::ReflectionOnlyLoadFrom($path)
+        } catch {
+            # Expected for the large majority of DLLs under a Revit install (native interop,
+            # third-party libraries, unrelated Autodesk components) -- not surfaced loudly.
+            $loadFailures++
+            [void]$assembliesScanned.Add([ordered]@{ path = $path; name = $name; matched = $false })
+            continue
+        }
+
+        $types = @(Get-LoadableTypes $asm | Where-Object { Test-NamespaceMatch $_ $Prefix })
+        $matched = $types.Count -gt 0
+        [void]$assembliesScanned.Add([ordered]@{ path = $path; name = $name; matched = $matched })
+        if ($matched) {
+            foreach ($t in $types) {
+                [void]$typeEntries.Add((Convert-TypeToManifest $t $name))
+            }
+        }
+    }
+
+    Write-Verbose "Desktop reflection: $($DllPaths.Count - $loadFailures) loaded, $loadFailures failed to load (expected for most non-.NET/incompatible dlls)."
+    return @{ AssembliesScanned = @($assembliesScanned.ToArray()); Types = @($typeEntries.ToArray()) }
+}
+
+
+# -- Core (PowerShell 7+ / .NET) path ------------------------------------------
+
+function Invoke-CoreReflection {
+    param([string[]] $DllPaths, [string] $Prefix, [string] $MlcAssemblyPath, [string] $ExtraRefDir)
+
+    if (-not $MlcAssemblyPath) {
+        $msg = "PowerShell 7+ ('Core' edition) detected, but -MetadataLoadContextAssembly was not " +
+              "supplied. System.Reflection.MetadataLoadContext is a separate NuGet package, not " +
+              "built in -- see docs/dll_reflection_v0.md and crawl_notes.md for how this was " +
+              "confirmed and where to get it."
+        throw $msg
+    }
+    Add-Type -Path $MlcAssemblyPath
+
+    $runtimeDir = [System.Runtime.InteropServices.RuntimeEnvironment]::GetRuntimeDirectory()
+    $runtimeDlls = @(Get-ChildItem -LiteralPath $runtimeDir -Filter *.dll -ErrorAction SilentlyContinue |
+        Select-Object -ExpandProperty FullName)
+    $extraDlls = @()
+    if ($ExtraRefDir) {
+        $extraDlls = @(Get-ChildItem -LiteralPath $ExtraRefDir -Filter *.dll -Recurse -ErrorAction SilentlyContinue |
+            Select-Object -ExpandProperty FullName)
+    } else {
+        $warnMsg = "No -NetFrameworkReferenceAssembliesDir supplied. If the target dlls are " +
+            "built for .NET Framework (as RevitAPI.dll is) while this host runs .NET/.NET Core, " +
+            "MetadataLoadContext resolution will likely fail to find mscorlib/System.dll/etc -- " +
+            "this combination has not been verified against real Revit dlls. See crawl_notes.md."
+        Write-Warning $warnMsg
+    }
+
+    # Seed the resolver with every candidate assembly by simple name, preferring the install
+    # dir's own copy over the host runtime's when both exist (matching the Desktop path's own
+    # by-simple-name resolve strategy, applied here as an up-front resolver list instead of a
+    # per-reference event, since MetadataLoadContext resolves eagerly through PathAssemblyResolver
+    # rather than via a resolve event).
+    $bySimpleName = @{}
+    foreach ($p in (@($DllPaths) + @($extraDlls) + @($runtimeDlls))) {
+        $name = [System.IO.Path]::GetFileNameWithoutExtension($p)
+        if (-not $bySimpleName.ContainsKey($name)) { $bySimpleName[$name] = $p }
+    }
+    $coreAssemblyName = if ($ExtraRefDir) { "mscorlib" } else { "System.Private.CoreLib" }
+    $resolver = New-Object System.Reflection.PathAssemblyResolver (, [string[]]($bySimpleName.Values))
+    $mlc = New-Object System.Reflection.MetadataLoadContext($resolver, $coreAssemblyName)
+
+    $assembliesScanned = New-Object System.Collections.Generic.List[object]
+    $typeEntries = New-Object System.Collections.Generic.List[object]
+    $loadFailures = 0
+
+    foreach ($path in $DllPaths) {
+        $name = [System.IO.Path]::GetFileNameWithoutExtension($path)
+        try {
+            $asm = $mlc.LoadFromAssemblyPath($path)
+        } catch {
+            $loadFailures++
+            [void]$assembliesScanned.Add([ordered]@{ path = $path; name = $name; matched = $false })
+            continue
+        }
+
+        $types = @(Get-LoadableTypes $asm | Where-Object { Test-NamespaceMatch $_ $Prefix })
+        $matched = $types.Count -gt 0
+        [void]$assembliesScanned.Add([ordered]@{ path = $path; name = $name; matched = $matched })
+        if ($matched) {
+            foreach ($t in $types) {
+                [void]$typeEntries.Add((Convert-TypeToManifest $t $name))
+            }
+        }
+    }
+
+    Write-Verbose "Core reflection: $($DllPaths.Count - $loadFailures) loaded, $loadFailures failed to load."
+    return @{ AssembliesScanned = @($assembliesScanned.ToArray()); Types = @($typeEntries.ToArray()) }
+}
+
+
+# -- main -----------------------------------------------------------------------
+
+$dllPaths = @(Get-DllPaths $InstallDir)
+
+$result = if ($isCore) {
+    Invoke-CoreReflection -DllPaths $dllPaths -Prefix $NamespacePrefix `
+        -MlcAssemblyPath $MetadataLoadContextAssembly -ExtraRefDir $NetFrameworkReferenceAssembliesDir
+} else {
+    Invoke-DesktopReflection -DllPaths $dllPaths -Prefix $NamespacePrefix
+}
+
+$manifest = [ordered]@{
+    revit_version      = $RevitVersion
+    generated_at        = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
+    namespace_prefix    = $NamespacePrefix
+    assemblies_scanned  = $result.AssembliesScanned
+    types               = $result.Types
+}
+
+# @() here guards against a nastier variant of the same collapse: when exactly one
+# assembliesScanned entry matches, Where-Object's un-array-wrapped single result is that
+# entry's own [ordered]@{...} hashtable -- and .Count on *that* silently returns its key
+# count (3: path/name/matched), not "1 matching assembly". Confirmed empirically. See
+# crawl_notes.md.
+$matchedCount = @($result.AssembliesScanned | Where-Object { $_.matched }).Count
+Write-Verbose "$matchedCount / $($result.AssembliesScanned.Count) scanned assemblies matched '$NamespacePrefix'; $($result.Types.Count) types collected."
+
+$manifest | ConvertTo-Json -Depth 12 | Set-Content -LiteralPath $Out -Encoding utf8
+Write-Output "Wrote $Out ($($result.Types.Count) types from $matchedCount matched assemblies)"

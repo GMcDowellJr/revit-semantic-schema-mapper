@@ -390,6 +390,179 @@ This matters for restricted corporate environments where installing packages fro
 IT approval: a bare `pip install -e ".[dev]"` (pytest only) is enough to run the whole
 pipeline against the live site, no approval needed for `requests`/`beautifulsoup4`.
 
+## Stage A (`reflect_revit_api.ps1`): first real run, no Windows/Revit access (2026-07-08)
+
+Building `docs/dll_reflection_v0.md`'s Stage A tool in a sandbox with **no Windows machine and
+no Revit installation reachable at all** -- the same kind of hard constraint as the "Network
+access limitation" section above, just for a different resource. Rather than write the whole
+script against the design doc alone and call it done, the same write-run-look-fix loop was
+applied against the closest real substitute available: this sandbox's own PowerShell host and
+its own real, compiled .NET assemblies (not Revit's, but genuinely real, genuinely reflected
+over, not fixture data).
+
+### Step 1: which PowerShell host is this machine, actually?
+
+Checked directly rather than assumed, per the design doc's own instruction: `uname -a` /
+`/etc/os-release` show Ubuntu 24.04, no `powershell.exe` anywhere, no Windows. **Neither of the
+design doc's two assumed hosts was already present.** PowerShell 7.6.3 ("pwsh", "Core" edition)
+was installable via Microsoft's own apt repo (`packages.microsoft.com/config/ubuntu/24.04/...`),
+reachable through this sandbox's proxy even though several unrelated third-party PPAs
+(`ppa.launchpadcontent.net`) were blocked -- confirmed via `$PSVersionTable.PSVersion` (`7.6.3`)
+and `.PSEdition` (`Core`). Windows PowerShell 5.1 ("Desktop" edition) is **not obtainable here at
+all** -- it's a Windows-only, .NET-Framework-hosted binary. Confirmed directly:
+`[System.Reflection.Assembly]::ReflectionOnlyLoadFrom(...)` exists as a method on pwsh7 but
+throws `"ReflectionOnly loading is not supported on this platform"` when called -- exactly the
+design doc's assumption that this API is .NET-Framework-only, now confirmed empirically from the
+other side rather than just inferred. This means **the PS 5.1 / `ReflectionOnlyLoadFrom` code
+path in `reflect_revit_api.ps1` has never been executed, at all, in this project** -- it's
+written to match the design doc and mirrors patterns confirmed to work on the PS7 side, but
+remains genuinely unverified until it runs on a real Windows+Revit machine. Treat that as this
+stage's equivalent of the docs-crawler's "Network access limitation" section: an honest gap, not
+a silent assumption.
+
+`System.Reflection.MetadataLoadContext` (the PS7 fallback the design doc names) is indeed not
+built in -- confirmed by `[System.Reflection.MetadataLoadContext]` failing to resolve until its
+NuGet package's DLL is loaded explicitly. Fetched directly from
+`api.nuget.org/v3-flatcontainer/system.reflection.metadataloadcontext/8.0.0/...nupkg` (also
+reachable through the proxy) and `Add-Type -Path`-loaded its `lib/net8.0/` DLL successfully.
+
+### Step 2: cheapest real test -- a generic BCL property, both `.ToString()` and `.FullName`
+
+Before touching any install-dir scan, reflected `Dictionary<string,int>.Keys`
+(`ICollection<TKey>`-shaped) and a few adjacent BCL shapes (a plain class, an array, `Nullable<T>`,
+a `void` return, a `ref`/`out` parameter) directly in pwsh7. Confirmed both forms
+`ground_truth.normalize_type_name`'s docstring already claims to handle:
+
+- `Type.ToString()`: `System.Collections.Generic.ICollection\`1[System.String]`
+- `Type.FullName`: `System.Collections.Generic.ICollection\`1[[System.String, System.Private.CoreLib, Version=10.0.0.0, Culture=neutral, PublicKeyToken=...]]`
+
+Both normalize to `ICollection<String>` via the existing `normalize_type_name`, matching the
+docs-side `ICollection(ElementId)`-shaped form's own normalized output pattern -- confirmed
+directly against real reflection strings, not just the hand-written fixture. Also confirmed,
+deliberately, that a genuine **multi**-type-argument generic (`Dictionary\`2[[...],[...]]`, from
+`Dictionary<string,int>` itself) does **not** normalize correctly -- it leaks commas and assembly
+metadata into the result instead of collapsing to a clean `Dictionary<String,Int32>`. This isn't
+a new problem: `normalize_type_name`'s own docstring already discloses this exact limitation
+("a deeply nested multi-type-arg generic is not specifically handled and would need this
+function extended and re-tested, not silently trusted"). No fix applied -- no real Revit
+signature has ever been found that needs one, and guessing at a fix without that evidence is
+exactly the failure mode this whole project exists to avoid. `void` methods were also checked:
+reflection reports `ReturnType.FullName == "System.Void"` for them, which `reflect_revit_api.ps1`
+now maps to a manifest `return_type: null` (matching how a void method carries no return type on
+the docs side either) rather than leaking the literal string `"System.Void"` into the manifest.
+
+### Step 3: a real, at-scale scan -- not Revit, but real, and it found two real bugs
+
+With no Revit install dir available, the closest honest substitute was this sandbox's own
+PowerShell installation directory (`/opt/microsoft/powershell/7`, 536 real `*.dll` files,
+`System.Management.Automation` as the stand-in namespace prefix) -- a genuinely real "a handful
+of relevant assemblies buried among many irrelevant ones" scan, just not Revit's own. Running
+`reflect_revit_api.ps1` against it end-to-end surfaced:
+
+1. **`MetadataLoadContext` needs the host runtime's own core assembly resolvable too, not just
+   the target install dir's DLLs.** `New-Object System.Reflection.MetadataLoadContext($resolver,
+   "System.Private.CoreLib")` threw until the resolver's path list also included every DLL under
+   `[System.Runtime.InteropServices.RuntimeEnvironment]::GetRuntimeDirectory()` -- confirmed by
+   trial and error, now baked into `Invoke-CoreReflection`'s resolver setup.
+2. **A real, separate cross-framework caveat for the PS7 path, confirmed by reasoning through
+   what the working scan above actually resolved against, not yet by a live cross-framework
+   run**: the host-runtime DLLs added in (1) are `.NET`/`.NET Core` assemblies. Revit's own
+   `RevitAPI.dll` targets **.NET Framework**, whose core assembly is `mscorlib`, not
+   `System.Private.CoreLib` -- a same-host-runtime resolver seed won't satisfy that resolution.
+   `reflect_revit_api.ps1` now accepts a `-NetFrameworkReferenceAssembliesDir` parameter (e.g. a
+   `Microsoft.NETFramework.ReferenceAssemblies` NuGet package's contents) for exactly this case,
+   switches the core-assembly name to `mscorlib` when it's supplied, and prints an explicit
+   `Write-Warning` when it's *not* supplied and the host is Core edition, rather than silently
+   scanning and producing a manifest quietly missing every cross-assembly-referenced type. This
+   combination (PS7 + MetadataLoadContext + real net48 RevitAPI.dll + reference assemblies) is
+   still **unverified** -- flagging it precisely, the same way `crawl_notes.md` already
+   distinguishes "confirmed" from "reasoned but not yet run" elsewhere in this file.
+3. `Enum.GetNames($enumType)` actually **succeeds** even on a `MetadataLoadContext`-loaded
+   (reflection-only) enum type -- it only reads field metadata, no value construction needed.
+   `Enum.GetValues` and `Activator.CreateInstance` both **fail**, with an explicit
+   `"The requested operation cannot be used on objects loaded by a MetadataLoadContext"` /
+   `"Type must be a type provided by the runtime"` error -- confirming reflection-only loading
+   really is metadata-only on this host, not silently falling back to a real load. Rather than
+   depend on `Enum.GetNames`'s specific (and seemingly accidental) tolerance, `enum_members` is
+   read via `GetFields(Public, Static)` instead -- confirmed to return the exact same names, and
+   documented as metadata-only by design rather than by this one host's apparent leniency.
+4. Timing: enumerating 536 `*.dll` recursively took ~0.03s; metadata-loading and filtering all of
+   them (367 succeeded, 169 failed to load -- expected, not surfaced loudly, matching the design
+   doc's own expectation) took well under a second total, with 3 assemblies matching the
+   namespace filter and 722 types collected. Not Revit's ~3151-DLL scale, but the same order of
+   magnitude within a 6x factor, and nothing here suggested the full Revit scan would be
+   meaningfully slower per-DLL -- worth reconfirming on the real thing regardless, not assumed.
+5. A real syntax bug, unrelated to reflection: `Write-Warning "..." + "..." + "..."` (string
+   concatenation split across a cmdlet call's bare arguments) failed with `"A positional
+   parameter cannot be found that accepts argument '+'."` -- PowerShell's command-mode argument
+   parsing doesn't extend `+`-concatenation across a cmdlet's argument list the way expression
+   mode does. Fixed by building the message into a variable first, then passing the variable.
+6. **The important one: PowerShell's array-to-scalar/`$null` collapse silently corrupted the
+   manifest's array-shaped fields.** The very first real run serialized
+   `"inheritance_chain": "System.Object"` (a bare string, not a 1-element array),
+   `"members": {...}` (a bare object, not a 1-element array), and `"enum_members": null` /
+   `"parameters": null` (instead of `[]`) for every type/member that happened to have exactly one
+   ancestor/member/parameter, or exactly zero interfaces/enum-values/parameters. Root cause,
+   confirmed directly: capturing a PowerShell function's return value across the call boundary
+   collapses a 0-item collection to `$null` and a 1-item collection to its bare scalar element
+   (`function f { return @() }; $x = f` gives `$x -eq $null`; `function g { return @("only") };
+   $y = g` gives `$y -is [array]` = `False`) -- a well-known PowerShell pipeline behavior that
+   would have silently broken `ground_truth.load_manifest()` for exactly the common cases (a
+   leaf type with one property, a parameterless method, a type with no implemented interfaces),
+   not just rare edge cases. Fixed by wrapping every collection-returning helper's result with
+   `@(...)` again at its call site in `Convert-TypeToManifest`/`Convert-MembersToManifest` --
+   confirmed the general fix (not a special-cased one) by checking `@($null_var)` degrades to
+   `[]` while `@($scalar_var)`/`@($real_array_var)` both still produce the correctly-shaped array.
+   Re-ran the same scan afterward: `PowerShellAssemblyLoadContextInitializer` (exactly a
+   1-ancestor, 1-member, 1-parameter, 0-interface, 0-enum-value type) now serializes correctly as
+   real JSON arrays throughout.
+
+A **fourth** manifestation of the same root cause turned up while checking a tiny (1-DLL)
+install dir as a boundary-condition test: the script's own summary line
+(`Write-Verbose "$matchedCount / ... scanned assemblies matched..."`) printed `"3 / 1 scanned
+assemblies matched"` for a scan where exactly one assembly matched -- a smaller, sneakier variant
+of the same array-collapse: `($AssembliesScanned | Where-Object { $_.matched }).Count` on a
+one-match result collapses to that single `[ordered]@{...}` hashtable *itself* (not a 1-element
+array), and `.Count` on that hashtable silently returns its own key count (3: `path`/`name`/
+`matched`) instead of erroring -- a very easy wrong-but-plausible number to miss without an
+independent count to compare against (the JSON on disk was correct throughout; only the
+console summary text was wrong). Fixed the same way, wrapping with `@(...)` before `.Count`.
+This is the same lesson repeated a fourth way: **any PowerShell pipeline/array expression whose
+result feeds a JSON field or a `.Count` needs to be checked against 0- and 1-item inputs
+specifically**, not just the many-item case that happens to look right by construction.
+
+### Step 4: validated against `ground_truth.load_manifest()`/`cross_validate_dll()` directly, not just eyeballed
+
+The fixed manifest (722 types: 106 enums, 30 interfaces, 7 structs, the rest classes; methods
+with real multi-parameter signatures and non-void return types; one 6-level-deep inheritance
+chain) round-trips cleanly through `ground_truth.load_manifest()`. Beyond just parsing, a
+hand-built `NodeCandidate`/`EdgeCandidate` pair against a real matched type/method
+(`PowerShellAssemblyLoadContextInitializer.SetPowerShellAssemblyLoadContext`) run through
+`cross_validate_dll` correctly produced `dll_type_verified=True`,
+`dll_signature_verified=True`, `dll_verified_status="signature_verified_declared"` -- Stage B's
+actual diffing logic exercised against Stage A's actual real output, not a schema-shape-only
+check.
+
+### What's still genuinely unverified
+
+Everything that requires an actual Windows machine with actual Revit installed:
+
+- The PS 5.1 / `ReflectionOnlyLoadFrom` / `ReflectionOnlyAssemblyResolve` code path has never
+  been executed (this sandbox only has pwsh/Core; `ReflectionOnlyLoadFrom` throws
+  `PlatformNotSupportedException`-shaped errors there, confirmed above).
+- No real `RevitAPI.dll`/`RevitAPIUI.dll` has ever been scanned; the full ~3151-DLL, mostly-
+  irrelevant-assemblies scenario the design doc describes has only been approximated (536 DLLs,
+  a different namespace prefix).
+- The PS7 + `MetadataLoadContext` + cross-framework (`-NetFrameworkReferenceAssembliesDir`) path
+  is implemented and reasoned through but not yet run against anything net48-targeted.
+- Possible duplicate-simple-name collisions among Revit's own DLLs (e.g. localized resource
+  assemblies) aren't exercised by this sandbox's DLL set at all.
+
+The next real validation step is exactly the pattern the rest of this file already follows: run
+`reflect_revit_api.ps1 -InstallDir "C:\Program Files\Autodesk\Revit 2024" -Out
+ground_truth_manifest_2024.json -Verbose` on an actual Windows+Revit box, and record whatever it
+finds here -- confirmed facts, not assumptions, the same as every other stage.
+
 ## Why member pages are discovered from class pages, not just the index/TOC
 
 Sandcastle-style sites list a type's members with links to their own property/method pages
