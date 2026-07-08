@@ -365,6 +365,61 @@ def _find_first(root: Path, filename: str) -> Optional[Path]:
 # writes one JSON file, prints a one-line summary.
 
 
+def verify_tag_match(source_dir: Path, claimed_tag: str) -> Optional[str]:
+    """Best-effort check that ``source_dir`` is actually checked out at
+    ``claimed_tag``, since ``mine_revitlookup_source`` itself just trusts and
+    records whatever tag string the caller passes without otherwise
+    verifying it. ``--tag`` being a required argument with no default (see
+    ``_main`` below) already rules out the *root* version of a real mistake
+    found in a sibling project's own RevitLookup-syncing script (a hardcoded
+    ``BRANCH = "develop"`` constant, silently re-pointing every sync at
+    whatever Revit version RevitLookup currently targets) -- but a caller
+    could still pass ``--tag 2024.0.13`` while ``--source-dir`` is actually
+    sitting on ``develop`` (forgot to ``git checkout`` first, or checked out
+    the wrong tag), producing output that *claims* to be 2024.0.13 but isn't.
+
+    Returns a human-readable mismatch description if ``source_dir`` is a git
+    working tree and its checked-out ref does not match ``claimed_tag``, or
+    ``None`` if it matches -- or if it can't be verified at all (git isn't
+    installed, or ``source_dir`` isn't a git checkout, e.g. a plain
+    extracted-from-a-tag-archive directory) -- an unverifiable checkout isn't
+    treated as an error, since operating on "any local directory" (not
+    necessarily a git clone) is this module's whole point.
+    """
+    import subprocess
+
+    def _run(*args: str) -> Optional[subprocess.CompletedProcess[str]]:
+        try:
+            return subprocess.run(
+                ["git", "-C", str(source_dir), *args],
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+        except (FileNotFoundError, subprocess.TimeoutExpired):
+            return None
+
+    is_repo = _run("rev-parse", "--is-inside-work-tree")
+    if is_repo is None or is_repo.returncode != 0 or is_repo.stdout.strip() != "true":
+        return None  # not a git checkout at all -- can't verify, not an error
+
+    describe = _run("describe", "--tags", "--exact-match")
+    if describe is None or describe.returncode != 0:
+        branch = _run("rev-parse", "--abbrev-ref", "HEAD")
+        current = branch.stdout.strip() if branch is not None and branch.returncode == 0 else "<unknown>"
+        return (
+            f"--tag {claimed_tag!r} was given, but {source_dir} is not checked out exactly at "
+            f"that tag (currently on {current!r}) -- refusing to trust the claimed tag label."
+        )
+    actual_tag = describe.stdout.strip()
+    if actual_tag != claimed_tag:
+        return (
+            f"--tag {claimed_tag!r} was given, but {source_dir} is actually at tag {actual_tag!r} "
+            f"-- refusing to trust the claimed tag label."
+        )
+    return None
+
+
 def _main() -> None:
     import argparse
     import dataclasses
@@ -376,7 +431,12 @@ def _main() -> None:
     parser.add_argument("--out", required=True, help="Path to write revitlookup_reference.json to")
     args = parser.parse_args()
 
-    reference = mine_revitlookup_source(Path(args.source_dir), revitlookup_tag=args.tag)
+    source_dir = Path(args.source_dir)
+    mismatch = verify_tag_match(source_dir, args.tag)
+    if mismatch is not None:
+        raise SystemExit(f"Error: {mismatch}")
+
+    reference = mine_revitlookup_source(source_dir, revitlookup_tag=args.tag)
     Path(args.out).write_text(json.dumps(dataclasses.asdict(reference), indent=2), encoding="utf-8")
 
     total_resolved = sum(len(d.resolved_members) for d in reference.descriptors)

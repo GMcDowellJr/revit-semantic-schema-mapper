@@ -1232,3 +1232,42 @@ All 179 tests pass (16 new). Not yet done: wiring `revitlookup.py` into
 not-yet-integrated state), and anything that actually combines `revitlookup_reference.json` with
 `ground_truth_report.json`/`candidate_edges.json` into the `revitlookup_referenced`/
 `revitlookup_requires_document_context` `EdgeCandidate` fields the design doc proposes.
+
+## Hardened Stage C against a subtler version of the Fingerprint sync script's mistake (2026-07-08)
+
+The project owner separately maintains a `Fingerprint` project with its own
+`sync_revitlookup_reference.py` script that copies RevitLookup descriptor files into that repo
+as reference material (not via git clone/fork -- it uses the GitHub REST API to list and fetch
+individual files, a lighter-weight vendoring approach, reasonable for embedding a curated
+reference subset in another repo). Reviewing it surfaced the *exact* real mistake this session
+already found and fixed for Stage C: a hardcoded `BRANCH = "develop"` constant, meaning every
+sync silently re-points at whatever Revit version RevitLookup's `develop` branch currently
+targets (2027 as of this writing) rather than the version Fingerprint's own extractors are
+written against -- noted back to the user as a Fingerprint-side issue to fix there, not
+something this repo needed to change.
+
+Checking Stage C's own code for the same class of mistake: `--tag` is `required=True` with no
+default, so `revitlookup.py` can never silently fall back to `develop` the way the Fingerprint
+script's hardcoded branch does -- the *root* version of the bug was already ruled out by
+construction. But a **subtler version of the same risk** was still open: nothing verified that
+a caller's `--tag` claim actually matched what was really checked out in `--source-dir`. Passing
+`--tag 2024.0.13` while forgetting to `git checkout 2024.0.13` first (still sitting on `develop`,
+or checked out at the wrong tag) would silently produce output *labeled* 2024.0.13 that wasn't
+actually mined from that version at all -- the same fundamental problem (recorded version label
+doesn't match what was really mined), just introduced by a human mistake at the call site
+instead of a hardcoded constant in the script itself.
+
+Fixed with `verify_tag_match(source_dir, claimed_tag)`: a best-effort check (git isn't a hard
+requirement of this module -- `mine_revitlookup_source` operates on "any local directory," e.g.
+a plain extracted-from-a-tag-archive folder with no `.git` at all, which stays unverifiable and
+is *not* treated as an error) that runs `git -C <source_dir> describe --tags --exact-match` and
+refuses (`SystemExit`, in `_main()`) if the checkout's real tag doesn't match the claimed one, or
+if it's on some other ref entirely (a branch, or an untagged commit). Confirmed against real git
+repos (not mocked) in `tests/test_revitlookup.py`: a genuine tag match, a checkout at a
+*different* real tag, and an untagged commit all produce the correct result, plus a plain
+non-git directory correctly stays unverifiable rather than being flagged as a mismatch. Also ran
+the actual CLI end-to-end against a real throwaway git repo: `--tag 2024.0.13` against a
+checkout really at that tag succeeds; `--tag 2025.0.1` against the same checkout (really at
+`2024.0.13`) refuses with a clear error and a non-zero exit code.
+
+All 183 tests pass (4 new).

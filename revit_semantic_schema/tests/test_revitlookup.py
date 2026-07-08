@@ -10,12 +10,14 @@ shape found on RevitLookup's current ``develop`` branch, which now targets a
 later Revit version.
 """
 
+import subprocess
 from pathlib import Path
 
 from revit_schema_mapper.revitlookup import (
     mine_revitlookup_source,
     parse_descriptor_file,
     parse_descriptor_map,
+    verify_tag_match,
 )
 
 _FIXTURES = Path(__file__).parent / "fixtures" / "revitlookup"
@@ -218,3 +220,68 @@ def test_mine_revitlookup_source_reports_no_descriptor_map_found(tmp_path):
     reference = mine_revitlookup_source(tmp_path, revitlookup_tag="2024.0.13")
     assert reference.descriptor_map == []
     assert reference.descriptors == []
+
+
+# -- verify_tag_match -------------------------------------------------------------
+#
+# Built against a real local git repo (not mocked) -- same discipline as the rest
+# of this project's tests, and this is exactly the kind of check that's easy to
+# get subtly wrong if only reasoned about rather than run.
+
+
+def _init_repo_at_tag(path: Path, tag: str) -> None:
+    subprocess.run(["git", "init", "-q"], cwd=path, check=True)
+    subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=path, check=True)
+    subprocess.run(["git", "config", "user.name", "Test"], cwd=path, check=True)
+    (path / "README.md").write_text("placeholder", encoding="utf-8")
+    subprocess.run(["git", "add", "."], cwd=path, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "initial"], cwd=path, check=True)
+    subprocess.run(["git", "tag", tag], cwd=path, check=True)
+
+
+def test_verify_tag_match_returns_none_when_checkout_really_is_at_claimed_tag(tmp_path):
+    _init_repo_at_tag(tmp_path, "2024.0.13")
+    assert verify_tag_match(tmp_path, "2024.0.13") is None
+
+
+def test_verify_tag_match_catches_wrong_tag_checked_out(tmp_path):
+    """Real reproduction of the subtler version of a real mistake found in a
+    sibling project's own RevitLookup-syncing script: the caller *claims*
+    one tag but the checkout is actually at a different one.
+    """
+    _init_repo_at_tag(tmp_path, "2024.0.13")
+    subprocess.run(["git", "tag", "2025.0.1"], cwd=tmp_path, check=True)
+    # Both tags point at the same commit here, so --exact-match could report
+    # either -- move to a genuinely different commit under a different tag to
+    # force an unambiguous mismatch.
+    (tmp_path / "new_file.txt").write_text("x", encoding="utf-8")
+    subprocess.run(["git", "add", "."], cwd=tmp_path, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "second"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "tag", "2026.0.1"], cwd=tmp_path, check=True)
+
+    mismatch = verify_tag_match(tmp_path, "2024.0.13")
+
+    assert mismatch is not None
+    assert "2024.0.13" in mismatch
+    assert "2026.0.1" in mismatch
+
+
+def test_verify_tag_match_catches_checkout_not_on_any_tag(tmp_path):
+    _init_repo_at_tag(tmp_path, "2024.0.13")
+    (tmp_path / "new_file.txt").write_text("x", encoding="utf-8")
+    subprocess.run(["git", "add", "."], cwd=tmp_path, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "second, untagged"], cwd=tmp_path, check=True)
+
+    mismatch = verify_tag_match(tmp_path, "2024.0.13")
+
+    assert mismatch is not None
+    assert "not checked out exactly at" in mismatch
+
+
+def test_verify_tag_match_is_none_for_a_non_git_directory(tmp_path):
+    """mine_revitlookup_source operates on "any local directory" (e.g. a
+    plain extracted-from-a-tag-archive folder, no .git at all) -- this must
+    not be treated as a mismatch just because it can't be verified.
+    """
+    (tmp_path / "some_file.txt").write_text("x", encoding="utf-8")
+    assert verify_tag_match(tmp_path, "2024.0.13") is None
