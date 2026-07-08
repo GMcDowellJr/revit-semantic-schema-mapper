@@ -320,53 +320,6 @@ def _unknown_target_type_breakdown(edge_candidates: list[EdgeCandidate], top_n: 
     return lines
 
 
-def _room_investigation_section(pages: list[ApiPage]) -> str:
-    room_pages = [p for p in pages if p.type_name == "Room"]
-    lines = ["## Room / Room Number / Room Name investigation", ""]
-    if not room_pages:
-        lines.append(
-            "No `Room` type page was present in this run's input set, so this section reports "
-            "prior/general knowledge of the Revit API rather than a finding pulled from a "
-            "crawled page. **This has not been verified against a live revitapidocs.com page "
-            "in this session** (see docs/crawl_notes.md, \"Network access limitation\"). "
-            "Treat the following as a hypothesis to confirm on the first real crawl, not a fact:\n"
-        )
-        lines.append(
-            "- `Autodesk.Revit.DB.Architecture.Room` does not appear to declare its own `Name` "
-            "CLR property; room name is expected to be exposed via the inherited "
-            "`Element.Name` property, which is backed by the `BuiltInParameter.ROOM_NAME` "
-            "parameter under the hood."
-        )
-        lines.append(
-            "- `Room.Number` is expected to be a dedicated CLR property (not merely a "
-            "`get_Parameter(BuiltInParameter.ROOM_NUMBER)` lookup), directly backed by "
-            "`BuiltInParameter.ROOM_NUMBER`."
-        )
-        lines.append(
-            "- If confirmed, this means Name and Number reach the object model through two "
-            "different mechanisms (inherited base property vs. a type-specific property), even "
-            "though both ultimately resolve to BuiltInParameter-backed values. The schema "
-            "should keep `Room.Name`/`ROOM_NAME` and `Room.Number`/`ROOM_NUMBER` as **two "
-            "distinct concepts**, not collapsed into one 'room identity' node."
-        )
-        lines.append(
-            "- Action item for the first live crawl: fetch the `Room` class page and its "
-            "`Number` property page, and check the `BuiltInParameter` enum catalog for "
-            "`ROOM_NAME` and `ROOM_NUMBER` entries, to confirm or correct the above."
-        )
-        return "\n".join(lines)
-
-    for page in room_pages:
-        lines.append(f"Source: {page.source_url}")
-        member_names = {m.name for m in page.members}
-        lines.append(f"Members seen on Room page: {sorted(member_names) or 'none parsed'}")
-        if "Number" in member_names:
-            lines.append("- `Number` found as a distinct member on Room (supports keeping Number separate from Name).")
-        if "Name" not in member_names:
-            lines.append("- `Name` not found directly on Room; likely inherited from `Element.Name` (not re-declared).")
-    return "\n".join(lines)
-
-
 def _graph_section(result: GraphBuildResult | None, *, section_number: int) -> list[str]:
     if result is None:
         return []
@@ -506,16 +459,13 @@ def write_summary(
     )
     lines.extend(_unknown_target_type_breakdown(edge_candidates))
     lines.append("")
-    lines.append("## 11. Room / Room Number / Room Name findings")
-    lines.append(_room_investigation_section(pages))
-    lines.append("")
-    lines.append("## 12. Limitations")
+    lines.append("## 11. Limitations")
     lines.extend(f"- {item}" for item in limitations)
     lines.append("")
-    lines.append("## 13. Recommended next steps")
+    lines.append("## 12. Recommended next steps")
     lines.extend(f"- {item}" for item in next_steps)
     lines.append("")
-    lines.extend(_graph_section(graph_result, section_number=14))
+    lines.extend(_graph_section(graph_result, section_number=13))
 
     (output_dir / "summary.md").write_text("\n".join(lines), encoding="utf-8")
 

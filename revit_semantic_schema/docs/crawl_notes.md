@@ -1330,3 +1330,319 @@ same discipline as everything else in this stage.
    and a non-zero exit code, same as the earlier wrong-tag reproduction).
 
 All 191 tests pass (8 new).
+
+## Stage A on a real Revit 2025 install: most of the manifest silently vanished (2026-07-08)
+
+A real run of `reflect_revit_api.ps1` against `C:\Program Files\Autodesk\Revit 2025` (Desktop/
+`ReflectionOnlyLoadFrom` path) completed and wrote a manifest, printing only:
+
+```
+WARNING: 83 member(s) skipped across the scan: their return/parameter types could not be
+resolved (neither under -InstallDir nor loadable from the GAC). Run with -Verbose to see which
+ones. Wrote ...ground_truth_manifest_2025.json (40 types from 5 matched assemblies)
+```
+
+That output *looks* like a minor, expected loss (the 2024 run had similar member-level skips).
+It isn't. Diffing the resulting manifest against a real 2024 manifest (both produced by this
+same script) shows the real story:
+
+| | 2024 | 2025 |
+|---|---|---|
+| assemblies matched | 15 | 5 |
+| types collected | 2607 | 40 |
+| members collected | 20061 | 38 |
+
+Ten assemblies that matched in 2024 -- `RevitAPIIFC`, `DBManagedServices`, `RevitNET`,
+`RSCloudClient`, `CollaborateCommon`, `Autodesk.CivilAlignments.DBApplication`,
+`Autodesk.ResultsBuilder.DBApplication`, `Autodesk.StructuralRibbon.Application`, and the three
+`Autodesk.Revit.CloudRendering.SPD.*` add-in assemblies -- report `matched: false` (0 relevant
+types) in 2025, even though the `.dll` files themselves still exist at the same paths under the
+2025 `InstallDir` (confirmed by comparing each assembly's own `assemblies_scanned` entry across
+the two manifests, not just its absence from the matched list). Only one new cloud assembly,
+`Autodesk.Revit.CloudWorksharing.DocumentManagement`, appears in 2025's matched set in their
+place. This 98%+ collapse in captured types produces zero warning of its own -- the only warning
+printed is the unrelated 83-member one -- because `Get-LoadableTypes`'s `ReflectionTypeLoadException`
+handler silently returned an empty type list on total failure, identical in the output to an
+assembly that was never relevant to `Autodesk.Revit.DB` at all.
+
+**Likely root cause (strong circumstantial evidence, not yet confirmed via a `-Verbose` re-run):**
+diffing `assemblies_scanned` by `name` between the two installs shows Revit 2025 renamed/
+version-bumped a number of exact-named native and cloud dependencies that 2024's install shipped
+under different names -- `AdskLicensingSDK_7` -> `AdskLicensingSDK_8`; every `ASM*229A` Shape
+Manager DLL -> the matching `ASM*230A`; `IfcCore_24.6_16`/`IfcGeom_24.6_16`/`FacetModeler_24.6_16`
+-> `..._24.12_16`; the WCF-based `ATFRevitWCFInterface` (present in 2024, absent from 2025)
+replaced by a gRPC-based `ATFRevitGrpcInterface`/`ATFRevitBroker`/`ATFRevitRCEHost` stack plus new
+`Google.Protobuf`/`Grpc.*` dependencies; and the old `Autodesk.Bcg`/`Autodesk.Bcg.Http` cloud
+client SDK (2024) replaced by `Autodesk.Gateway.Client`/`Autodesk.Management.Client`/
+`Autodesk.Http.*`/the `Autodesk.Revit.CloudWorksharing.*` family (2025). Every one of the ten
+assemblies that dropped out is exactly the kind of assembly that would reference one of these
+(IFC import/export, licensing, cloud collaboration, structural/civil add-ins) -- while `RevitAPI`
+itself, which matched fine in both years, evidently doesn't expose any *public* type that
+directly surfaces these particular dependencies in its own signatures. `reflect_revit_api.ps1`'s
+`ReflectionOnlyAssemblyResolve` handler only resolves by *exact simple name* (falling back to the
+GAC) -- a version-bumped or renamed simple name is invisible to it, and these are private
+Autodesk components that were never going to be in the GAC either.
+
+**Fixed the silence, not (yet) the underlying resolution gap.** Added
+`$script:typeLoadExceptionAssemblies`/`$script:typeLoadExceptionTypesLost` counters plus verbose
+per-assembly `LoaderExceptions` logging in `Get-LoadableTypes`, and a new summary `Write-Warning`
+when either counter is nonzero, explicitly naming this exact scenario (an assembly that matched
+previously now showing 0 types). Actually fixing the resolution gap itself (e.g. accepting a
+version-bumped simple name, or seeding the resolver with a coherent reference set) needs the real
+`LoaderExceptions` text from a `-Verbose` re-run against the live 2025 install first -- this is a
+confirmed real risk, not yet a confirmed root cause per assembly.
+
+## The `-Verbose` re-run: the rename/version-bump hypothesis above was wrong (2026-07-08)
+
+A real `-Verbose` re-run against the same live Revit 2025 install (using the
+`LoaderExceptions`-logging fix above) told a completely different story than the
+`AdskLicensingSDK`/`ASM*`/`ATFRevitWCFInterface` rename theory guessed. The actual scope is much
+bigger too: **434 assemblies** hit `ReflectionTypeLoadException` (not just the 10 found by manifest
+diffing), losing **296,357 types** before this run ever saw them. Deduplicating every distinct
+`Cannot resolve dependency to assembly '...'` message across the whole log gives 26 identities,
+overwhelmingly one family:
+
+- `System.Runtime, Version=8.0.0.0, ...` -- 410 occurrences (by far the largest)
+- `System.Runtime, Version=6.0.0.0/7.0.0.0/5.0.0.0/4.2.x/4.1.x, ...` -- 106 more, spread across
+  older .NET/.NET-Standard numbering
+- `PresentationFramework`/`WindowsBase`/`System.Xaml`, all `Version=8.0.0.0` -- WPF-on-.NET-Core
+- `netstandard, Version=2.1.0.0`
+- a long tail (`System.Collections`, `System.ObjectModel`, `System.Windows.Forms`,
+  `System.Security.AccessControl`, `Autodesk.Http`, `Newtonsoft.Json`, ...), each 1-3 occurrences
+
+Every one of these is a **modern .NET (Core) 5-8 / WPF-on-.NET-Core reference identity, not a
+renamed or version-bumped Autodesk component**. `AcDbMgd` alone loses 3552 of its 3560 types to
+this. Confirmed neither Revit's own install directory nor the target machine has any of these
+files anywhere: grepping the manifest's own `assemblies_scanned` for exact simple-name matches
+(`System.Runtime`, `PresentationFramework`, `WindowsBase`, `System.Xaml`, `netstandard`,
+`System.Collections`, `System.ObjectModel`, `System.Windows.Forms`) under
+`C:\Program Files\Autodesk\Revit 2025\` found none of them; running `dotnet --list-runtimes` on
+that same machine reported no .NET SDK/runtime installed at all. So this was never a matter of
+the resolver's by-simple-name lookup missing a renamed file under `-InstallDir` (the entire
+premise of the rename hypothesis) -- the real files these references need don't exist anywhere on
+that machine, under any name, full stop. Revit 2025 evidently ships some components (chiefly
+`AcDbMgd`, plus whatever else transitively references it) built against modern .NET, sitting
+alongside the classic .NET-Framework-targeted `RevitAPI.dll` -- and a classic .NET Framework GAC
+can never contain a `System.Runtime, Version=8.0.0.0` identity; that's not a gap in this
+particular GAC, it's a different runtime family entirely.
+
+**Fix**: since `ReflectionOnlyLoadFrom` only parses metadata and never executes a loaded assembly,
+a real modern .NET runtime's own DLL (e.g. `...\dotnet\shared\Microsoft.NETCore.App\8.0.11\
+System.Runtime.dll`) loads there just fine even though the whole scanning process is old .NET
+Framework -- confirmed as the standard technique for this exact cross-framework-reflection
+scenario. Added `-DotNetSharedFrameworkRoot` (default `$env:ProgramFiles\dotnet\shared`, i.e.
+`dotnet --list-runtimes`'s own layout) and `Get-DotNetSharedFrameworkIndex`, which indexes every
+`*.dll` under any installed `Microsoft.NETCore.App`/`Microsoft.WindowsDesktop.App`/
+`Microsoft.AspNetCore.App` version folder, keyed by (simple name, *major* version only -- an
+installed runtime's own files keep `AssemblyVersion` pinned to `<major>.0.0.0` across every patch,
+so any installed patch folder for a requested major version satisfies the reference regardless of
+exact patch). `Invoke-DesktopReflection`'s resolve handler now tries this index (matching the
+request's own major version) between the existing by-`-InstallDir`-name check and the final GAC
+fallback. **Not yet re-run**: this needs the matching .NET runtime(s) actually installed on the
+target machine first (confirmed none are, as above) -- installing at least the .NET 8 Desktop
+Runtime (covering `Microsoft.NETCore.App`+`Microsoft.WindowsDesktop.App` for the dominant
+410-of-434 `Version=8.0.0.0` case) is the next real step, then re-running to see how much of the
+296,357 lost types actually recovers.
+
+## Two real bugs in the `-DotNetSharedFrameworkRoot` fix, found by automated PR review (2026-07-08)
+
+Both confirmed real and fixed before any re-run:
+
+1. **`Get-DotNetSharedFrameworkIndex` keyed by the containing folder's version, not each DLL's
+   own real version.** Holds for most framework assemblies (their `AssemblyVersion` does track
+   the hosting runtime's major version), but not `netstandard.dll`: its own identity is a fixed
+   `2.1.0.0` regardless of which runtime major version's folder it ships inside. A reference
+   asking for `netstandard, Version=2.1.0.0` looked up `netstandard|2` against an index that
+   (folder-name-inferred) stored it as `netstandard|8` -- never matching, so that failure would
+   have stayed silently unresolved even with the right runtime installed. Fixed by reading each
+   DLL's own real `[System.Reflection.AssemblyName]::GetAssemblyName(...).Version.Major` instead
+   of inferring it from the folder name, skipping the native (non-managed) files that also live
+   in these folders (`hostfxr.dll`, `coreclr.dll`, ...) rather than aborting the whole index.
+2. **`-DotNetSharedFrameworkRoot`'s default was computed via `$env:ProgramFiles` at parameter-
+   bind time, unconditionally** -- evaluated for *every* invocation regardless of which path
+   (Desktop or Core) ends up running. `$env:ProgramFiles` is unset on PowerShell Core off
+   Windows (this project's own confirmed dev-sandbox host), which would have broken invocation
+   before ever reaching the still-fully-supported Core/MetadataLoadContext path. Fixed by
+   defaulting to `""` at the parameter level and computing the real Windows default later, in
+   the main script body, guarded by `-and $env:ProgramFiles` so a non-Windows host just skips it
+   rather than crashing.
+
+## The real `-Verbose` re-run against .NET 8: a much deeper wall than a missing file (2026-07-08)
+
+The user confirmed .NET 8 (`Microsoft.NETCore.App`/`Microsoft.WindowsDesktop.App`/
+`Microsoft.AspNetCore.App`, version `8.0.28`) genuinely is installed at exactly
+`-DotNetSharedFrameworkRoot`'s default path (`C:\Program Files\dotnet\shared`) -- the earlier
+"nothing installed" reading came from a mistyped `dotnet --list-runtime` (singular), not a real
+absence. Re-running with the fixed script confirmed the file-resolution fix works (`Indexed 373
+(name, major version) dotnet shared-framework dll(s)`, and the `Cannot resolve dependency to
+assembly 'System.Runtime, Version=8.0.0.0, ...'` messages are gone) -- but the overall numbers
+barely moved (432 assemblies / 296,036 types lost, vs. 434 / 296,357 before), because a *new*,
+deeper error immediately replaced the old one for nearly everything that matters:
+
+```
+Could not load type 'System.Object' from assembly 'System.Private.CoreLib, Version=8.0.0.0,
+Culture=neutral, PublicKeyToken=7cec85d7bea7798e' because the parent does not exist.
+```
+
+This is not a missing-reference problem -- the file *is* found (confirmed: no more "Cannot
+resolve dependency" for it) -- it's a hard, structural limitation of
+`[System.Reflection.Assembly]::ReflectionOnlyLoadFrom` itself: .NET Framework's reflection-only
+loading pipeline has a hardcoded assumption that `mscorlib` is the one assembly allowed to define
+`System.Object` (the CLR type hierarchy's root, which has no base type -- hence "the parent does
+not exist" once the loader refuses to treat `System.Private.CoreLib` as a legitimate alternate
+root). No file made available to `ReflectionOnlyLoadFrom` fixes this; it is fundamentally the
+wrong reflection API for a modern-.NET-rooted assembly, no matter how completely
+`-DotNetSharedFrameworkRoot` is populated.
+
+**And this affects far more than the 10 peripheral assemblies originally found by manifest
+diffing.** Checking `RevitAPI`/`RevitAPIExtData`/`RevitAPIMacros`/`RevitAPISteel`/
+`Autodesk.Revit.CloudWorksharing.DocumentManagement` -- every assembly that *did* still report
+`matched: true` -- against the same log shows every one of them losing the overwhelming majority
+of their own types to this exact error too:
+
+| assembly | types lost / total |
+|---|---|
+| `RevitAPI` | 19,263 / 19,336 (99.6%) |
+| `RevitAPIExtData` | 107 / 113 |
+| `RevitAPIMacros` | 67 / 68 |
+| `RevitAPISteel` | 115 / 123 |
+| `Autodesk.Revit.CloudWorksharing.DocumentManagement` | 54 / 56 |
+
+`RevitAPI.dll` itself is now built against .NET 8 (confirmed independently: Autodesk's own Revit
+API Developer's Guide states "the Revit API is .NET 8 only," and that Revit 2025's installer
+bundles the .NET 8 Desktop Runtime `8.0.0.33101`) -- this was never a handful of peripheral
+AutoCAD/cloud assemblies falling behind, it's the core, primary reflection target of this entire
+project that's now unreachable via this host's reflection mechanism. (Separately confirmed
+`AcDbMgd`, the single largest individual loss at 3551/3560 types, was *already* `matched: false`
+in the working 2024 baseline manifest -- it never exposed `Autodesk.Revit.DB` types even before
+any of this, so its loss specifically is noise, not signal; `RevitAPI` itself is the real signal.)
+
+**Fix: let `MetadataLoadContext` run on Desktop too, not just Core.** The script's own
+`Invoke-CoreReflection` (System.Reflection.MetadataLoadContext) was written for PowerShell 7+
+only, under the assumption Desktop's built-in `ReflectionOnlyLoadFrom` was the "primary,
+best-supported path" for the classic mscorlib-rooted case -- true for Revit 2024, no longer true
+for Revit 2025's actual CoreLib-rooted `RevitAPI.dll`. `MetadataLoadContext` doesn't have
+`ReflectionOnlyLoadFrom`'s hardcoded mscorlib assumption (you explicitly declare which assembly
+is the type-system root via its constructor's `coreAssemblyName` argument), and -- confirmed --
+it's a plain `netstandard2.0` NuGet package with no actual dependency on Core hosting, so it loads
+via `Add-Type -Path` and runs fine under Windows PowerShell 5.1 (.NET Framework 4.7.2+) too. This
+means the user does **not** need PowerShell 7 installed (confirmed absent on their machine, and
+they'd need an internal approval process to get it) to try the fix that actually addresses this
+wall.
+
+Changes made:
+- `$useMetadataLoadContext = $isCore -or [bool]$MetadataLoadContextAssembly` -- Core still
+  requires it unconditionally (no `ReflectionOnlyLoadFrom` there at all), but Desktop can now
+  opt in by simply passing `-MetadataLoadContextAssembly`.
+- Fixed a real bug this exposed in `Invoke-CoreReflection`: `$coreAssemblyName` was inferred from
+  *whether `-NetFrameworkReferenceAssembliesDir` was passed at all* (`"mscorlib"` if so, else
+  `"System.Private.CoreLib"`) -- backwards for the real need, which is "pass extra reference
+  assemblies (the .NET 8 shared framework) *and* use the `System.Private.CoreLib` root at the
+  same time." Added `-DotNetSharedFrameworkRoot` support to `Invoke-CoreReflection` itself
+  (reusing the same parameter the Desktop path already added), and made `$coreAssemblyName`
+  depend on *which* reference source actually resolved something, not which parameter was passed.
+- Stopped deduping candidate assembly paths to "first path wins per simple name" before handing
+  them to `PathAssemblyResolver` -- confirmed unlike this script's own by-simple-name resolvers,
+  `PathAssemblyResolver.Resolve()` opens each candidate's real metadata itself to disambiguate
+  multiple versions of the same simple name (e.g. a `System.Runtime` reference satisfiable by
+  either an installed 6.x or 8.x shared-framework folder); pre-deduping would have thrown that
+  capability away for no reason.
+
+**Not yet run**: this is a real experiment, not a confirmed fix -- `MetadataLoadContext` against
+real Revit DLLs (of either root) has never been exercised end-to-end before. Next real step is
+getting `System.Reflection.MetadataLoadContext.dll` (a NuGet package, no full SDK required) onto
+the target machine and re-running with `-MetadataLoadContextAssembly` set and no
+`-NetFrameworkReferenceAssembliesDir` (since the real need now is the `System.Private.CoreLib`
+branch, which `-DotNetSharedFrameworkRoot`'s existing default already points at the right
+installed runtime for).
+
+## `Add-Type -Path` on `MetadataLoadContext.dll` itself hit the exact same wall (2026-07-08)
+
+Confirmed live on Windows PowerShell 5.1, trying the plan above: `Add-Type -Path
+$MlcAssemblyPath` (in `Invoke-CoreReflection`) threw `ReflectionTypeLoadException` --
+`System.Reflection.MetadataLoadContext.dll` (package version `10.0.9`, `lib\netstandard2.0\`
+build -- confirmed the right TFM folder, ruling out a modern-.NET-targeted build) has its own
+real, non-optional dependencies: `System.Reflection.Metadata, Version=10.0.0.0`,
+`System.Collections.Immutable, Version=10.0.0.0`, and `System.Memory, Version=4.0.2.0` (found by
+catching the exception directly and reading `.LoaderExceptions`, not `$Error[0]` after the fact --
+`$Error[0].Exception` was one level of `Management.Automation` wrapping away from the real
+`ReflectionTypeLoadException`, and even then `.LoaderExceptions` came back empty until caught
+live in the same command).
+
+Placing all three sibling `.dll`s (same `lib\netstandard2.0\` extraction, confirmed matching
+versions via `[System.Reflection.AssemblyName]::GetAssemblyName(...).Version`) directly alongside
+`MetadataLoadContext.dll`, **and even `Unblock-File`-ing all four**, still didn't fix it -- same
+three "the system cannot find the file specified" messages, unchanged. `Assembly.LoadFrom`'s
+documented "probe the same directory as the LoadFrom'd file" behavior is evidently not reliable
+enough to depend on from a Windows PowerShell 5.1 process (a plain `.NET Framework console app`'s
+`LoadFrom` context may behave differently than doing this from inside `powershell.exe`, which has
+its own already-populated `AppDomain`/assembly-loading state). What actually worked: registering
+a real `AssemblyResolve` event handler (`[System.AppDomain]::CurrentDomain.add_AssemblyResolve(...)`
+-- the *executing*-load counterpart to `add_ReflectionOnlyAssemblyResolve`, which this script
+already uses elsewhere) that explicitly looks up each missing dependency by simple name in the
+same directory and loads it via `Assembly.LoadFrom` itself, rather than relying on any implicit
+probing. Confirmed working end-to-end (`$asm.GetTypes()` succeeded) once this was in place.
+
+Added the same handler directly to `Invoke-CoreReflection`, scoped to `$MlcAssemblyPath`'s own
+directory, registered immediately before its own `Add-Type -Path` call -- so any user of this
+script hits this fixed, not the same wall the user just fought through by hand. Documented the
+three known dependencies (confirmed exact identities above) in `-MetadataLoadContextAssembly`'s
+own `.PARAMETER` help text, including that `Unblock-File` alone is not sufficient.
+
+Two more transitive dependencies surfaced one at a time on subsequent runs, each at the
+`New-Object System.Reflection.MetadataLoadContext(...)` constructor call rather than `Add-Type`
+itself: `System.Runtime.CompilerServices.Unsafe, Version=6.0.0.0` and `System.Numerics.Vectors,
+Version=4.1.3.0` -- both resolved the same way (same `lib\netstandard2.0\` extraction, same
+directory). Checked the real dependency-group metadata for
+`System.Reflection.MetadataLoadContext` 10.0.9 via the NuGet API afterward: its `netstandard2.0`/
+`.NETFramework4.6.2` dependency group needs `System.Memory` (which is what pulls in
+`System.Runtime.CompilerServices.Unsafe`/`System.Numerics.Vectors` transitively), but its `net8.0`/
+`net9.0` groups don't -- so running this same package under PowerShell 7 (backed by the .NET 8
+runtime) and pulling the `lib\net8.0\` build instead would only need
+`System.Reflection.Metadata`+`System.Collections.Immutable` as siblings, not five total. Not
+pursued since the `netstandard2.0` build was already confirmed working end-to-end.
+
+## Confirmed: MetadataLoadContext on Desktop fully recovers Revit 2025's manifest (2026-07-08)
+
+A real run on the same Windows PowerShell 5.1 machine, using `-MetadataLoadContextAssembly` (all
+five dependency `.dll`s alongside it) and no `-NetFrameworkReferenceAssembliesDir`, succeeded
+end-to-end: `17 / 3190 scanned assemblies matched 'Autodesk.Revit.DB'; 2687 types collected.`
+Diffing directly against the real 2024 baseline manifest:
+
+| | 2024 | 2025 (MetadataLoadContext) |
+|---|---|---|
+| matched assemblies | 15 | 17 |
+| total types | 2607 | 2687 |
+| total members | 20061 | 20639 |
+| `RevitAPI` types specifically | 2364 | 2406 |
+
+`RevitAPI` itself -- the assembly that was losing 99.6% of its types to the `ReflectionOnlyLoadFrom`
+wall a few runs ago -- is now fully populated, with slightly *more* types than 2024 (consistent
+with real API growth between versions, not a partial recovery). Per-assembly counts for
+`RevitAPIExtData`/`RevitAPIIFC`/`RevitAPIMacros`/`RevitAPISteel`/`DBManagedServices`/
+`Autodesk.CivilAlignments.DBApplication`/`Autodesk.StructuralRibbon.Application`/`RevitNET` all
+match 2024 almost exactly (off by at most 1, consistent with minor real API changes, not data
+loss). `Autodesk.Revit.CloudRendering.SPD.Exporter` roughly doubled (33 -> 66), plausibly real API
+growth in that add-in rather than a residual gap -- not independently confirmed either way.
+
+Only two assemblies that matched in 2024 are still missing: `CollaborateCommon` (confirmed
+genuinely absent from the 2025 install entirely, not a resolution failure -- see the earlier
+"silently vanished" note) and `RSCloudClient` (still needs `System.Runtime, Version=6.0.0.0`
+specifically -- a .NET 6 runtime, not installed alongside the .NET 8 one; low priority, since it's
+cloud-collaboration plumbing rather than `Autodesk.Revit.DB` schema surface). A new match,
+`Autodesk.Revit.CloudWorksharing.DocumentManagement` (10 types), is evidently `RSCloudClient`'s
+real 2025 replacement.
+
+Two further findings from this same round of automated PR review, both fixed:
+1. `$mlcResolveHandler`'s `Split-Path -Parent $MlcAssemblyPath` returns `""` (not `$null`) for a
+   bare filename with no directory component, and `Join-Path` errors on an empty `-Path` --
+   defeating the handler before it ever reaches the sibling-dll lookup, for the simplest, most
+   likely-to-be-typed form of `-MetadataLoadContextAssembly`. Fixed by defaulting to `"."`.
+2. `$runtimeDlls` (from `RuntimeEnvironment.GetRuntimeDirectory()`) was included in the CoreLib
+   family's candidate pool whenever `$coreAssemblyName` wasn't `"mscorlib"`, regardless of which
+   *host* was actually running -- but on Windows PowerShell 5.1 opted into MetadataLoadContext for
+   the CoreLib case, that directory is the .NET *Framework* CLR, not a .NET Core shared framework.
+   Mixing those in could silently mask an incomplete `-DotNetSharedFrameworkRoot` install (a
+   reference resolving to a same-named Framework file instead of surfacing as unresolved) rather
+   than failing loudly. Fixed by only including `$runtimeDlls` there when
+   `$PSVersionTable.PSEdition -eq 'Core'` is actually true.
