@@ -179,6 +179,21 @@ def normalize_type_name(raw: Optional[str]) -> str:
     # multi-arg generic (confirmed on Element.ChangeTypeId's IDictionary<ElementId,ElementId>
     # return type) doesn't falsely report SIGNATURE_MISMATCH purely over comma-spacing.
     s = _COMMA_SPACE_RE.sub(",", s)
+    # "void" is not a real type either side ever has to look up -- but the two sides spell
+    # "no return value" differently. classify.classify_member only requires a truthy
+    # member.return_type to build an EdgeCandidate at all, so a void method whose *name*
+    # still matches a relationship keyword (e.g. SetMaterialId, SetDefaultFamilyTypeId) is
+    # still emitted, with the docs-parsed literal C# return type "void" preserved verbatim
+    # (classify.py's own PRIMITIVE_TYPES set already treats "void" as a real, expected
+    # primitive-type string, not a missing value). reflect_revit_api.ps1, on the reflection
+    # side, maps ReturnType.FullName == "System.Void" to a manifest return_type of null
+    # (Get-ReturnTypeString) -- so without this, "void" normalizes to the literal string
+    # "void" while null normalizes to "" via the `if not raw: return ""` guard above, and a
+    # real, correctly-matching void method falsely reports SIGNATURE_MISMATCH. Canonicalize
+    # every void spelling (docs' "void", reflection's "System.Void" -- reduced to "Void" by
+    # the namespace-segment step above -- and the already-"" no-value case) to the same "".
+    if s.lower() == "void":
+        return ""
     return s
 
 

@@ -37,7 +37,27 @@
           ]
         },
         {"name": "Id", "kind": "property", "declaring_type": "Autodesk.Revit.DB.Element", "return_type": "Autodesk.Revit.DB.ElementId", "parameters": []},
-        {"name": "WorksetId", "kind": "property", "declaring_type": "Autodesk.Revit.DB.Element", "return_type": "Autodesk.Revit.DB.WorksetId", "parameters": []}
+        {"name": "WorksetId", "kind": "property", "declaring_type": "Autodesk.Revit.DB.Element", "return_type": "Autodesk.Revit.DB.WorksetId", "parameters": []},
+        {
+          "name": "SetWorksetId",
+          "kind": "method",
+          "declaring_type": "Autodesk.Revit.DB.Element",
+          "return_type": null,
+          "parameters": [
+            {"name": "worksetId", "type": "Autodesk.Revit.DB.WorksetId"}
+          ],
+          "is_static": false
+        },
+        {
+          "name": "TryGetModelCurves",
+          "kind": "method",
+          "declaring_type": "Autodesk.Revit.DB.Element",
+          "return_type": "System.Boolean",
+          "parameters": [
+            {"name": "curves", "type": "out Autodesk.Revit.DB.ModelCurveArray"}
+          ],
+          "is_static": false
+        }
       ],
       "enum_members": []
     },

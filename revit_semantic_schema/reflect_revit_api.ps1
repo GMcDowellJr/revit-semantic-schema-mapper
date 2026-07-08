@@ -153,9 +153,28 @@ function Get-ReturnTypeString($ReturnType) {
     return $ReturnType.ToString()
 }
 
+function Get-ParameterTypeString([System.Reflection.ParameterInfo] $Parameter) {
+    $type = $Parameter.ParameterType
+    if (-not $type.IsByRef) { return $type.ToString() }
+    # A by-ref parameter's own ToString() gives the bare CLR form (e.g.
+    # "Autodesk.Revit.DB.ModelCurveArray&"), which doesn't match how the docs parser records
+    # an out/ref parameter: parse.py's _parse_member_signature splits "out ModelCurveArray
+    # curveArray" into type="out ModelCurveArray", name="curveArray" -- i.e. it keeps the C#
+    # "out"/"ref" keyword as a *prefix on the type string*, not a trailing "&". Confirmed on a
+    # real Revit 2024 run that this mismatch made every real out/ref overload falsely report
+    # SIGNATURE_MISMATCH. GetElementType() strips the by-ref marker to the real underlying
+    # type; ParameterInfo.IsOut is metadata-only (readable under reflection-only loading) and
+    # distinguishes "out" (IsOut true) from a plain "ref" (IsOut false) the same way the C#
+    # compiler's own [Out] parameter attribute does -- Revit's API doesn't use C# 7's
+    # readonly "in" parameters, so out/ref is the whole space to cover here.
+    $keyword = if ($Parameter.IsOut) { "out" } else { "ref" }
+    $elementType = $type.GetElementType()
+    return "$keyword $($elementType.ToString())"
+}
+
 function Convert-ParametersToManifest($Parameters) {
     return @($Parameters | ForEach-Object {
-        [ordered]@{ name = $_.Name; type = $_.ParameterType.ToString() }
+        [ordered]@{ name = $_.Name; type = Get-ParameterTypeString $_ }
     })
 }
 
@@ -174,22 +193,37 @@ function Convert-MembersToManifest([Type] $Type) {
     $members = New-Object System.Collections.Generic.List[object]
 
     foreach ($prop in $Type.GetProperties($flags)) {
-        $accessor = $prop.GetGetMethod($true)
-        if ($null -eq $accessor) { $accessor = $prop.GetSetMethod($true) }
-        [void]$members.Add([ordered]@{
-            name           = $prop.Name
-            kind           = "property"
-            declaring_type = $prop.DeclaringType.FullName
-            return_type    = Get-ReturnTypeString $prop.PropertyType
-            # @(...) here is load-bearing, not defensive style: PowerShell collapses a
-            # function's 0- or 1-item return value to $null/a bare scalar when captured
-            # across the call boundary (confirmed empirically -- a real 0- or 1-parameter
-            # member serialized as "parameters": null / a bare object instead of an array
-            # before this was added; see crawl_notes.md). Every call site below that
-            # captures a collection-returning helper's result needs the same wrap.
-            parameters     = @(Convert-ParametersToManifest $prop.GetIndexParameters())
-            is_static      = if ($null -ne $accessor) { [bool]$accessor.IsStatic } else { $false }
-        })
+        # ReturnType/PropertyType/GetParameters() resolve their referenced types lazily --
+        # if a property's type (or an indexer parameter's type) lives in an assembly that's
+        # neither under -InstallDir nor loadable from the GAC, the resolve handler returns
+        # $null and accessing that metadata throws (TypeLoadException/FileNotFoundException/
+        # FileLoadException) instead of just returning an "unresolved" marker. Without this
+        # guard, one such property anywhere in a multi-thousand-type scan aborts the entire
+        # manifest instead of the single member -- confirmed as a real risk on the live
+        # Revit 2024 run. Skip just this member (like an assembly that fails to load
+        # entirely is recorded as unmatched rather than crashing the whole scan) and count
+        # it for the run's summary line rather than staying silent about it.
+        try {
+            $accessor = $prop.GetGetMethod($true)
+            if ($null -eq $accessor) { $accessor = $prop.GetSetMethod($true) }
+            [void]$members.Add([ordered]@{
+                name           = $prop.Name
+                kind           = "property"
+                declaring_type = $prop.DeclaringType.FullName
+                return_type    = Get-ReturnTypeString $prop.PropertyType
+                # @(...) here is load-bearing, not defensive style: PowerShell collapses a
+                # function's 0- or 1-item return value to $null/a bare scalar when captured
+                # across the call boundary (confirmed empirically -- a real 0- or 1-parameter
+                # member serialized as "parameters": null / a bare object instead of an array
+                # before this was added; see crawl_notes.md). Every call site below that
+                # captures a collection-returning helper's result needs the same wrap.
+                parameters     = @(Convert-ParametersToManifest $prop.GetIndexParameters())
+                is_static      = if ($null -ne $accessor) { [bool]$accessor.IsStatic } else { $false }
+            })
+        } catch {
+            $script:unresolvedMemberSkips++
+            Write-Verbose "Skipping $($Type.FullName).$($prop.Name) (property): signature could not be resolved -- $($_.Exception.Message)"
+        }
     }
 
     foreach ($method in $Type.GetMethods($flags)) {
@@ -197,14 +231,20 @@ function Convert-MembersToManifest([Type] $Type) {
         # operator overloads -- these aren't distinct "members" a docs page would list
         # separately from the property/event/operator itself.
         if ($method.IsSpecialName) { continue }
-        [void]$members.Add([ordered]@{
-            name           = $method.Name
-            kind           = "method"
-            declaring_type = $method.DeclaringType.FullName
-            return_type    = Get-ReturnTypeString $method.ReturnType
-            parameters     = @(Convert-ParametersToManifest $method.GetParameters())
-            is_static      = [bool]$method.IsStatic
-        })
+        # Same unresolved-signature guard as the property loop above.
+        try {
+            [void]$members.Add([ordered]@{
+                name           = $method.Name
+                kind           = "method"
+                declaring_type = $method.DeclaringType.FullName
+                return_type    = Get-ReturnTypeString $method.ReturnType
+                parameters     = @(Convert-ParametersToManifest $method.GetParameters())
+                is_static      = [bool]$method.IsStatic
+            })
+        } catch {
+            $script:unresolvedMemberSkips++
+            Write-Verbose "Skipping $($Type.FullName).$($method.Name) (method): signature could not be resolved -- $($_.Exception.Message)"
+        }
     }
 
     return @($members.ToArray())
@@ -409,6 +449,12 @@ function Invoke-CoreReflection {
 
 # -- main -----------------------------------------------------------------------
 
+# Incremented in Convert-MembersToManifest's per-member catch blocks -- a script-scoped
+# counter rather than a return value, since that function is called once per matched type
+# deep inside the scan loop and threading a count back through every call site would be
+# more invasive than this one shared counter.
+$script:unresolvedMemberSkips = 0
+
 $dllPaths = @(Get-DllPaths $InstallDir)
 
 $result = if ($isCore) {
@@ -433,6 +479,9 @@ $manifest = [ordered]@{
 # crawl_notes.md.
 $matchedCount = @($result.AssembliesScanned | Where-Object { $_.matched }).Count
 Write-Verbose "$matchedCount / $($result.AssembliesScanned.Count) scanned assemblies matched '$NamespacePrefix'; $($result.Types.Count) types collected."
+if ($script:unresolvedMemberSkips -gt 0) {
+    Write-Warning "$($script:unresolvedMemberSkips) member(s) skipped across the scan: their return/parameter types could not be resolved (neither under -InstallDir nor loadable from the GAC). Run with -Verbose to see which ones."
+}
 
 $json = $manifest | ConvertTo-Json -Depth 12
 # Set-Content/Out-File -Encoding utf8 always prepends a BOM on Windows PowerShell 5.1

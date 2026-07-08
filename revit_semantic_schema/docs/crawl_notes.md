@@ -809,6 +809,90 @@ pipeline, just an acknowledged limitation of the function in isolation.
 
 All 156 tests pass after these fixture corrections and the normalization fix.
 
+## Three more real disagreements, found by code review of the real manifest's shape (2026-07-08)
+
+Not new script bugs found by a fresh run -- these came from a careful review of what the real
+Revit 2024 manifest and this project's existing docs-side parser (`classify.py`/`parse.py`)
+each actually produce for three specific shapes, and confirmed directly against real reflection
+data (this sandbox's own BCL stand-ins) before being fixed. All three are the same category of
+problem: **Stage A and the docs-side parser describe the exact same real member differently in
+a way `cross_validate_dll` didn't already normalize away**, producing a false
+`SIGNATURE_MISMATCH` for a member that actually matches.
+
+### 1. Void return canonicalization
+
+`classify.classify_member` only requires a *truthy* `member.return_type` to build an
+`EdgeCandidate` at all (`if not member.return_type: return None`) -- so a genuinely `void`
+method whose *name* still matches a relationship keyword (e.g. `SetMaterialId`,
+`SetDefaultFamilyTypeId`) is still emitted, with the docs-parsed literal C# return type
+`"void"` preserved verbatim (`classify.py`'s own `PRIMITIVE_TYPES` set already treats `"void"`
+as a real, expected string, not a missing value). `reflect_revit_api.ps1`, on the reflection
+side, maps `ReturnType.FullName == "System.Void"` to a manifest `return_type` of `null`
+(`Get-ReturnTypeString`) -- matching how a docs page never lists a return type for a void
+method. Before this fix, `normalize_type_name("void")` gave `"void"` while
+`normalize_type_name(None)` gave `""` -- different strings, so a real, correctly-matching void
+method falsely reported `SIGNATURE_MISMATCH`. Fixed in `normalize_type_name` itself (Stage B,
+the single point both sides already have to go through): after every other normalization step,
+canonicalize any remaining `"void"` (case-insensitive -- also catches `"System.Void"`, which
+the namespace-segment-reduction step above already reduces to `"Void"`) to `""`, matching the
+already-established empty/no-return-type convention. Covered by two new
+`test_normalize_type_name` cases and
+`test_edge_signature_confirmed_for_void_method_matched_by_keyword` (a real fixture member,
+`Element.SetWorksetId`, added specifically to exercise this against `cross_validate_dll`, not
+just the normalizer in isolation).
+
+### 2. Guarding unresolved method signatures during reflection
+
+`Convert-MembersToManifest` had no per-member `try`/`catch`. `PropertyType`/`ReturnType`/
+`GetParameters()` all resolve their referenced types lazily -- if a member's return or
+parameter type lives in an assembly that's neither under `-InstallDir` nor loadable from the
+GAC, the `ReflectionOnlyAssemblyResolve` handler (or `MetadataLoadContext`'s resolver) returns
+nothing for it, and accessing that metadata throws instead of quietly giving back an
+"unresolved" marker. Without a guard, **one such member anywhere in a multi-thousand-type scan
+aborted the entire manifest** rather than just that member -- confirmed as a real, reproducible
+failure mode, not a hypothetical: a deliberately-incomplete resolver (a real
+`Microsoft.PowerShell.Commands.Utility.dll` scan with `System.Management.Automation.dll`
+excluded from the resolver, so its own cross-referenced return/parameter types can't resolve)
+crashed after 149/183 types with exactly the reported shape of error
+(`"Could not find assembly '...'. Either explicitly load this assembly ... or use a
+MetadataAssemblyResolver..."`). Fixed by wrapping each property's and each method's member
+construction in its own `try`/`catch`: on failure, skip just that one member (the same
+"exists but unresolved -> treated as absent, not a crash" principle already applied to
+assemblies that fail to load entirely), and increment a script-scoped counter
+(`$script:unresolvedMemberSkips`) surfaced as a `Write-Warning` in the final summary (with
+per-member detail via `-Verbose`) so it's an explicit, checkable fact rather than a silent
+drop. Re-running the exact same deliberately-incomplete-resolver scenario with the guard in
+place: all 183 types processed, 827 members converted successfully, 303 genuinely-unresolvable
+members skipped and counted -- no crash.
+
+### 3. Canonicalizing by-ref (`out`/`ref`) parameter types
+
+`Convert-ParametersToManifest` used `$_.ParameterType.ToString()` unconditionally. For a real
+by-ref parameter this gives the bare CLR form (confirmed against a real BCL method,
+`int.TryParse`'s second parameter: `"System.Int32&"`, trailing ampersand) -- but
+`parse.py`'s `_parse_member_signature` splits a docs syntax block's `"out ModelCurveArray
+curveArray"` into `type="out ModelCurveArray"`, `name="curveArray"` (`chunk.rsplit(" ", 1)`
+keeps the C# `out`/`ref` keyword as part of the *type* string, not a trailing marker). These
+never normalized to the same shape (`"Int32&"` vs. `"out Int32"`), so every real `out`/`ref`
+overload would have falsely reported `SIGNATURE_MISMATCH` even when it genuinely exists. Fixed
+in `reflect_revit_api.ps1`: a new `Get-ParameterTypeString` helper checks
+`ParameterType.IsByRef`; if true, uses `ParameterType.GetElementType()` (the real underlying
+type, stripped of the by-ref marker -- confirmed directly: `"System.Int32&"` ->
+`GetElementType().ToString()` -> `"System.Int32"`) and `ParameterInfo.IsOut` (metadata-only,
+readable under reflection-only loading, and the same signal the C# compiler itself uses to
+distinguish `out` from a plain `ref` -- Revit's API predates C# 7's `in` parameters, so
+`out`/`ref` is the whole space to cover) to emit `"out <FullTypeName>"` / `"ref <FullTypeName>"`
+instead. No new Stage B normalization logic was needed -- the existing namespace-segment
+reduction already handles `"out Autodesk.Revit.DB.ModelCurveArray"` -> `"out ModelCurveArray"`
+correctly, since it doesn't care what precedes the dotted segment. Confirmed end-to-end against
+the real `int.TryParse` case (`Get-ParameterTypeString` -> `"out System.Int32"` ->
+`normalize_type_name` -> `"out Int32"`, matching a hypothetical docs-form `"out Int32"`
+exactly) and covered by two new `test_normalize_type_name` cases plus
+`test_edge_signature_confirmed_for_out_parameter` (a real fixture member,
+`Element.TryGetModelCurves`, added specifically for this).
+
+All 162 tests pass after these three fixes.
+
 ## Why member pages are discovered from class pages, not just the index/TOC
 
 Sandcastle-style sites list a type's members with links to their own property/method pages

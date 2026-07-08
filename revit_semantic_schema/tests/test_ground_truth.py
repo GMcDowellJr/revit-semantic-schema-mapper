@@ -118,6 +118,21 @@ def _edge(
         # comma-space convention) -- must normalize identically to the reflection form above,
         # not be treated as a different type purely over whitespace.
         ("IDictionary(ElementId, ElementId)", "IDictionary<ElementId,ElementId>"),
+        # void canonicalization: classify.classify_member preserves the docs-parsed literal
+        # C# return type "void" for a void method whose name still matches a relationship
+        # keyword (e.g. SetMaterialId/SetDefaultFamilyTypeId), while
+        # reflect_revit_api.ps1 maps a real void method's reflected return type to manifest
+        # return_type: null -- both must normalize to the same "" or a real void method
+        # falsely reports SIGNATURE_MISMATCH.
+        ("void", ""),
+        ("System.Void", ""),
+        # A by-ref (out/ref) parameter: reflect_revit_api.ps1 emits "out <FullTypeName>" /
+        # "ref <FullTypeName>" (ParameterInfo.IsOut + GetElementType()), matching how
+        # parse.py's _parse_member_signature keeps the C# out/ref keyword as part of the
+        # docs-side parameter type string (e.g. "out ModelCurveArray") -- this is a plain
+        # pass-through of the existing namespace-reduction logic, not new special-casing.
+        ("out Autodesk.Revit.DB.ModelCurveArray", "out ModelCurveArray"),
+        ("out ModelCurveArray", "out ModelCurveArray"),
     ],
 )
 def test_normalize_type_name(raw, expected):
@@ -371,6 +386,55 @@ def test_edge_overload_mismatch_when_no_overload_matches(manifest):
     result = report.edge_results[0]
     assert result.status is EdgeVerificationStatus.SIGNATURE_MISMATCH
     assert "2 overload(s)" in result.note
+
+
+# -- void return / by-ref parameter canonicalization ----------------------------
+
+
+def test_edge_signature_confirmed_for_void_method_matched_by_keyword(manifest):
+    """A void method whose *name* still matches a relationship keyword (e.g.
+    SetMaterialId/SetDefaultFamilyTypeId) is still emitted as an EdgeCandidate by
+    classify.classify_member, with the docs-parsed literal C# return type "void"
+    preserved verbatim (classify.py's PRIMITIVE_TYPES set treats "void" as a real
+    string, not a missing value) -- while reflect_revit_api.ps1 maps a real void
+    method's reflected return type to manifest return_type: null. Confirmed on a
+    real Revit 2024 run that this mismatch falsely reported SIGNATURE_MISMATCH.
+    """
+    node = _node("Autodesk.Revit.DB.Element")
+    edge = _edge(
+        "Autodesk.Revit.DB.Element",
+        "SetWorksetId",
+        "void",
+        parameter_types=["Autodesk.Revit.DB.WorksetId"],
+        member_kind=MemberKind.METHOD,
+    )
+    report = cross_validate_dll([node], [edge], manifest)
+
+    assert edge.dll_signature_verified is True
+    assert report.edge_results[0].status is EdgeVerificationStatus.SIGNATURE_CONFIRMED
+
+
+def test_edge_signature_confirmed_for_out_parameter(manifest):
+    """docs form "out ModelCurveArray" (parse.py keeps the C# out/ref keyword as
+    part of the parameter type string) vs. the manifest's real by-ref reflection
+    form must normalize to the same canonical shape. reflect_revit_api.ps1 emits
+    "out <FullTypeName>" (via ParameterInfo.IsOut + ParameterType.GetElementType())
+    rather than the bare CLR "<FullTypeName>&" ToString() form for this reason --
+    confirmed on a real Revit 2024 run that the bare "&" form falsely reported
+    SIGNATURE_MISMATCH for every out/ref overload.
+    """
+    node = _node("Autodesk.Revit.DB.Element")
+    edge = _edge(
+        "Autodesk.Revit.DB.Element",
+        "TryGetModelCurves",
+        "System.Boolean",
+        parameter_types=["out ModelCurveArray"],
+        member_kind=MemberKind.METHOD,
+    )
+    report = cross_validate_dll([node], [edge], manifest)
+
+    assert edge.dll_signature_verified is True
+    assert report.edge_results[0].status is EdgeVerificationStatus.SIGNATURE_CONFIRMED
 
 
 def test_dll_semantic_verified_is_never_set(manifest):
