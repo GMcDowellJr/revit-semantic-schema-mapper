@@ -96,41 +96,19 @@ Both UNKNOWN_* edge types mean 'definitely a reference, but no keyword/docs evid
   - `Autodesk.Revit.DB.Element`: 22 (0%)
   - ...and 786 more target type(s)
 
-## 11. Room / Room Number / Room Name findings
-## Room / Room Number / Room Name investigation
-
-Source: https://www.revitapidocs.com/2025/6044a7f3-bf19-498b-2724-c1458429423c.htm
-Members seen on Room page: ['Room']
-- `Name` not found directly on Room; likely inherited from `Element.Name` (not re-declared).
-Source: https://www.revitapidocs.com/2025/37944e7a-f298-9c25-20bb-9c0c1da46f41.htm
-Members seen on Room page: ['Room']
-- `Name` not found directly on Room; likely inherited from `Element.Name` (not re-declared).
-Source: https://www.revitapidocs.com/2025/5c1ed572-e744-3ab6-9b10-bb258a66f23a.htm
-Members seen on Room page: ['Room']
-- `Name` not found directly on Room; likely inherited from `Element.Name` (not re-declared).
-Source: https://www.revitapidocs.com/2025/75c9d2c7-a402-ea8b-9e7c-f8bc3510bbd5.htm
-Members seen on Room page: ['Area', 'AssemblyInstanceId', 'BaseOffset', 'BoundingBox', 'Category', 'ClosedShell', 'CreatedPhaseId', 'DemolishedPhaseId', 'DesignOption', 'Document', 'Geometry', 'GroupId', 'Id', 'IsModifiable', 'IsTransient', 'IsValidObject', 'Level', 'LevelId', 'LimitOffset', 'Location', 'Name', 'Number', 'OwnerViewId', 'ParameterBuiltInParameter', 'ParameterDefinition', 'ParameterGuid', 'Parameters', 'ParametersMap', 'Perimeter', 'Pinned', 'SpatialElementType', 'UnboundedHeight', 'UniqueId', 'UpperLimit', 'VersionGuid', 'ViewSpecific', 'Volume', 'WorksetId']
-- `Number` found as a distinct member on Room (supports keeping Number separate from Name).
-Source: https://www.revitapidocs.com/2025/d6156ddf-27d5-5311-0887-5d8a326e9e99.htm
-Members seen on Room page: ['Room']
-- `Name` not found directly on Room; likely inherited from `Element.Name` (not re-declared).
-Source: https://www.revitapidocs.com/2025/e6b482cd-2466-0bc0-77ca-c40d2adaa3c7.htm
-Members seen on Room page: ['Room']
-- `Name` not found directly on Room; likely inherited from `Element.Name` (not re-declared).
-
-## 12. Limitations
+## 11. Limitations
 - Edge classification is a static, docs-only heuristic; no candidate edge has been validated against a live Revit document (see confidence label needs_runtime_validation).
 - Member pages reachable only via a type's members table are discovered incrementally during parsing; a partial/interrupted crawl can under-count members for the last few types processed.
 - Name-keyword-to-edge-type mapping (classify.py) is heuristic and English-name-based; it will misclassify or under-classify members whose names don't match the documented keyword list.
 - 96 page(s) failed to fetch or parse: ['https://www.revitapidocs.com/2025/93d26466-11de-842c-f089-6b15b839e6af.htm', 'https://www.revitapidocs.com/2025/8f200255-a515-0c02-656b-b241e0011228.htm', 'https://www.revitapidocs.com/2025/8d74cf02-9271-3c6c-00f5-bc7b48d52c56.htm', 'https://www.revitapidocs.com/2025/77aa9939-8f41-1725-80dc-864ca1f7a49c.htm', 'https://www.revitapidocs.com/2025/2f482b62-410e-2db9-b6b9-c64abedcbc4c.htm', 'https://www.revitapidocs.com/2025/7ace570d-870f-be20-e493-e80ffa27f454.htm', 'https://www.revitapidocs.com/2025/26a118b5-c583-a9b2-c935-c11b270e140e.htm', 'https://www.revitapidocs.com/2025/e46e0d8f-5bcb-46bf-5def-03af68327b9e.htm', 'https://www.revitapidocs.com/2025/ace39293-a976-d22b-4798-42bb8e82b307.htm', 'https://www.revitapidocs.com/2025/941de0b6-a0f9-eb5a-5f25-9aa4d9da699a.htm'] ...
 
-## 13. Recommended next steps
+## 12. Recommended next steps
 - Run against a live revitapidocs.com session and diff parser_notes across all pages to find and fix selector assumptions that didn't hold (see docs/crawl_notes.md).
 - Expand the name-keyword edge taxonomy with additional evidence gathered from real docs text (docs_semantic_hint) rather than name matching alone.
 - Cross-check high-confidence candidate edges (direct_return_type, elementid_with_strong_name) against a small number of real Revit documents to promote them out of 'candidate' status.
 - Extend to Autodesk.Revit.DB.Architecture and Autodesk.Revit.DB.Structure for Room/Space and structural element coverage once the core DB namespace is validated.
 
-## 14. Knowledge graph materialization
+## 13. Knowledge graph materialization
 
 `graph.json`/`graph_core.json` resolve each edge's `candidate_target_type` string against the crawled node set (see graph.py) instead of leaving it as a loose type name.
 - 2465 total nodes (5 external -- referenced by an edge but never crawled/classified)

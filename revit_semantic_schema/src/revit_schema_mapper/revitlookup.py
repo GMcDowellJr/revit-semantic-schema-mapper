@@ -483,7 +483,16 @@ def _main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--source-dir", required=True, help="Local checkout of RevitLookup, already at --tag")
     parser.add_argument("--tag", required=True, help="RevitLookup git tag this checkout is at (e.g. 2024.0.13) -- recorded verbatim, never inferred")
-    parser.add_argument("--out", required=True, help="Path to write revitlookup_reference.json to")
+    parser.add_argument(
+        "--out",
+        required=True,
+        help=(
+            "Path to write the reference JSON to -- name it "
+            "revitlookup_reference_<version>.json (e.g. revitlookup_reference_2024.json), matching "
+            "ground_truth_manifest_<version>.json's own convention, since both are meant to be "
+            "pulled out of outputs/revit_<version>/ and compared/shared standalone across versions"
+        ),
+    )
     args = parser.parse_args()
 
     source_dir = Path(args.source_dir)

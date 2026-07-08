@@ -4,16 +4,19 @@ __pycache__/
 .pytest_cache/
 build/
 dist/
-revit_semantic_schema/outputs/*/cache/
-revit_semantic_schema/outputs/*/api_pages.json
-revit_semantic_schema/outputs/*/raw_index.json
-revit_semantic_schema/outputs/*/candidate_edges.json
-revit_semantic_schema/outputs/*/property_relationship_candidates.json
-revit_semantic_schema/outputs/*/method_relationship_candidates.json
-revit_semantic_schema/outputs/*/node_type_candidates.json
-revit_semantic_schema/outputs/*/enum_catalogs.json
-revit_semantic_schema/outputs/*/graph.json
-revit_semantic_schema/outputs/*/graph_core.json
 *.tar.gz
-revit_semantic_schema/outputs/*/graph.html
-revit_semantic_schema/outputs/*/semantic_relationship_map.html
+
+# Everything under outputs/ is a regenerable pipeline artifact by default --
+# allowlisted below (not blocklisted by filename), so a future pipeline
+# stage's new output file, or a brand new outputs/revit_<version>/ folder
+# from the next Revit release, is excluded automatically instead of needing
+# a new ignore rule added here every time one shows up.
+revit_semantic_schema/outputs/*
+!revit_semantic_schema/outputs/*/
+revit_semantic_schema/outputs/*/*
+!revit_semantic_schema/outputs/*/summary.md
+!revit_semantic_schema/outputs/*/validation_summary.md
+# Small, already-curated illustrative example outputs from earlier work
+# (not tied to a real per-version crawl/reflection run) -- kept in full.
+!revit_semantic_schema/outputs/_fixture_smoke_test/**
+!revit_semantic_schema/outputs/revit_2024_targeted/**
