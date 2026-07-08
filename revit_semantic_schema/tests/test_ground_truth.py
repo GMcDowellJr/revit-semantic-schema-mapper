@@ -1,19 +1,25 @@
 """Tests for ground_truth.py (docs/dll_reflection_v0.md, Stage B).
 
-``fixtures/ground_truth_manifest_2024.json`` is a **synthetic** manifest,
-hand-authored to match Stage A's documented output schema -- it was never
-produced by reflecting over a real compiled RevitAPI.dll, because no such
-reflection has ever run in this project. Its values are chosen to be
-*plausible*, several directly informed by real findings recorded in
-docs/crawl_notes.md (e.g. Material's real Cut/SurfaceBackground/Foreground
-PatternId properties, Room.Number's declaring type, the Element.ChangeTypeId
-overload pair) -- but those findings themselves came from a live crawl of
-revitapidocs.com's HTML, not from DLL reflection. Docs and the compiled API
-disagreeing is the entire reason Stage A exists, so nothing in this fixture
-should be read as a confirmed fact about the real Revit API: it only
-verifies that cross_validate_dll's diffing logic is correct against *some*
-schema-conformant manifest, independent of whether that manifest's content
-ever matches a real one.
+``fixtures/ground_truth_manifest_2024.json`` was originally a **synthetic** manifest,
+hand-authored to match Stage A's documented output schema before any real reflection had
+ever run in this project. `reflect_revit_api.ps1` has since run for real against an actual
+Revit 2024 install (see docs/crawl_notes.md), and a few of this fixture's originally-guessed
+values turned out to disagree with the real compiled API -- corrected here to the confirmed
+real values rather than left as plausible-but-wrong:
+
+- ``Material``'s real ``Cut``/``Surface``/``Background``/``ForegroundPatternId`` properties
+  and ``Room.Number``'s real declaring type (``SpatialElement``) were both originally guessed
+  correctly (confirmed unchanged).
+- ``Element.ChangeTypeId``'s static overload really returns
+  ``IDictionary<ElementId,ElementId>`` (an old-to-new id map), not the originally-guessed
+  ``ICollection<ElementId>``.
+- ``ViewSheet.GetAllPlacedViews`` really returns ``ISet<ElementId>``, not the
+  originally-guessed ``ICollection<ElementId>``.
+
+Everything else in this fixture remains unconfirmed against the real API and should still be
+read as plausible-but-not-verified, not fact -- this fixture verifies cross_validate_dll's
+diffing logic against a schema-conformant manifest, not the real Revit API's actual shape,
+except for the specific fields called out above.
 """
 
 from pathlib import Path
@@ -99,6 +105,19 @@ def _edge(
             "Version=1.0.0.0, Culture=neutral, PublicKeyToken=null]]",
             "ICollection<ElementId>",
         ),
+        # Real multi-type-argument generic (Element.ChangeTypeId's static overload really
+        # returns this -- confirmed against a real Revit 2024 manifest, see the module
+        # docstring), in the flat Type.ToString() form reflect_revit_api.ps1 actually emits.
+        (
+            "System.Collections.Generic.IDictionary`2[Autodesk.Revit.DB.ElementId,Autodesk.Revit.DB.ElementId]",
+            "IDictionary<ElementId,ElementId>",
+        ),
+        # The same real type, in the comma-space docs-prose form Sandcastle commonly uses
+        # between generic arguments (crawl_notes.md's confirmed real title text,
+        # "ChangeTypeId Method (Document, ICollection(ElementId), ElementId)", uses the same
+        # comma-space convention) -- must normalize identically to the reflection form above,
+        # not be treated as a different type purely over whitespace.
+        ("IDictionary(ElementId, ElementId)", "IDictionary<ElementId,ElementId>"),
     ],
 )
 def test_normalize_type_name(raw, expected):
@@ -253,15 +272,18 @@ def test_edge_member_not_found_when_source_type_itself_is_doc_only(manifest):
 
 
 def test_edge_signature_confirmed_with_generic_normalization(manifest):
-    """docs form ICollection(ElementId) vs. the manifest's real CLR
-    reflection form (assembly-qualified generic) must normalize to the same
-    canonical shape rather than falsely reporting SIGNATURE_MISMATCH.
+    """docs form ISet(ElementId) vs. the manifest's real CLR reflection form
+    (Type.ToString(), e.g. "ISet`1[...]") must normalize to the same
+    canonical shape rather than falsely reporting SIGNATURE_MISMATCH. (A
+    real Revit 2024 run confirmed GetAllPlacedViews actually returns
+    ISet<ElementId>, not the originally-guessed ICollection<ElementId> --
+    see the module docstring.)
     """
     node = _node("Autodesk.Revit.DB.ViewSheet")
     edge = _edge(
         "Autodesk.Revit.DB.ViewSheet",
         "GetAllPlacedViews",
-        "ICollection(ElementId)",
+        "ISet(ElementId)",
         member_kind=MemberKind.METHOD,
     )
     report = cross_validate_dll([node], [edge], manifest)
@@ -275,10 +297,14 @@ def test_edge_signature_confirmed_with_generic_normalization(manifest):
 #
 # Element.ChangeTypeId is a real overloaded method (docs/crawl_notes.md) with
 # two manifest entries sharing the same name: a single-ElementId instance
-# overload and a static Document/ICollection<ElementId>/ElementId overload.
-# The multi-arg static overload is listed *first* in the fixture JSON
-# deliberately, so these tests fail if the code ever goes back to using
-# whichever same-named member happens to come first in the manifest.
+# overload (returning ElementId) and a static
+# Document/ICollection<ElementId>/ElementId overload -- which a real Revit
+# 2024 run confirmed returns IDictionary<ElementId,ElementId> (an
+# old-to-new id map), not the originally-guessed ICollection<ElementId>; see
+# the module docstring. The multi-arg static overload is listed *first* in
+# the fixture JSON deliberately, so these tests fail if the code ever goes
+# back to using whichever same-named member happens to come first in the
+# manifest.
 
 
 def test_edge_matches_correct_overload_by_parameter_types(manifest):
@@ -301,13 +327,20 @@ def test_edge_matches_correct_overload_by_parameter_types(manifest):
 
 def test_edge_matches_other_overload_by_parameter_types(manifest):
     """Same member_name as the test above, but the *other* overload's shape
-    -- and normalizes a docs-form generic collection arg while doing it.
+    -- and normalizes both a docs-form generic collection arg (the
+    ICollection(ElementId) parameter) and, more importantly, a real
+    multi-type-argument generic *return* type
+    (IDictionary(ElementId, ElementId), confirmed real -- see the module
+    docstring) written with the comma-space docs prose commonly uses
+    between generic arguments, vs. the manifest's comma-only reflection
+    form -- these must normalize to the same shape rather than falsely
+    reporting SIGNATURE_MISMATCH purely over comma-spacing.
     """
     node = _node("Autodesk.Revit.DB.Element")
     edge = _edge(
         "Autodesk.Revit.DB.Element",
         "ChangeTypeId",
-        "ICollection(ElementId)",
+        "IDictionary(ElementId, ElementId)",
         parameter_types=["Autodesk.Revit.DB.Document", "ICollection(ElementId)", "Autodesk.Revit.DB.ElementId"],
         member_kind=MemberKind.METHOD,
     )

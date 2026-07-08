@@ -730,6 +730,85 @@ valid JSON, plus summary counts -- total types, total matched assemblies) to act
 check this design has been waiting for. A truncated chat-pasted excerpt can confirm individual
 facts like the above but can't stand in for that.
 
+### The complete real manifest, and the Step 4 check this whole design has been waiting for
+
+The user shared the complete file (18.9 MB, no BOM -- confirms the writer fix from the BOM
+section above works on the real host too). This is the first time this project has ever run
+Stage B against real Revit reflection data rather than the sandbox's own non-Revit stand-ins
+or the hand-authored fixture.
+
+**Scan-level facts, all confirmed for real:**
+
+- **3151 assemblies scanned** -- exactly matching `docs/dll_reflection_v0.md`'s estimate.
+- **15 assemblies matched** `Autodesk.Revit.DB` (not just `RevitAPI`): `DBManagedServices`,
+  `RevitAPI`, `RevitAPIExtData`, `RevitAPIIFC`, `RevitAPIMacros`, `RevitAPISteel`, `RevitNET`,
+  `RSCloudClient`, `Autodesk.CivilAlignments.DBApplication`, `CollaborateCommon`, three
+  `Autodesk.Revit.CloudRendering.SPD.*` assemblies, `Autodesk.ResultsBuilder.DBApplication`,
+  `Autodesk.StructuralRibbon.Application` -- concretely validating the design's core "don't
+  hard-code RevitAPI.dll/RevitAPIUI.dll, scan and check" decision. (`RevitAPIUI` itself does
+  *not* match, correctly -- its own types live under `Autodesk.Revit.UI`, a different
+  namespace, so this is the filter working as intended, not a miss.)
+- **2607 total types**: 1864 classes, 673 enums, 66 interfaces, 4 structs.
+- Loaded via `ground_truth.load_manifest()` in well under a second; **whole-file scan for
+  array-shape correctness found zero remaining collapsed-array/scalar artifacts** across all
+  2607 types' `inheritance_chain`/`implemented_interfaces`/`members`/`enum_members` and every
+  member's `parameters` -- the `@(...)`-wrapping fix (found on this sandbox's own non-Revit
+  scan) holds completely on the real thing, not just the spot-checked cases seen earlier.
+
+**Reproduced every specific real-API fact this task asked to confirm, per `docs/crawl_notes.md`
+itself:**
+
+- **`Room.Number`**: `Autodesk.Revit.DB.Architecture.Room`'s `inheritance_chain` is exactly
+  `["Autodesk.Revit.DB.SpatialElement", "Autodesk.Revit.DB.Element", "System.Object"]`, `Room`
+  itself declares zero members named `Number`, and `SpatialElement` declares `Number` (return
+  type `System.String`) directly -- confirms the earlier live-crawl finding exactly, including
+  resolving the "most likely `Autodesk.Revit.DB.SpatialElement`... but still an unconfirmed
+  guess" hedge from the 2027/2024 docs-crawl notes above: it's `Autodesk.Revit.DB.SpatialElement`
+  (top-level namespace), not `...Architecture.SpatialElement`.
+- **`Material`'s real Cut/Surface pattern-id properties**: `SurfacePatternId`/`CutPatternId`
+  confirmed absent; `CutBackgroundPatternId`, `CutForegroundPatternId`,
+  `SurfaceBackgroundPatternId`, `SurfaceForegroundPatternId` confirmed present -- exact match
+  with the live-crawl finding.
+- **`Element.ChangeTypeId`'s overload pair**: confirmed real -- a static
+  `(Document, ICollection<ElementId>, ElementId)` overload and an instance
+  `(ElementId) -> ElementId` overload both exist, matching `crawl_notes.md`'s already-confirmed
+  real Sandcastle title text for this exact method.
+
+**Two of the hand-authored test fixture's plausible-but-unverified guesses turned out to be
+wrong, now corrected** (`tests/fixtures/ground_truth_manifest_2024.json`,
+`tests/test_ground_truth.py` -- see that file's updated module docstring):
+
+1. `Element.ChangeTypeId`'s static overload's *return type* was guessed as
+   `ICollection<ElementId>`; the real type is `IDictionary<ElementId,ElementId>` (an
+   old-to-new id map -- makes sense semantically once you know the real shape: changing
+   several elements' types at once needs to report which new id replaced which old one, not
+   just a flat list of new ids).
+2. `ViewSheet.GetAllPlacedViews` was guessed to return `ICollection<ElementId>`; the real type
+   is `ISet<ElementId>`.
+
+**A real, previously-invisible normalization bug, found only because of fact #1 above**: the
+real `IDictionary<ElementId,ElementId>` return type is a genuine multi-type-argument generic --
+exactly the case `normalize_type_name`'s docstring had flagged as "no real Revit signature has
+ever been found that needs [it] fixed." Testing the real value against the *docs-form*
+rendering Sandcastle would plausibly use (`IDictionary(ElementId, ElementId)`, comma-**space**
+between arguments -- the same convention confirmed in `crawl_notes.md`'s own real
+`ChangeTypeId` Sandcastle title, `"...Method (Document, ICollection(ElementId), ElementId)"`)
+against the manifest's real comma-only reflection form
+(`IDictionary\`2[ElementId,ElementId]`) showed they did **not** normalize to the same
+canonical string -- purely because of the space after the comma, which nothing in
+`normalize_type_name` collapsed. Left unfixed, a real docs-derived edge for this exact method
+would have falsely reported `SIGNATURE_MISMATCH`. Fixed by collapsing `,\s+` to `,` as the
+final normalization step; confirmed against both the fixture and the real uploaded manifest
+directly (a hand-built `EdgeCandidate` with the comma-space docs-form return type now reports
+`SIGNATURE_CONFIRMED` against the real manifest's `Element.ChangeTypeId`). The narrower,
+still-unhandled gap `normalize_type_name`'s docstring already disclosed (a fully
+assembly-qualified multi-arg `Type.FullName`-style string, one bracket pair per argument)
+remains theoretical, not fixed -- confirmed `reflect_revit_api.ps1` never actually emits that
+shape (it always uses `Type.ToString()`), so it's not a live gap in this project's own
+pipeline, just an acknowledged limitation of the function in isolation.
+
+All 156 tests pass after these fixture corrections and the normalization fix.
+
 ## Why member pages are discovered from class pages, not just the index/TOC
 
 Sandcastle-style sites list a type's members with links to their own property/method pages

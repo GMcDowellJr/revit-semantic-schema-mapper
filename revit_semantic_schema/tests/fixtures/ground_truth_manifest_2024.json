@@ -19,7 +19,7 @@
           "name": "ChangeTypeId",
           "kind": "method",
           "declaring_type": "Autodesk.Revit.DB.Element",
-          "return_type": "System.Collections.Generic.ICollection`1[[Autodesk.Revit.DB.ElementId, RevitAPI, Version=1.0.0.0, Culture=neutral, PublicKeyToken=null]]",
+          "return_type": "System.Collections.Generic.IDictionary`2[Autodesk.Revit.DB.ElementId,Autodesk.Revit.DB.ElementId]",
           "is_static": true,
           "parameters": [
             {"name": "document", "type": "Autodesk.Revit.DB.Document"},
@@ -139,7 +139,7 @@
           "name": "GetAllPlacedViews",
           "kind": "method",
           "declaring_type": "Autodesk.Revit.DB.ViewSheet",
-          "return_type": "System.Collections.Generic.ICollection`1[[Autodesk.Revit.DB.ElementId, RevitAPI, Version=1.0.0.0, Culture=neutral, PublicKeyToken=null]]",
+          "return_type": "System.Collections.Generic.ISet`1[Autodesk.Revit.DB.ElementId]",
           "parameters": []
         }
       ],
