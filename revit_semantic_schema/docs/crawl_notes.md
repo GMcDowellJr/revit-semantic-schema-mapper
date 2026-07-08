@@ -1063,3 +1063,72 @@ second, generally more reliable discovery source and queues them alongside whate
 `discover_index()` found from the root page / TOC / sitemap, tagging them
 `members_table_of:<FullTypeName>` in `raw_index.json` so it's traceable which page a given
 member URL came from.
+
+## Stage C: RevitLookup's real source has moved on from the design doc's assumptions (2026-07-08)
+
+Before writing any Stage C parser, fetched RevitLookup's actual current `develop`-branch source
+(same "smallest real test before scaling up" discipline as Stage A) rather than trusting
+`docs/dll_reflection_v0.md`'s description, which was itself based on whatever commit an earlier
+review pass happened to see. Two access-path findings first:
+
+- `api.github.com` and `codeload.github.com` are blanket-blocked by this sandbox's proxy for any
+  repo not already in this session's explicit scope (`add_repo`'s MCP call itself returned
+  `"MCP tool call requires approval"` and didn't resolve) -- confirmed this is a blanket policy,
+  not RevitLookup-specific, by getting an identical denial for `torvalds/linux`.
+- `raw.githubusercontent.com` (individual file fetches, once the path is known) and the
+  `WebFetch` tool against `github.com`'s own rendered pages **both work fine** through the
+  proxy. Directory browsing via `WebFetch` on `.../tree/<branch>/<path>` pages is real but
+  occasionally unreliable (one nested path 404'd twice in a row for no apparent reason, then a
+  sibling path at the same depth worked immediately) -- treat a single 404 from this path as
+  inconclusive, not definitive, and cross-check via a sibling directory or a direct
+  `raw.githubusercontent.com` guess before concluding a path doesn't exist.
+
+**The repository has been substantially restructured since whatever commit the design doc's
+"three real descriptor files" review was based on.** It's now a multi-project split
+(`LookupEngine`, `LookupEngine.UI`, `RevitLookup.Abstractions`, `RevitLookup.Common`, plus the
+main `RevitLookup` UI project), and the descriptor system itself now lives at
+`source/RevitLookup/Core/Decomposition/` (not wherever the design doc's review saw it), with a
+fundamentally different shape than described:
+
+- **No `Resolve()` override or `switch` inside each descriptor.** Each descriptor class now
+  implements `Configure(IMemberConfigurator configuration)` and calls a fluent API:
+  `configuration.Member(nameof(Type.Member)).Resolve(() => ...)` /
+  `.Defer(() => ...)` / `.Disable()`, and `configuration.Extension("Name").Register(() => ...)` /
+  `.Extension(nameof(X)).NotSupported()`. Confirmed directly against the current real
+  `ViewDescriptor.cs` and `CompoundStructureDescriptor.cs` (both fetched from
+  `source/RevitLookup/Core/Decomposition/Descriptors/`).
+- **`DescriptorsMap.cs`'s core mapping idea is unchanged in spirit**: a single
+  `FindDescriptor(object? obj, Type? type)` switch expression, `Type value when ... =>
+  new TypeDescriptor(value)` per case, mapping real `Autodesk.Revit.DB`-namespaced types (and a
+  few UI/`Autodesk.Windows` ones) to their descriptor class -- still a genuinely curated list
+  (roughly 90+ real-namespace cases, in the same ballpark as the design doc's "~80+"), just a
+  different method name/signature (`FindDescriptor`, not whatever the earlier review saw) and
+  file location (`source/RevitLookup/Core/Decomposition/DescriptorsMap.cs`).
+- **New signal categories the design doc never anticipated**, found directly in the two real
+  files fetched:
+  - `.Member(nameof(X)).Disable()` -- a member explicitly hidden from generic display (e.g.
+    `View.Dispose`, `CompoundStructure.Dispose`). Different in kind from "resolved": this is a
+    negative/exclusion signal, not "the authors wrote custom resolution logic for this."
+  - `.Member(nameof(X)).When(predicate).Resolve(...)` -- an explicit overload-disambiguation
+    mechanism (`CompoundStructureDescriptor`'s `GetWidth` config uses
+    `.When(parameters => parameters.Length == 1)`, since `GetWidth` is overloaded). The original
+    design's `resolved_members` shape (one entry per member name) doesn't have anywhere to put
+    this -- it would need to be per-(member, parameter-shape), not per-member-name alone.
+  - `.Extension(name).NotSupported()` -- distinct from both `.Register()` (a working synthetic
+    extension) and never mentioning the name at all. A third state, not two.
+  - The "cardinality is per-index" reasoning (originally described via
+    `VariantsResolver.ResolveIndex`) is still present and still mineable, just renamed/reshaped:
+    `Variants.Values<T>(count)` / `.Add(result, label)` / `.Consume()`, built inside small
+    private `ResolveRange`/`ResolveFilters`/`ResolveWorksets`/`ResolveCategories`-style helper
+    methods rather than one central resolver call.
+  - The "needs a live document" signal is still directly mineable the same way the design doc
+    described (`view.Document.Settings...`, `new FilteredWorksetCollector(view.Document)`,
+    `view.Document.CollectElements(...)` all appear verbatim in the real `ViewDescriptor.cs`).
+
+**Not yet decided**: whether to adapt `revitlookup_reference.json`'s proposed schema to add the
+new `Disable`/`When`-qualified-overload/`NotSupported` categories before writing a parser
+against this real shape, or start with a narrower first cut (e.g. just `DescriptorsMap.cs`'s
+type-to-descriptor mapping, deferring per-member `Configure()` parsing to a second pass) --
+checking with the project owner before committing to either, since the real shape differs
+enough from the original design that this is a genuine design decision, not just an
+implementation detail.
