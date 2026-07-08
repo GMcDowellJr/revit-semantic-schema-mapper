@@ -26,13 +26,17 @@ on every run.
 
 ## Reconciling with the existing non-goal
 
-The top-level README's Non-goals section says: *"Do not: open Revit; require `RevitAPI.dll`"*.
-That constraint stays true for the **base pipeline** — `crawl.py`/`parse.py`/`classify.py`
-must keep working for anyone without Revit installed, from docs alone. DLL reflection is a
-separate, **optional, opt-in** stage layered on top, for whoever has a local Revit
-installation and wants to validate a crawl's output against it. It never runs Revit itself
-(no `Application`/`Document`/UIless-mode launch) — only static reflection over already-compiled
-assemblies sitting on disk.
+The top-level README's Non-goals section says live Revit access must never become the
+*primary or required* source of truth — the **base pipeline**
+(`crawl.py`/`parse.py`/`classify.py`) must keep working for anyone without Revit installed,
+from docs alone. That's a statement about priority/dependency, not a blanket ban on ever
+touching Revit-related tooling. DLL reflection is a separate, **optional, opt-in** stage
+layered on top, for whoever has a local Revit installation and wants to validate a crawl's
+output against it — this stage specifically stays limited to static reflection over
+already-compiled assemblies sitting on disk (no `Application`/`Document`/UIless-mode launch),
+which is the narrowest possible reading of "opt-in secondary evidence." A later,
+explicitly-scoped runtime-verification stage (see "Related project" below) would go further
+and is a separate decision, not something this document commits to.
 
 ## Two-stage architecture
 
@@ -274,18 +278,40 @@ for.
   `..._2025.json`, etc.), matching the existing per-version `outputs/revit_<version>/`
   layout — no cross-version logic is in scope here.
 
-## Related project (not yet in scope): RevitLookup
+## Related project: RevitLookup, and a longer-horizon vision
 
 [`lookup-foundation/RevitLookup`](https://github.com/lookup-foundation/RevitLookup) is a real,
 separate open-source Revit add-in for interactively inspecting live API objects inside a
-running Revit session. A prior review pass of an earlier draft of this design surfaced claims
-about a local `Fingerprint` repo carrying cached RevitLookup "descriptor" reference files
-already mapped to this project's domains — none of that exists in *this* repo (confirmed: no
-`fingerprint`/`revitlookup` hits anywhere in `revit-semantic-schema-mapper`'s source), so none
-of those specifics are corroborated here. If that repository is ever actually added to this
-workspace, it could plausibly become a *third* evidence source (docs crawl → DLL reflection →
-RevitLookup's proven traversal patterns) feeding the reserved `dll_semantic_verified` field
-above via a later, explicitly-scoped runtime-verification stage — but that would mean
-deliberately crossing this project's own Non-goal of never requiring a running Revit process,
-which should be a conscious, separate decision, not something this design backs into. Nothing
-is built on this until then.
+running Revit session — confirmed reachable and genuine (fetched directly: C#, MIT-licensed,
+`source/RevitLookup/Core/Decomposition/Descriptors/...`). A prior review pass surfaced claims
+about a separate `Fingerprint` project (not in this workspace) that keeps a cached, pinned
+snapshot of RevitLookup's descriptor files as write-extractor reference material
+(`REVIT_LOOKUP_DOMAIN_MAP.md`, `DescriptorsMap.cs`, per-type `*Descriptor.cs` files like
+`ViewDescriptor`/`CompoundStructureDescriptor`). Three of those files have since been shared
+directly and are genuine, unmodified RevitLookup source (not fabricated by the earlier
+conversation) — but they're a three-month-old copy in a repo this one has no connection to, so
+treat any specific claim about current RevitLookup internals as unverified *here* until that
+repo is actually in scope. What they do confirm, concretely:
+
+- `DescriptorsMap.cs` is exactly the runtime-type dispatch table described earlier — a single
+  `switch` from a live CLR object's type to a `*Descriptor` class, covering the great majority
+  of `Autodesk.Revit.DB`'s concrete types (`Wall`, `View`, `CompoundStructure`,
+  `FamilyInstance`, `Workset`, ~80 more).
+- `ViewDescriptor`/`CompoundStructureDescriptor` show the "guard conditions" claim was real
+  and specific: `CompoundStructureDescriptor.Resolve` doesn't call `GetMaterialId`/
+  `GetLayerFunction`/etc. blindly, it resolves them per-layer-index via
+  `VariantsResolver.ResolveIndex(compoundStructure.LayerCount, ...)`; `ViewDescriptor` needs
+  live `Document` context to resolve filters/worksets/categories (`view.Document.Settings...`,
+  `new FilteredWorksetCollector(view.Document)...`) — i.e. exactly the "project state affects
+  results" problem from the confidence-model discussion, encoded as working code rather than
+  prose.
+
+**Longer-horizon vision, not committed scope**: once this project has a DLL-reflection-verified
+ground-truth graph (this design) and, eventually, a scoped runtime-verification layer, that
+verified graph could become an upstream input for `Fingerprint`'s own extractor-writing
+process — replacing ad hoc consultation of a pinned RevitLookup snapshot with a systematically
+verified schema, and potentially reducing how much `Fingerprint` (or other tools) need
+RevitLookup at all. That's a real direction worth keeping in mind while designing the
+`dll_semantic_verified`/`dll_verified_status` fields above, but it's explicitly **not** scoped
+into this document — it would need its own design pass once `Fingerprint` is actually
+reachable from this workspace.

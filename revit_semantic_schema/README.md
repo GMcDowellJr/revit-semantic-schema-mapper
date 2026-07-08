@@ -325,9 +325,15 @@ see `docs/crawl_notes.md` for the fix and how the known-edge report resolves thi
 
 ## Non-goals (this pass)
 
-Do not: open Revit; require `RevitAPI.dll`; build a graph database; mutate a model; generate
-Revit commands; claim the produced graph is complete; treat any inferred edge as fact; crawl
-namespaces outside `Autodesk.Revit.DB` (UI is touched only if needed to resolve a link).
+Do not: make live Revit access the *primary or required* source of truth (the base
+docs-crawl pipeline must run end-to-end from documentation alone, with no Revit install and
+no `RevitAPI.dll` on the machine); build a graph database; mutate a model; generate Revit
+commands; claim the produced graph is complete; treat any inferred edge as fact; crawl
+namespaces outside `Autodesk.Revit.DB` (UI is touched only if needed to resolve a link). This
+does *not* rule out static DLL reflection or a later, explicitly-scoped runtime-verification
+pass as optional, opt-in secondary evidence on top of a crawl that already stands on its
+own — see `docs/dll_reflection_v0.md` — only that the docs-first pipeline must never come to
+depend on either.
 
 ## Docs
 
