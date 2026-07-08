@@ -501,6 +501,25 @@ def parse_member_page(html: str, url: str, version: str, declaring_type: str) ->
     else:
         notes.append("no syntax block found; return_type/parameters unavailable")
 
+    if kind is Kind.CONSTRUCTOR:
+        # A constructor has no return type in C# at all -- "public AreaTagFilter ()" has
+        # nothing between the access modifier and the constructor's own name for
+        # _MEMBER_SIG_RE's <return_type> group to correctly leave empty, since that group is
+        # required (one-or-more) and the leading access-modifier group is optional. Confirmed
+        # against a real Revit 2025 crawl: this makes _MEMBER_SIG_RE backtrack into treating
+        # the access modifier itself ("public"/"protected"/...) as return_type for every
+        # constructor page, which then flows into classify.classify_member and produces a
+        # bogus name_only_candidate EdgeCandidate (source_type == member_name, "public" is
+        # obviously not a real Autodesk.Revit.DB type) -- 98 such edges in that crawl, all
+        # later reporting Stage B's MEMBER_NOT_FOUND for the same reason. Discarding
+        # return_type here (not upstream in _parse_member_signature, which has no idea what
+        # kind of page it's parsing) is a fact about the C# language, not a heuristic, and
+        # relies on classify_member's own existing rule that a falsy return_type never
+        # produces an edge.
+        if return_type is not None:
+            notes.append(f"discarding constructor's parsed return_type {return_type!r}: constructors have no return type")
+        return_type = None
+
     member_kind = MemberKind.METHOD if kind is Kind.METHOD or "(" in raw_signature else MemberKind.PROPERTY
 
     member = MemberInfo(

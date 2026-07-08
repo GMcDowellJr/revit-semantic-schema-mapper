@@ -397,3 +397,37 @@ def test_parse_member_page_overloaded_method_title():
     assert page.kind is Kind.METHOD
     assert page.type_name == "ChangeTypeId"
     assert page.members[0].name == "ChangeTypeId"
+
+
+def test_parse_member_page_constructor_has_no_return_type():
+    """Regression test for a real Revit 2025 finding: a constructor's syntax
+    block ("public AreaTagFilter ()") has nothing between the access
+    modifier and the constructor's own name for _MEMBER_SIG_RE's required
+    <return_type> group to leave empty, so it backtracks into capturing
+    "public" itself as return_type. That garbage return_type then flowed
+    into classify.classify_member and produced a bogus name_only_candidate
+    edge for every constructor in the crawl (98 of them) -- all correctly
+    caught by Stage B as MEMBER_NOT_FOUND, but the real bug was upstream
+    here. A constructor has no return type in C# at all, so return_type
+    must always come out None (which classify_member already treats as
+    "never build an edge").
+    """
+    html = """
+    <html><body>
+    <h4 id="api-title" class="truncate"> AreaTagFilter Constructor </h4>
+    <div id="mainBody">
+    <div class="syntax"><pre class="typeSignature">public AreaTagFilter ()</pre></div>
+    </div>
+    </body></html>
+    """
+    page = parse_member_page(
+        html,
+        "https://www.revitapidocs.com/2025/areatagfilter-constructor.htm",
+        "2025",
+        declaring_type="Autodesk.Revit.DB.AreaTagFilter",
+    )
+    assert page.kind is Kind.CONSTRUCTOR
+    member = page.members[0]
+    assert member.name == "AreaTagFilter"
+    assert member.return_type is None
+    assert any("discarding constructor" in note for note in page.parser_notes)
