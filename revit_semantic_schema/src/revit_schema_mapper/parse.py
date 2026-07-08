@@ -33,6 +33,15 @@ CONFIRMED AGAINST LIVE MARKUP (2025, see docs/crawl_notes.md): the
 a ``<span class=collapsibleRegionTitle>`` (an icon plus the section name,
 e.g. "Properties") followed by a ``<div class=collapsibleSection>`` wrapping
 that section's table. ``parse_members_index_page`` recognizes both forms.
+Separately, the syntax block (type declarations and member signatures alike)
+moved into a per-language "code snippet" widget -- one
+``div.codeSnippetContainerCode.{cs,vb,cpp,fs}`` per .NET language, each with
+its own ``<pre><code>``; only the C# (``.cs``) one matters here. This was a
+real, high-impact break: with no ``_SYNTAX_SELECTORS`` match, every member
+page's ``return_type`` came back ``None``, which silently zeroed out *every*
+candidate edge crawl-wide (``classify.classify_member`` requires a non-empty
+``return_type`` before it will consider any edge rule at all) -- confirmed
+via a live 2025 run producing 0 edges from 23k+ successfully "parsed" pages.
 """
 
 from __future__ import annotations
@@ -71,7 +80,20 @@ _TITLE_KIND_SUFFIXES = {
 # table#memberList all appear as-is on the real site (see module docstring).
 _SUMMARY_SELECTORS = ["div.summary", "#mainSection > p:first-of-type", "div#mainBody > p:first-of-type"]
 _REMARKS_SELECTORS = ["div.remarks", "#remarksSection", "div#remarks"]
-_SYNTAX_SELECTORS = ["div.syntax pre", "pre.typeSignature", "div#syntaxSection pre", "pre.code"]
+_SYNTAX_SELECTORS = [
+    # 2025 (see docs/crawl_notes.md): the syntax block moved into a
+    # per-language "code snippet" widget -- one div.codeSnippetContainerCode
+    # per .NET language (cs/vb/cpp/fs), each holding its own <pre><code>.
+    # Only the C# one is relevant (the regexes below are C#-specific); it's
+    # marked style="display: block" (the others "display: none") but that's
+    # a CSS runtime detail, not something a static parse can rely on -- the
+    # ".cs" class is what actually identifies it regardless of display.
+    "div.codeSnippetContainerCode.cs pre",
+    "div.syntax pre",
+    "pre.typeSignature",
+    "div#syntaxSection pre",
+    "pre.code",
+]
 _EXAMPLES_SELECTORS = ["div.codeExamples pre", "div#examplesSection pre", "div.example pre"]
 _SEE_ALSO_SELECTORS = ["div.seeAlsoStyle", "div#seeAlsoSection", "div.seealso"]
 _MEMBERS_TABLE_SELECTORS = ["table.members", "table#memberList", "table.memberTable"]

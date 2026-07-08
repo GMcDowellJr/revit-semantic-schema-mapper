@@ -354,6 +354,47 @@ Everything else confirmed on this page matched the 2024 findings unchanged: `h4#
 the title, unquoted attributes, `[icon, name, description]` row shape via `_member_name_cell`,
 and the "Top"/"See Also" nav following the last table.
 
+### 2025's real high-impact break: the syntax block moved, zeroing out every edge crawl-wide
+
+A full `--version 2025` run (Raspberry Pi) completed with `0 failed` and 23,168 pages parsed,
+2,460 node candidates, 8,424 enum members -- but **0 property relationship candidates, 0 method
+relationship candidates, 0 candidate edges total**. Not a classify.py bug: `classify_member`
+(`classify.py`) refuses to consider *any* edge rule -- name-keyword, `ElementId`, direct-DB-object
+return type, all of it -- unless `member.return_type` is non-empty (`if not member.return_type:
+return None`), and a `Counter` over `api_pages.json`'s `parser_notes` showed the actual cause:
+`no syntax block found; return_type/parameters unavailable` on 20,708 member pages and
+`no syntax block found; base_type/interfaces unavailable` on 1,810 class/struct pages -- i.e.
+`_SYNTAX_SELECTORS` matched nothing on nearly every page with a syntax block at all.
+
+The user pulled real markup for one property page (`ACAPreference` on `ACADExportOptions`,
+2025) straight from the run's own cache. **2025 moved the syntax block into a per-language
+"code snippet" widget**: `<div class=codeSnippetContainerCodeContainer>` holding one
+`<div class="codeSnippetContainerCode {cs|vb|cpp|fs}">` per .NET language (C#/VB/C++/F#), each
+with its own `<pre><code>...</code></pre>`; individual tokens are wrapped in
+`<span class=keyword>`/`<span class=identifier>` etc. (e.g. `<span class=keyword>public</span>
+<span class=identifier>ACAObjectPreference</span> <span class=identifier>ACAPreference</span> {
+<span class=keyword>get</span>; <span class=keyword>set</span>; }` for a simple property). Only
+the C# (`.cs`) block matters -- the existing regexes (`_TYPE_DECL_RE`/`_MEMBER_SIG_RE`) are
+C#-specific -- and while the real page marks it `style="display: block"` (others
+`display: none`), that's a CSS runtime detail a static parse can't and shouldn't rely on; the
+`.cs` class is what actually identifies it. `.get_text()` reconstructs a normal-enough signature
+string across the nested spans for the existing regexes to match unchanged (confirmed:
+`ACAPreference`'s syntax reconstructs to something `_MEMBER_SIG_RE` parses correctly with no
+regex changes needed) -- only the *selector* needed to change. Fixed: added
+`"div.codeSnippetContainerCode.cs pre"` to the front of `_SYNTAX_SELECTORS`, ahead of the 2024
+selectors (kept as fallbacks). Covered by
+`test_parse_member_page_recognizes_2025_code_snippet_widget_syntax_block`, modeled on the real
+pasted snippet with the `vb` block deliberately placed *before* the `cs` block (the reverse of
+the real page's order) to prove the fix selects by the `.cs` class specifically, not merely
+"whichever `<pre>` happens to come first in the document."
+
+Not yet independently confirmed on a class/struct page's own type-declaration syntax block (only
+a property page's signature was pasted) -- the parser_notes counts strongly suggest the same
+widget also holds the type declaration (`no syntax block found; base_type/interfaces unavailable`
+on 1,810 class/struct pages, the same missing-selector signature), but re-running the full 2025
+crawl and checking `base_type`/`implemented_interfaces` are populated on a known type is the next
+real confirmation step.
+
 ## Politeness / resumability design
 
 - Custom `User-Agent` (see `crawl.USER_AGENT`) identifies the bot and its purpose.
