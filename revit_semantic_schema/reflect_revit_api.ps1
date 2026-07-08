@@ -11,23 +11,33 @@
     reflects each matched assembly's types/members into the JSON schema documented in
     docs/dll_reflection_v0.md ("Stage A: the reflection tool" -> "Manifest schema").
 
-    Two hosts are supported, since which one is actually available on a given Windows/Revit
-    machine should never be assumed (see docs/dll_reflection_v0.md's "Open questions"):
+    Two reflection *mechanisms* are supported, and which one runs is no longer forced by which
+    PowerShell *edition* is hosting the script (see docs/dll_reflection_v0.md's "Open
+    questions" and crawl_notes.md for how this was confirmed and revised):
 
-      - Windows PowerShell 5.1 ("Desktop" edition, .NET Framework): uses
-        [System.Reflection.Assembly]::ReflectionOnlyLoadFrom, which is built in and needs no
-        extra install. This is the primary, best-supported path, and the only one that has
-        actually been exercised against real (non-Revit) DLLs so far -- see crawl_notes.md.
-      - PowerShell 7+ ("Core" edition, .NET / .NET Core): uses
-        System.Reflection.MetadataLoadContext, a separate NuGet package (not built in) --
-        pass its path via -MetadataLoadContextAssembly. Confirmed working end-to-end against
-        real (non-Revit) BCL assemblies in this project's own dev sandbox (a Linux box with
-        no Windows/Revit access at all), but cross-framework resolution against Revit's real
-        net48-targeted RevitAPI.dll has NOT been verified: MetadataLoadContext needs reference
-        assemblies matching the *target* assembly's framework (mscorlib etc. for net48), not
-        just the host runtime's own core assemblies -- pass a folder of those via
-        -NetFrameworkReferenceAssembliesDir if this path is used against Revit. See
-        crawl_notes.md for exactly what was and wasn't confirmed.
+      - [System.Reflection.Assembly]::ReflectionOnlyLoadFrom (built in, needs no extra
+        install): the default on Windows PowerShell 5.1 ("Desktop" edition, .NET Framework).
+        Confirmed a hard wall on a live Revit 2025 run, not just a missing-reference gap: this
+        API has a hardcoded assumption that mscorlib defines System.Object, and simply cannot
+        load a modern .NET 8 assembly rooted at System.Private.CoreLib instead -- and Revit
+        2025's own RevitAPI.dll now is one (Autodesk's own docs: "the Revit API is .NET 8
+        only"; confirmed 99.6% of its types lost to exactly this on a real run). No file made
+        available to this resolver fixes that; it is the wrong reflection API for that target.
+      - System.Reflection.MetadataLoadContext, a separate NuGet package (not built in) -- pass
+        its path via -MetadataLoadContextAssembly. Required unconditionally on PowerShell 7+
+        ("Core" edition, which has no ReflectionOnlyLoadFrom at all), but also now selectable
+        on Desktop by passing -MetadataLoadContextAssembly there too: it's a plain
+        netstandard2.0 library with no actual dependency on Core hosting, so it loads and runs
+        under Windows PowerShell 5.1 (.NET Framework 4.7.2+) fine -- letting a Revit
+        2025+-targeting run avoid needing PowerShell 7 installed at all. Confirmed working
+        end-to-end against real (non-Revit) BCL assemblies in this project's own dev sandbox (a
+        Linux box with no Windows/Revit access at all); using it against real Revit dlls is the
+        next real experiment, not yet independently confirmed end-to-end. Needs reference
+        assemblies matching whichever type-system root the *target* assembly actually needs:
+        mscorlib-family (older, .NET-Framework-targeted Revit versions) via
+        -NetFrameworkReferenceAssembliesDir, or System.Private.CoreLib-family (Revit 2025+, .NET
+        8) via -DotNetSharedFrameworkRoot -- the host runtime's own core assemblies alone won't
+        satisfy either.
 
 .PARAMETER InstallDir
     Root directory to recursively scan for *.dll (e.g. "C:\Program Files\Autodesk\Revit 2024").
@@ -45,32 +55,43 @@
     checkable guess, not a silent one: the script prints what it guessed and why.
 
 .PARAMETER MetadataLoadContextAssembly
-    Path to System.Reflection.MetadataLoadContext.dll (only needed/used on PowerShell 7+ /
-    "Core" edition; ignored on Windows PowerShell 5.1 / "Desktop" edition, which has
-    ReflectionOnlyLoadFrom built in).
+    Path to System.Reflection.MetadataLoadContext.dll. Required on PowerShell 7+ ("Core"
+    edition) unconditionally; on Windows PowerShell 5.1 ("Desktop" edition), passing this opts
+    into the MetadataLoadContext path instead of the default ReflectionOnlyLoadFrom one --
+    needed for Revit 2025+, whose own RevitAPI.dll ReflectionOnlyLoadFrom cannot load at all
+    (see .DESCRIPTION).
 
 .PARAMETER NetFrameworkReferenceAssembliesDir
-    Only used on the Core/MetadataLoadContext path. Extra directory of reference assemblies
-    (mscorlib.dll, System.dll, etc.) to seed the resolver with, needed because Revit's DLLs
-    target .NET Framework while a PowerShell 7 host runs .NET/.NET Core -- the host's own core
-    assemblies are a different framework and won't satisfy that resolution on their own.
+    Only used on the MetadataLoadContext path (Core, or Desktop-opted-in via
+    -MetadataLoadContextAssembly). Extra directory of *mscorlib-family* reference assemblies
+    (mscorlib.dll, System.dll, etc.) to seed the resolver with -- for a target that's genuinely
+    .NET-Framework-targeted (an older, pre-2025 Revit version reflected via this path). Not the
+    right parameter for Revit 2025+'s own .NET-8-targeted RevitAPI.dll; see
+    -DotNetSharedFrameworkRoot for that.
 
 .PARAMETER DotNetSharedFrameworkRoot
-    Only used on the Desktop/ReflectionOnlyLoadFrom path. Root of an installed .NET (Core)
-    runtime's shared-framework layout (default: "$env:ProgramFiles\dotnet\shared", i.e.
-    `dotnet --list-runtimes`'s own install location) -- confirmed a real, large need on a
-    live Revit 2025 run (see docs/crawl_notes.md): some Revit assemblies (AcDbMgd chief among
-    them) are themselves built against modern .NET 5-8 (plus WPF-on-.NET-Core), not .NET
-    Framework, and reference identities like "System.Runtime, Version=8.0.0.0, ..." that a
-    classic .NET Framework GAC can never contain, at any version, regardless of what's under
-    -InstallDir. If the matching .NET runtime (e.g. the .NET 8 Desktop Runtime, for
-    Microsoft.NETCore.App's System.Runtime/System.Collections/etc. and
+    Used on both paths: Desktop (always, via its own by-reference-event resolver) and
+    MetadataLoadContext (only when reflecting a .NET-8-targeted assembly -- Revit 2025+, not the
+    -NetFrameworkReferenceAssembliesDir case above). Root of an installed .NET (Core) runtime's
+    shared-framework layout (default on Desktop/Windows: "$env:ProgramFiles\dotnet\shared", i.e.
+    `dotnet --list-runtimes`'s own install location -- left unset on non-Windows Core hosts,
+    where $env:ProgramFiles doesn't exist). Confirmed a real, large need on a live Revit 2025
+    run (see docs/crawl_notes.md): RevitAPI.dll itself (not just peripheral assemblies like
+    AcDbMgd) is built against modern .NET 5-8 (plus WPF-on-.NET-Core), not .NET Framework, and
+    references identities like "System.Runtime, Version=8.0.0.0, ..." that a classic .NET
+    Framework GAC can never contain, at any version, regardless of what's under -InstallDir. If
+    the matching .NET runtime (e.g. the .NET 8 Desktop Runtime, for Microsoft.NETCore.App's
+    System.Runtime/System.Private.CoreLib/System.Collections/etc. and
     Microsoft.WindowsDesktop.App's PresentationFramework/WindowsBase/System.Xaml) is installed
-    on this machine, this lets the resolver find its real DLLs and load them purely for
-    metadata -- ReflectionOnlyLoadFrom never executes a loaded assembly, so a modern .NET
-    assembly loads here fine even though this whole process is old .NET Framework. If no
-    matching runtime is installed at all, this can't manufacture the missing metadata --
-    install the .NET runtime version(s) named in -Verbose's LoaderExceptions output first.
+    on this machine, this lets either path's resolver find its real DLLs and load them purely
+    for metadata -- neither ReflectionOnlyLoadFrom nor MetadataLoadContext executes a loaded
+    assembly, so a modern .NET assembly loads here fine even from an old .NET Framework process.
+    If no matching runtime is installed at all, this can't manufacture the missing metadata --
+    install the .NET runtime version(s) named in -Verbose's LoaderExceptions/loader-exception
+    output first. Even with it installed, ReflectionOnlyLoadFrom's own System.Object/mscorlib
+    assumption (see .DESCRIPTION) still blocks a System.Private.CoreLib-rooted target
+    regardless -- this parameter alone fixes the Desktop path's *missing-file* failures, not
+    that structural one; MetadataLoadContext is what actually resolves the structural wall.
 #>
 [CmdletBinding()]
 param(
@@ -131,8 +152,22 @@ if ($outParent -and -not (Test-Path -LiteralPath $outParent -PathType Container)
     New-Item -ItemType Directory -Path $outParent -Force | Out-Null
 }
 
+# Which reflection *mechanism* to use is a separate question from which PowerShell *edition*
+# is hosting this script -- they used to be forced together (Core always meant
+# MetadataLoadContext, Desktop always meant ReflectionOnlyLoadFrom), but MetadataLoadContext
+# is a plain netstandard2.0 library with no dependency on Core hosting; it loads and runs fine
+# under Windows PowerShell 5.1 (.NET Framework 4.7.2+) too. Confirmed a real, large need for
+# this on a live Revit 2025 run (see crawl_notes.md): ReflectionOnlyLoadFrom has a hardcoded
+# assumption that mscorlib defines System.Object, and simply cannot load a modern .NET 8
+# assembly (like Revit 2025's own RevitAPI.dll -- 99.6% of its types were lost to exactly this)
+# rooted at System.Private.CoreLib instead, no matter what files are made available to it --
+# that's not a missing-reference problem, it's the wrong reflection API for the target
+# entirely. Core still requires MetadataLoadContext unconditionally (ReflectionOnlyLoadFrom
+# isn't available there at all), but Desktop can now opt in by passing
+# -MetadataLoadContextAssembly, without installing PowerShell 7 first.
 $isCore = $PSVersionTable.PSEdition -eq 'Core'
-Write-Verbose "PowerShell host: $($PSVersionTable.PSEdition) $($PSVersionTable.PSVersion) -- using $(if ($isCore) { 'MetadataLoadContext' } else { 'ReflectionOnlyLoadFrom' })"
+$useMetadataLoadContext = $isCore -or [bool]$MetadataLoadContextAssembly
+Write-Verbose "PowerShell host: $($PSVersionTable.PSEdition) $($PSVersionTable.PSVersion) -- using $(if ($useMetadataLoadContext) { 'MetadataLoadContext' } else { 'ReflectionOnlyLoadFrom' })"
 
 
 # -- shared: enumerate dlls ----------------------------------------------------
@@ -562,11 +597,12 @@ function Invoke-DesktopReflection {
 # -- Core (PowerShell 7+ / .NET) path ------------------------------------------
 
 function Invoke-CoreReflection {
-    param([string[]] $DllPaths, [string] $Prefix, [string] $MlcAssemblyPath, [string] $ExtraRefDir)
+    param([string[]] $DllPaths, [string] $Prefix, [string] $MlcAssemblyPath, [string] $ExtraRefDir, [string] $DotNetSharedFrameworkRoot)
 
     if (-not $MlcAssemblyPath) {
-        $msg = "PowerShell 7+ ('Core' edition) detected, but -MetadataLoadContextAssembly was not " +
-              "supplied. System.Reflection.MetadataLoadContext is a separate NuGet package, not " +
+        $msg = "-MetadataLoadContextAssembly was not supplied (required whenever MetadataLoadContext " +
+              "is used -- unconditionally on PowerShell 7+/'Core', or opt-in on Desktop via this same " +
+              "parameter). System.Reflection.MetadataLoadContext is a separate NuGet package, not " +
               "built in -- see docs/dll_reflection_v0.md and crawl_notes.md for how this was " +
               "confirmed and where to get it."
         throw $msg
@@ -576,30 +612,50 @@ function Invoke-CoreReflection {
     $runtimeDir = [System.Runtime.InteropServices.RuntimeEnvironment]::GetRuntimeDirectory()
     $runtimeDlls = @(Get-ChildItem -LiteralPath $runtimeDir -Filter *.dll -ErrorAction SilentlyContinue |
         Select-Object -ExpandProperty FullName)
-    $extraDlls = @()
+    $frameworkRefDlls = @()
     if ($ExtraRefDir) {
-        $extraDlls = @(Get-ChildItem -LiteralPath $ExtraRefDir -Filter *.dll -Recurse -ErrorAction SilentlyContinue |
+        $frameworkRefDlls = @(Get-ChildItem -LiteralPath $ExtraRefDir -Filter *.dll -Recurse -ErrorAction SilentlyContinue |
             Select-Object -ExpandProperty FullName)
-    } else {
-        $warnMsg = "No -NetFrameworkReferenceAssembliesDir supplied. If the target dlls are " +
-            "built for .NET Framework (as RevitAPI.dll is) while this host runs .NET/.NET Core, " +
-            "MetadataLoadContext resolution will likely fail to find mscorlib/System.dll/etc -- " +
+    }
+    # Confirmed a real, large need on a live Revit 2025 run (see crawl_notes.md): RevitAPI.dll
+    # itself is now built against modern .NET 8 (Autodesk's own docs confirm "the Revit API is
+    # .NET 8 only"), rooted at System.Private.CoreLib rather than mscorlib -- an installed .NET
+    # runtime's own shared-framework folder (the same one Get-DotNetSharedFrameworkIndex reads
+    # for the Desktop path) is what actually satisfies that, not -NetFrameworkReferenceAssembliesDir
+    # (which is specifically the *older* mscorlib-family case, for whichever Revit version still
+    # genuinely targets .NET Framework).
+    $dotNetSharedDlls = @()
+    if ($DotNetSharedFrameworkRoot -and (Test-Path -LiteralPath $DotNetSharedFrameworkRoot -PathType Container)) {
+        $dotNetSharedDlls = @(Get-ChildItem -LiteralPath $DotNetSharedFrameworkRoot -Filter *.dll -Recurse -ErrorAction SilentlyContinue |
+            Select-Object -ExpandProperty FullName)
+    }
+    if (-not $frameworkRefDlls -and -not $dotNetSharedDlls) {
+        $warnMsg = "Neither -NetFrameworkReferenceAssembliesDir nor -DotNetSharedFrameworkRoot resolved " +
+            "any reference assemblies. If the target dlls need mscorlib/System.dll/etc (older, .NET " +
+            "Framework-targeted Revit versions) or System.Runtime/System.Private.CoreLib/etc (Revit " +
+            "2025+, built against .NET 8), MetadataLoadContext resolution will fail to find them -- " +
             "this combination has not been verified against real Revit dlls. See crawl_notes.md."
         Write-Warning $warnMsg
     }
 
-    # Seed the resolver with every candidate assembly by simple name, preferring the install
-    # dir's own copy over the host runtime's when both exist (matching the Desktop path's own
-    # by-simple-name resolve strategy, applied here as an up-front resolver list instead of a
-    # per-reference event, since MetadataLoadContext resolves eagerly through PathAssemblyResolver
-    # rather than via a resolve event).
-    $bySimpleName = @{}
-    foreach ($p in (@($DllPaths) + @($extraDlls) + @($runtimeDlls))) {
-        $name = [System.IO.Path]::GetFileNameWithoutExtension($p)
-        if (-not $bySimpleName.ContainsKey($name)) { $bySimpleName[$name] = $p }
-    }
-    $coreAssemblyName = if ($ExtraRefDir) { "mscorlib" } else { "System.Private.CoreLib" }
-    $resolver = New-Object System.Reflection.PathAssemblyResolver (, [string[]]($bySimpleName.Values))
+    # PathAssemblyResolver takes every candidate path directly, duplicate simple names included --
+    # its own Resolve() opens each candidate's real metadata to find the best match for a
+    # requested (name, version) itself, unlike this script's own by-simple-name resolvers
+    # (Get-DotNetSharedFrameworkIndex, Invoke-DesktopReflection's $byName), which only ever keep
+    # one path per key. Deduping to "first path wins per simple name" before handing paths to it
+    # would throw away exactly the version disambiguation (e.g. a System.Runtime reference that
+    # could be satisfied by either an installed 6.x or 8.x shared-framework folder) it's designed
+    # to do on its own.
+    $allCandidatePaths = @($DllPaths) + @($frameworkRefDlls) + @($dotNetSharedDlls) + @($runtimeDlls)
+
+    # System.Private.CoreLib is the right root whenever a .NET-8-style shared-framework
+    # reference set is in play (Revit 2025+); mscorlib is the right root for the older,
+    # -NetFrameworkReferenceAssembliesDir-supplied .NET-Framework-targeted case. When neither is
+    # supplied, default to System.Private.CoreLib -- this function's own original, still-valid
+    # use case (confirmed against real non-Revit BCL assemblies, see crawl_notes.md) is a plain
+    # PowerShell 7/.NET Core host reflecting other .NET Core assemblies, which is CoreLib-rooted.
+    $coreAssemblyName = if ($dotNetSharedDlls) { "System.Private.CoreLib" } elseif ($frameworkRefDlls) { "mscorlib" } else { "System.Private.CoreLib" }
+    $resolver = New-Object System.Reflection.PathAssemblyResolver (, [string[]]$allCandidatePaths)
     $mlc = New-Object System.Reflection.MetadataLoadContext($resolver, $coreAssemblyName)
 
     $assembliesScanned = New-Object System.Collections.Generic.List[object]
@@ -662,13 +718,19 @@ $script:typeLoadExceptionTypesLost = 0
 
 $dllPaths = @(Get-DllPaths $InstallDir)
 
-$result = if ($isCore) {
+# $env:ProgramFiles is Windows-only -- guarded rather than assumed, since $useMetadataLoadContext
+# can now be true on a non-Windows Core host too (opted in via -MetadataLoadContextAssembly is
+# Desktop-only in practice, but $isCore alone reaching here on Linux/Mac with no
+# -DotNetSharedFrameworkRoot supplied should just skip this default, not throw).
+if (-not $DotNetSharedFrameworkRoot -and $env:ProgramFiles) {
+    $DotNetSharedFrameworkRoot = Join-Path $env:ProgramFiles "dotnet\shared"
+}
+
+$result = if ($useMetadataLoadContext) {
     Invoke-CoreReflection -DllPaths $dllPaths -Prefix $NamespacePrefix `
-        -MlcAssemblyPath $MetadataLoadContextAssembly -ExtraRefDir $NetFrameworkReferenceAssembliesDir
+        -MlcAssemblyPath $MetadataLoadContextAssembly -ExtraRefDir $NetFrameworkReferenceAssembliesDir `
+        -DotNetSharedFrameworkRoot $DotNetSharedFrameworkRoot
 } else {
-    if (-not $DotNetSharedFrameworkRoot) {
-        $DotNetSharedFrameworkRoot = Join-Path $env:ProgramFiles "dotnet\shared"
-    }
     Invoke-DesktopReflection -DllPaths $dllPaths -Prefix $NamespacePrefix -DotNetSharedFrameworkRoot $DotNetSharedFrameworkRoot
 }
 

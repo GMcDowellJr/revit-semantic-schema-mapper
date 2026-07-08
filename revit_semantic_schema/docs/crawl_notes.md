@@ -1443,3 +1443,115 @@ target machine first (confirmed none are, as above) -- installing at least the .
 Runtime (covering `Microsoft.NETCore.App`+`Microsoft.WindowsDesktop.App` for the dominant
 410-of-434 `Version=8.0.0.0` case) is the next real step, then re-running to see how much of the
 296,357 lost types actually recovers.
+
+## Two real bugs in the `-DotNetSharedFrameworkRoot` fix, found by automated PR review (2026-07-08)
+
+Both confirmed real and fixed before any re-run:
+
+1. **`Get-DotNetSharedFrameworkIndex` keyed by the containing folder's version, not each DLL's
+   own real version.** Holds for most framework assemblies (their `AssemblyVersion` does track
+   the hosting runtime's major version), but not `netstandard.dll`: its own identity is a fixed
+   `2.1.0.0` regardless of which runtime major version's folder it ships inside. A reference
+   asking for `netstandard, Version=2.1.0.0` looked up `netstandard|2` against an index that
+   (folder-name-inferred) stored it as `netstandard|8` -- never matching, so that failure would
+   have stayed silently unresolved even with the right runtime installed. Fixed by reading each
+   DLL's own real `[System.Reflection.AssemblyName]::GetAssemblyName(...).Version.Major` instead
+   of inferring it from the folder name, skipping the native (non-managed) files that also live
+   in these folders (`hostfxr.dll`, `coreclr.dll`, ...) rather than aborting the whole index.
+2. **`-DotNetSharedFrameworkRoot`'s default was computed via `$env:ProgramFiles` at parameter-
+   bind time, unconditionally** -- evaluated for *every* invocation regardless of which path
+   (Desktop or Core) ends up running. `$env:ProgramFiles` is unset on PowerShell Core off
+   Windows (this project's own confirmed dev-sandbox host), which would have broken invocation
+   before ever reaching the still-fully-supported Core/MetadataLoadContext path. Fixed by
+   defaulting to `""` at the parameter level and computing the real Windows default later, in
+   the main script body, guarded by `-and $env:ProgramFiles` so a non-Windows host just skips it
+   rather than crashing.
+
+## The real `-Verbose` re-run against .NET 8: a much deeper wall than a missing file (2026-07-08)
+
+The user confirmed .NET 8 (`Microsoft.NETCore.App`/`Microsoft.WindowsDesktop.App`/
+`Microsoft.AspNetCore.App`, version `8.0.28`) genuinely is installed at exactly
+`-DotNetSharedFrameworkRoot`'s default path (`C:\Program Files\dotnet\shared`) -- the earlier
+"nothing installed" reading came from a mistyped `dotnet --list-runtime` (singular), not a real
+absence. Re-running with the fixed script confirmed the file-resolution fix works (`Indexed 373
+(name, major version) dotnet shared-framework dll(s)`, and the `Cannot resolve dependency to
+assembly 'System.Runtime, Version=8.0.0.0, ...'` messages are gone) -- but the overall numbers
+barely moved (432 assemblies / 296,036 types lost, vs. 434 / 296,357 before), because a *new*,
+deeper error immediately replaced the old one for nearly everything that matters:
+
+```
+Could not load type 'System.Object' from assembly 'System.Private.CoreLib, Version=8.0.0.0,
+Culture=neutral, PublicKeyToken=7cec85d7bea7798e' because the parent does not exist.
+```
+
+This is not a missing-reference problem -- the file *is* found (confirmed: no more "Cannot
+resolve dependency" for it) -- it's a hard, structural limitation of
+`[System.Reflection.Assembly]::ReflectionOnlyLoadFrom` itself: .NET Framework's reflection-only
+loading pipeline has a hardcoded assumption that `mscorlib` is the one assembly allowed to define
+`System.Object` (the CLR type hierarchy's root, which has no base type -- hence "the parent does
+not exist" once the loader refuses to treat `System.Private.CoreLib` as a legitimate alternate
+root). No file made available to `ReflectionOnlyLoadFrom` fixes this; it is fundamentally the
+wrong reflection API for a modern-.NET-rooted assembly, no matter how completely
+`-DotNetSharedFrameworkRoot` is populated.
+
+**And this affects far more than the 10 peripheral assemblies originally found by manifest
+diffing.** Checking `RevitAPI`/`RevitAPIExtData`/`RevitAPIMacros`/`RevitAPISteel`/
+`Autodesk.Revit.CloudWorksharing.DocumentManagement` -- every assembly that *did* still report
+`matched: true` -- against the same log shows every one of them losing the overwhelming majority
+of their own types to this exact error too:
+
+| assembly | types lost / total |
+|---|---|
+| `RevitAPI` | 19,263 / 19,336 (99.6%) |
+| `RevitAPIExtData` | 107 / 113 |
+| `RevitAPIMacros` | 67 / 68 |
+| `RevitAPISteel` | 115 / 123 |
+| `Autodesk.Revit.CloudWorksharing.DocumentManagement` | 54 / 56 |
+
+`RevitAPI.dll` itself is now built against .NET 8 (confirmed independently: Autodesk's own Revit
+API Developer's Guide states "the Revit API is .NET 8 only," and that Revit 2025's installer
+bundles the .NET 8 Desktop Runtime `8.0.0.33101`) -- this was never a handful of peripheral
+AutoCAD/cloud assemblies falling behind, it's the core, primary reflection target of this entire
+project that's now unreachable via this host's reflection mechanism. (Separately confirmed
+`AcDbMgd`, the single largest individual loss at 3551/3560 types, was *already* `matched: false`
+in the working 2024 baseline manifest -- it never exposed `Autodesk.Revit.DB` types even before
+any of this, so its loss specifically is noise, not signal; `RevitAPI` itself is the real signal.)
+
+**Fix: let `MetadataLoadContext` run on Desktop too, not just Core.** The script's own
+`Invoke-CoreReflection` (System.Reflection.MetadataLoadContext) was written for PowerShell 7+
+only, under the assumption Desktop's built-in `ReflectionOnlyLoadFrom` was the "primary,
+best-supported path" for the classic mscorlib-rooted case -- true for Revit 2024, no longer true
+for Revit 2025's actual CoreLib-rooted `RevitAPI.dll`. `MetadataLoadContext` doesn't have
+`ReflectionOnlyLoadFrom`'s hardcoded mscorlib assumption (you explicitly declare which assembly
+is the type-system root via its constructor's `coreAssemblyName` argument), and -- confirmed --
+it's a plain `netstandard2.0` NuGet package with no actual dependency on Core hosting, so it loads
+via `Add-Type -Path` and runs fine under Windows PowerShell 5.1 (.NET Framework 4.7.2+) too. This
+means the user does **not** need PowerShell 7 installed (confirmed absent on their machine, and
+they'd need an internal approval process to get it) to try the fix that actually addresses this
+wall.
+
+Changes made:
+- `$useMetadataLoadContext = $isCore -or [bool]$MetadataLoadContextAssembly` -- Core still
+  requires it unconditionally (no `ReflectionOnlyLoadFrom` there at all), but Desktop can now
+  opt in by simply passing `-MetadataLoadContextAssembly`.
+- Fixed a real bug this exposed in `Invoke-CoreReflection`: `$coreAssemblyName` was inferred from
+  *whether `-NetFrameworkReferenceAssembliesDir` was passed at all* (`"mscorlib"` if so, else
+  `"System.Private.CoreLib"`) -- backwards for the real need, which is "pass extra reference
+  assemblies (the .NET 8 shared framework) *and* use the `System.Private.CoreLib` root at the
+  same time." Added `-DotNetSharedFrameworkRoot` support to `Invoke-CoreReflection` itself
+  (reusing the same parameter the Desktop path already added), and made `$coreAssemblyName`
+  depend on *which* reference source actually resolved something, not which parameter was passed.
+- Stopped deduping candidate assembly paths to "first path wins per simple name" before handing
+  them to `PathAssemblyResolver` -- confirmed unlike this script's own by-simple-name resolvers,
+  `PathAssemblyResolver.Resolve()` opens each candidate's real metadata itself to disambiguate
+  multiple versions of the same simple name (e.g. a `System.Runtime` reference satisfiable by
+  either an installed 6.x or 8.x shared-framework folder); pre-deduping would have thrown that
+  capability away for no reason.
+
+**Not yet run**: this is a real experiment, not a confirmed fix -- `MetadataLoadContext` against
+real Revit DLLs (of either root) has never been exercised end-to-end before. Next real step is
+getting `System.Reflection.MetadataLoadContext.dll` (a NuGet package, no full SDK required) onto
+the target machine and re-running with `-MetadataLoadContextAssembly` set and no
+`-NetFrameworkReferenceAssembliesDir` (since the real need now is the `System.Private.CoreLib`
+branch, which `-DotNetSharedFrameworkRoot`'s existing default already points at the right
+installed runtime for).
