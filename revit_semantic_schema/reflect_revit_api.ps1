@@ -59,7 +59,12 @@
     edition) unconditionally; on Windows PowerShell 5.1 ("Desktop" edition), passing this opts
     into the MetadataLoadContext path instead of the default ReflectionOnlyLoadFrom one --
     needed for Revit 2025+, whose own RevitAPI.dll ReflectionOnlyLoadFrom cannot load at all
-    (see .DESCRIPTION).
+    (see .DESCRIPTION). Its NuGet package isn't self-contained: confirmed real, live dependencies
+    on System.Reflection.Metadata, System.Collections.Immutable, and System.Memory (at least) --
+    download each of those (nuget.org -> "Download package" -> rename .nupkg to .zip -> extract
+    lib\netstandard2.0\*.dll) and place them in the *same directory* as this .dll (this script
+    resolves them from there itself; confirmed real, live need on Windows PowerShell 5.1 --
+    Unblock-File alone wasn't sufficient, an explicit resolve handler was).
 
 .PARAMETER NetFrameworkReferenceAssembliesDir
     Only used on the MetadataLoadContext path (Core, or Desktop-opted-in via
@@ -607,6 +612,28 @@ function Invoke-CoreReflection {
               "confirmed and where to get it."
         throw $msg
     }
+    # System.Reflection.MetadataLoadContext's own NuGet package isn't self-contained -- its
+    # netstandard2.0 build needs System.Reflection.Metadata, System.Collections.Immutable, and
+    # System.Memory (at least) as siblings. Confirmed a real, live failure on Windows PowerShell
+    # 5.1: even with every dependency .dll placed directly alongside $MlcAssemblyPath and
+    # unblocked (Unblock-File), a plain Add-Type -Path still couldn't find them --
+    # LoadFrom's implicit same-directory probing isn't reliable enough to depend on here. An
+    # explicit AssemblyResolve handler, scoped to $MlcAssemblyPath's own directory, is what
+    # actually resolved it. This is the regular (executing) AssemblyResolve event -- a different
+    # one from ReflectionOnlyAssemblyResolve (used elsewhere in this script and by
+    # Invoke-DesktopReflection), since Add-Type does a real, executing load, not a reflection-only
+    # one.
+    $mlcDir = Split-Path -Parent $MlcAssemblyPath
+    $mlcResolveHandler = [ResolveEventHandler] {
+        param($sender, $e)
+        $simpleName = ($e.Name -split ',')[0].Trim()
+        $candidate = Join-Path $mlcDir "$simpleName.dll"
+        if (Test-Path -LiteralPath $candidate) {
+            try { return [System.Reflection.Assembly]::LoadFrom($candidate) } catch { }
+        }
+        return $null
+    }
+    [System.AppDomain]::CurrentDomain.add_AssemblyResolve($mlcResolveHandler)
     Add-Type -Path $MlcAssemblyPath
 
     $runtimeDir = [System.Runtime.InteropServices.RuntimeEnvironment]::GetRuntimeDirectory()

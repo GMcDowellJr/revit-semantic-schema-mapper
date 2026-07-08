@@ -1555,3 +1555,36 @@ the target machine and re-running with `-MetadataLoadContextAssembly` set and no
 `-NetFrameworkReferenceAssembliesDir` (since the real need now is the `System.Private.CoreLib`
 branch, which `-DotNetSharedFrameworkRoot`'s existing default already points at the right
 installed runtime for).
+
+## `Add-Type -Path` on `MetadataLoadContext.dll` itself hit the exact same wall (2026-07-08)
+
+Confirmed live on Windows PowerShell 5.1, trying the plan above: `Add-Type -Path
+$MlcAssemblyPath` (in `Invoke-CoreReflection`) threw `ReflectionTypeLoadException` --
+`System.Reflection.MetadataLoadContext.dll` (package version `10.0.9`, `lib\netstandard2.0\`
+build -- confirmed the right TFM folder, ruling out a modern-.NET-targeted build) has its own
+real, non-optional dependencies: `System.Reflection.Metadata, Version=10.0.0.0`,
+`System.Collections.Immutable, Version=10.0.0.0`, and `System.Memory, Version=4.0.2.0` (found by
+catching the exception directly and reading `.LoaderExceptions`, not `$Error[0]` after the fact --
+`$Error[0].Exception` was one level of `Management.Automation` wrapping away from the real
+`ReflectionTypeLoadException`, and even then `.LoaderExceptions` came back empty until caught
+live in the same command).
+
+Placing all three sibling `.dll`s (same `lib\netstandard2.0\` extraction, confirmed matching
+versions via `[System.Reflection.AssemblyName]::GetAssemblyName(...).Version`) directly alongside
+`MetadataLoadContext.dll`, **and even `Unblock-File`-ing all four**, still didn't fix it -- same
+three "the system cannot find the file specified" messages, unchanged. `Assembly.LoadFrom`'s
+documented "probe the same directory as the LoadFrom'd file" behavior is evidently not reliable
+enough to depend on from a Windows PowerShell 5.1 process (a plain `.NET Framework console app`'s
+`LoadFrom` context may behave differently than doing this from inside `powershell.exe`, which has
+its own already-populated `AppDomain`/assembly-loading state). What actually worked: registering
+a real `AssemblyResolve` event handler (`[System.AppDomain]::CurrentDomain.add_AssemblyResolve(...)`
+-- the *executing*-load counterpart to `add_ReflectionOnlyAssemblyResolve`, which this script
+already uses elsewhere) that explicitly looks up each missing dependency by simple name in the
+same directory and loads it via `Assembly.LoadFrom` itself, rather than relying on any implicit
+probing. Confirmed working end-to-end (`$asm.GetTypes()` succeeded) once this was in place.
+
+Added the same handler directly to `Invoke-CoreReflection`, scoped to `$MlcAssemblyPath`'s own
+directory, registered immediately before its own `Add-Type -Path` call -- so any user of this
+script hits this fixed, not the same wall the user just fought through by hand. Documented the
+three known dependencies (confirmed exact identities above) in `-MetadataLoadContextAssembly`'s
+own `.PARAMETER` help text, including that `Unblock-File` alone is not sufficient.
