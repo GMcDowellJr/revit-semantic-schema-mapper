@@ -1132,3 +1132,103 @@ type-to-descriptor mapping, deferring per-member `Configure()` parsing to a seco
 checking with the project owner before committing to either, since the real shape differs
 enough from the original design that this is a genuine design decision, not just an
 implementation detail.
+
+## Stage C implemented: pinned to the real Revit-2024-matched tag, not `develop` (2026-07-08)
+
+Continuing from the finding above, the project owner asked specifically whether RevitLookup was
+versioned to the same Revit release this project's actual `ground_truth_manifest_2024.json` was
+reflected from -- it was not (the previous check had only browsed `develop`, which is not
+version-matched to anything). Checking this directly, rather than assuming `develop` was close
+enough, turned up a real, consequential mismatch:
+
+**RevitLookup tags releases per Revit year** (`<year>.<major>.<minor>`, confirmed via the repo's
+own `/tags` page): `2027.0.3` down through `2024.0.13`, `2024.0.12`, `2024.0.11`. The latest tag
+matching Revit 2024 is **`2024.0.13`** (Feb 10, 2024). `develop` is currently on `2027.x` and has
+been substantially refactored since 2024.0.13 (the `LookupEngine`/`Configure()`/`.Member()`/
+`.Extension()` shape found in the earlier check). Directly confirmed the two files the earlier,
+unpinned check happened to name as its examples (`ViewDescriptor.cs`,
+`CompoundStructureDescriptor.cs`) **do not exist at all** at `2024.0.13` -- `View` and
+`CompoundStructure` aren't even in that tag's `DescriptorMap.cs` switch. Mining `develop` would
+have silently produced a reference file describing whatever Revit version RevitLookup currently
+targets, not 2024's -- exactly the kind of version mismatch that would make Stage C's
+`revitlookup_referenced`/`requires_document_context` signals apply to the wrong API surface
+entirely, with nothing in the output itself flagging the mismatch.
+
+**At `2024.0.13`, the real shape is much closer to the original design doc's assumption** than
+`develop`'s. Confirmed directly from real files
+(`source/RevitLookup/Core/ComponentModel/DescriptorMap.cs` -- singular "Descriptor", a different
+file name/path than either the design doc's guess or `develop`'s
+`Core/Decomposition/DescriptorsMap.cs` -- plus `ElementDescriptor.cs`,
+`HostObjectDescriptor.cs`, `FamilyManagerDescriptor.cs`, all under
+`.../ComponentModel/Descriptors/`):
+
+- `DescriptorMap.FindDescriptor(object obj, Type type)` -- a single switch expression, 60 real
+  cases in the complete real file (confirmed by direct count: 62 `=> new` occurrences minus the
+  2 intentional `_`/`null` wildcard-fallback cases the parser skips), 45 of them under section
+  headers (`Root`/`APIObjects`/`IDisposables`/`Enumerator`) that correspond to real
+  `Autodesk.Revit.DB` types -- the initial "~80+"/"~90" estimates in the design doc and this
+  file's own earlier entry were both off; corrected here to the actual counted numbers. Each
+  case is tagged by its own `//SectionName` comment header (`System`, `Root`, `Enumerator`,
+  `APIObjects`, `IDisposables`, `Internal`, `Media`, `ComponentManager` -- all confirmed real
+  section names, not guessed).
+- Each descriptor class implements `IDescriptorResolver`/`IDescriptorExtension` with a real
+  `Resolve(Document context, string target, ParameterInfo[] parameters)` method (a `target
+  switch` on `nameof(Type.Member)` or bare string-literal cases) and/or a
+  `RegisterExtensions(IExtensionManager manager)` method -- much closer to the design doc's
+  *original* Resolve()-switch assumption than the newer fluent API found on `develop`.
+
+Implemented as `src/revit_schema_mapper/revitlookup.py` (`parse_descriptor_map`,
+`parse_descriptor_file`, `mine_revitlookup_source`), tested against real, unmodified fixture
+files copied directly from the `2024.0.13` tag (`tests/fixtures/revitlookup/*.cs` --
+`DescriptorMap.cs`, `ElementDescriptor.cs`, `HostObjectDescriptor.cs`,
+`FamilyManagerDescriptor.cs`). Two real parsing gotchas found and fixed by running against
+these real files, not by inspection:
+
+1. **The switch-arm regex failed on every case with a `when` clause** (the large majority of real
+   cases) -- `[^=]*?` (deliberately excluding `=` to "safely" skip past the `when` clause without
+   overrunning into the `=>`) breaks the moment the `when` clause itself contains `==` (e.g.
+   `type == typeof(string)`), which is nearly always, since that's exactly what these `when`
+   clauses do. First real run parsed only 13 of 60 real cases (everything *without* a `when`
+   clause) before this was caught. Fixed by switching to a plain non-greedy `.*?`, which correctly
+   stops at the first `=>` regardless of what's inside the `when` clause.
+2. **A resolved member's real logic can live in a separately-defined local function, not inline
+   in its switch case** -- confirmed real examples: `ElementDescriptor.GetMaterialArea`'s case is
+   just `=> ResolveGetMaterialArea(),`; the actual `.AppendVariant(...)`/cardinality logic is in a
+   same-named local function defined later in the same `Resolve()` method body.
+   `FamilyManagerDescriptor.GetAssociatedFamilyParameter` is the same shape, with
+   `RevitApi.Document` (a document-context signal) inside its own local function. A parser that
+   only inspected each case's inline expression text would silently miss both signals for any
+   member using this (common) pattern. Fixed by detecting a bare `FunctionName()` call as the
+   inline body, then searching the rest of the method's text for a same-named local function
+   definition (`_find_local_function_body`, using the same brace-depth-tracking approach as
+   `_extract_balanced_block` -- the brace-matching analog of `parse.py`'s existing
+   paren-depth-tracking precedent, since a naive regex can't correctly bound a block containing
+   nested braces) and folding its body into the signal search too.
+
+Also confirmed real, useful nuances along the way:
+- `HostObjectDescriptor`'s synthetic extensions (`GetBottomFaces`/`GetTopFaces`/`GetSideFaces`)
+  are all named via `nameof(HostExtensions.X)` -- `HostExtensions` is a *separate*
+  extension-method holder class, not `HostObject` itself. Extraction takes just the member-name
+  part, not assuming the `nameof(...)` always refers to the target type.
+- Some resolved-member case keys are bare string literals (`"BoundingBox"`, `"Geometry"` in
+  `ElementDescriptor.cs`), not `nameof(...)` -- likely a human-readable label for a real member
+  (probably `Element.get_BoundingBox`) rather than its exact runtime name. Tracked via a
+  `name_source` field (`"nameof"` vs. `"string_literal"`) so this lower-confidence signal isn't
+  silently conflated with a compiler-checked one.
+- The confirmed real document-context accessor in this version's code is
+  `RevitApi.ActiveView`/`RevitApi.Document` (static/global), not the `Resolve()` method's own
+  `context` parameter, which is declared but frequently unused in the real cases checked.
+
+Access-path notes for future sessions needing GitHub content without `add_repo` access:
+`api.github.com`/`codeload.github.com` are blanket-blocked for any repo not in this session's
+explicit scope; `raw.githubusercontent.com` (once the exact file path is known) and `WebFetch`
+against `github.com`'s own rendered pages (`/tree/<ref>/<path>`, `/tags`) both work. `WebFetch`
+against nested tree paths was occasionally flaky (one path 404'd twice, a sibling at the same
+depth worked immediately) -- treat a single 404 as inconclusive and cross-check a sibling path
+or a direct `raw.githubusercontent.com` guess before concluding a path doesn't exist.
+
+All 179 tests pass (16 new). Not yet done: wiring `revitlookup.py` into
+`python -m revit_schema_mapper`'s own CLI (Stage B's `--cross-validate-dll` flag is in the same
+not-yet-integrated state), and anything that actually combines `revitlookup_reference.json` with
+`ground_truth_report.json`/`candidate_edges.json` into the `revitlookup_referenced`/
+`revitlookup_requires_document_context` `EdgeCandidate` fields the design doc proposes.
