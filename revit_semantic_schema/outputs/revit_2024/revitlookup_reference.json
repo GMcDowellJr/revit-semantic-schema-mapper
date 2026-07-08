@@ -1,0 +1,979 @@
+{
+  "revitlookup_tag": "2024.0.13",
+  "descriptor_map": [
+    {
+      "target_type_short_name": "string",
+      "descriptor_class": "StringDescriptor",
+      "section": "System"
+    },
+    {
+      "target_type_short_name": "bool",
+      "descriptor_class": "BoolDescriptor",
+      "section": "System"
+    },
+    {
+      "target_type_short_name": "IEnumerable",
+      "descriptor_class": "EnumerableDescriptor",
+      "section": "System"
+    },
+    {
+      "target_type_short_name": "Exception",
+      "descriptor_class": "ExceptionDescriptor",
+      "section": "System"
+    },
+    {
+      "target_type_short_name": "ElementId",
+      "descriptor_class": "ElementIdDescriptor",
+      "section": "Root"
+    },
+    {
+      "target_type_short_name": "GuidEnum",
+      "descriptor_class": "GuidEnumDescriptor",
+      "section": "Root"
+    },
+    {
+      "target_type_short_name": "Definition",
+      "descriptor_class": "DefinitionDescriptor",
+      "section": "Root"
+    },
+    {
+      "target_type_short_name": "DefinitionBindingMapIterator",
+      "descriptor_class": "DefinitionBindingMapIteratorDescriptor",
+      "section": "Enumerator"
+    },
+    {
+      "target_type_short_name": "IEnumerator",
+      "descriptor_class": "EnumeratorDescriptor",
+      "section": "Enumerator"
+    },
+    {
+      "target_type_short_name": "Category",
+      "descriptor_class": "CategoryDescriptor",
+      "section": "APIObjects"
+    },
+    {
+      "target_type_short_name": "Parameter",
+      "descriptor_class": "ParameterDescriptor",
+      "section": "APIObjects"
+    },
+    {
+      "target_type_short_name": "FamilyParameter",
+      "descriptor_class": "FamilyParameterDescriptor",
+      "section": "APIObjects"
+    },
+    {
+      "target_type_short_name": "Reference",
+      "descriptor_class": "ReferenceDescriptor",
+      "section": "APIObjects"
+    },
+    {
+      "target_type_short_name": "Color",
+      "descriptor_class": "ColorDescriptor",
+      "section": "APIObjects"
+    },
+    {
+      "target_type_short_name": "Curve",
+      "descriptor_class": "CurveDescriptor",
+      "section": "APIObjects"
+    },
+    {
+      "target_type_short_name": "Edge",
+      "descriptor_class": "EdgeDescriptor",
+      "section": "APIObjects"
+    },
+    {
+      "target_type_short_name": "Solid",
+      "descriptor_class": "SolidDescriptor",
+      "section": "APIObjects"
+    },
+    {
+      "target_type_short_name": "Face",
+      "descriptor_class": "FaceDescriptor",
+      "section": "APIObjects"
+    },
+    {
+      "target_type_short_name": "City",
+      "descriptor_class": "CityDescriptor",
+      "section": "APIObjects"
+    },
+    {
+      "target_type_short_name": "PaperSize",
+      "descriptor_class": "PaperSizeDescriptor",
+      "section": "APIObjects"
+    },
+    {
+      "target_type_short_name": "PrintManager",
+      "descriptor_class": "PrintManagerDescriptor",
+      "section": "APIObjects"
+    },
+    {
+      "target_type_short_name": "DefinitionGroup",
+      "descriptor_class": "DefinitionGroupDescriptor",
+      "section": "APIObjects"
+    },
+    {
+      "target_type_short_name": "FamilyManager",
+      "descriptor_class": "FamilyManagerDescriptor",
+      "section": "APIObjects"
+    },
+    {
+      "target_type_short_name": "MEPSection",
+      "descriptor_class": "MepSectionDescriptor",
+      "section": "APIObjects"
+    },
+    {
+      "target_type_short_name": "APIObject",
+      "descriptor_class": "ApiObjectDescriptor",
+      "section": "APIObjects"
+    },
+    {
+      "target_type_short_name": "HostObject",
+      "descriptor_class": "HostObjectDescriptor",
+      "section": "IDisposables"
+    },
+    {
+      "target_type_short_name": "RevitLinkType",
+      "descriptor_class": "RevitLinkTypeDescriptor",
+      "section": "IDisposables"
+    },
+    {
+      "target_type_short_name": "FamilyInstance",
+      "descriptor_class": "FamilyInstanceDescriptor",
+      "section": "IDisposables"
+    },
+    {
+      "target_type_short_name": "SpatialElement",
+      "descriptor_class": "SpatialElementDescriptor",
+      "section": "IDisposables"
+    },
+    {
+      "target_type_short_name": "MEPSystem",
+      "descriptor_class": "MepSystemDescriptor",
+      "section": "IDisposables"
+    },
+    {
+      "target_type_short_name": "Element",
+      "descriptor_class": "ElementDescriptor",
+      "section": "IDisposables"
+    },
+    {
+      "target_type_short_name": "Document",
+      "descriptor_class": "DocumentDescriptor",
+      "section": "IDisposables"
+    },
+    {
+      "target_type_short_name": "PlanViewRange",
+      "descriptor_class": "PlanViewRangeDescriptor",
+      "section": "IDisposables"
+    },
+    {
+      "target_type_short_name": "ForgeTypeId",
+      "descriptor_class": "ForgeTypeIdDescriptor",
+      "section": "IDisposables"
+    },
+    {
+      "target_type_short_name": "Entity",
+      "descriptor_class": "EntityDescriptor",
+      "section": "IDisposables"
+    },
+    {
+      "target_type_short_name": "Field",
+      "descriptor_class": "FieldDescriptor",
+      "section": "IDisposables"
+    },
+    {
+      "target_type_short_name": "Schema",
+      "descriptor_class": "SchemaDescriptor",
+      "section": "IDisposables"
+    },
+    {
+      "target_type_short_name": "FailureMessage",
+      "descriptor_class": "FailureMessageDescriptor",
+      "section": "IDisposables"
+    },
+    {
+      "target_type_short_name": "UpdaterInfo",
+      "descriptor_class": "UpdaterInfoDescriptor",
+      "section": "IDisposables"
+    },
+    {
+      "target_type_short_name": "ExternalService",
+      "descriptor_class": "ExternalServiceDescriptor",
+      "section": "IDisposables"
+    },
+    {
+      "target_type_short_name": "RevitApplication",
+      "descriptor_class": "ApplicationDescriptor",
+      "section": "IDisposables"
+    },
+    {
+      "target_type_short_name": "PerformanceAdviser",
+      "descriptor_class": "PerformanceAdviserDescriptor",
+      "section": "IDisposables"
+    },
+    {
+      "target_type_short_name": "SchedulableField",
+      "descriptor_class": "SchedulableFieldDescriptor",
+      "section": "IDisposables"
+    },
+    {
+      "target_type_short_name": "CompoundStructureLayer",
+      "descriptor_class": "CompoundStructureLayerDescriptor",
+      "section": "IDisposables"
+    },
+    {
+      "target_type_short_name": "Workset",
+      "descriptor_class": "WorksetDescriptor",
+      "section": "IDisposables"
+    },
+    {
+      "target_type_short_name": "WorksetTable",
+      "descriptor_class": "WorksetTableDescriptor",
+      "section": "IDisposables"
+    },
+    {
+      "target_type_short_name": "BoundarySegment",
+      "descriptor_class": "BoundarySegmentDescriptor",
+      "section": "IDisposables"
+    },
+    {
+      "target_type_short_name": "EvaluatedParameter",
+      "descriptor_class": "EvaluatedParameterDescriptor",
+      "section": "IDisposables"
+    },
+    {
+      "target_type_short_name": "IDisposable",
+      "descriptor_class": "ApiObjectDescriptor",
+      "section": "IDisposables"
+    },
+    {
+      "target_type_short_name": "ResolveSet",
+      "descriptor_class": "ResolveSetDescriptor",
+      "section": "Internal"
+    },
+    {
+      "target_type_short_name": "ResolveSummary",
+      "descriptor_class": "ResolveSummaryDescriptor",
+      "section": "Internal"
+    },
+    {
+      "target_type_short_name": "Color",
+      "descriptor_class": "ColorMediaDescriptor",
+      "section": "Media"
+    },
+    {
+      "target_type_short_name": "UIElement",
+      "descriptor_class": "UiElementDescriptor",
+      "section": "ComponentManager"
+    },
+    {
+      "target_type_short_name": "DispatcherObject",
+      "descriptor_class": "DependencyObjectDescriptor",
+      "section": "ComponentManager"
+    },
+    {
+      "target_type_short_name": "RibbonItem",
+      "descriptor_class": "RibbonItemDescriptor",
+      "section": "ComponentManager"
+    },
+    {
+      "target_type_short_name": "RibbonPanel",
+      "descriptor_class": "RibbonPanelDescriptor",
+      "section": "ComponentManager"
+    },
+    {
+      "target_type_short_name": "RibbonItem",
+      "descriptor_class": "RibbonItemDescriptor",
+      "section": "ComponentManager"
+    },
+    {
+      "target_type_short_name": "RibbonPanel",
+      "descriptor_class": "RibbonPanelDescriptor",
+      "section": "ComponentManager"
+    },
+    {
+      "target_type_short_name": "RibbonTab",
+      "descriptor_class": "RibbonTabDescriptor",
+      "section": "ComponentManager"
+    },
+    {
+      "target_type_short_name": "INotifyPropertyChanged",
+      "descriptor_class": "UiObjectDescriptor",
+      "section": "ComponentManager"
+    }
+  ],
+  "descriptors": [
+    {
+      "descriptor_class": "ApiObjectDescriptor",
+      "resolved_members": [],
+      "synthetic_extensions": [],
+      "parser_notes": []
+    },
+    {
+      "descriptor_class": "ApplicationDescriptor",
+      "resolved_members": [],
+      "synthetic_extensions": [],
+      "parser_notes": []
+    },
+    {
+      "descriptor_class": "BoolDescriptor",
+      "resolved_members": [],
+      "synthetic_extensions": [],
+      "parser_notes": []
+    },
+    {
+      "descriptor_class": "BoundarySegmentDescriptor",
+      "resolved_members": [],
+      "synthetic_extensions": [],
+      "parser_notes": []
+    },
+    {
+      "descriptor_class": "CategoryDescriptor",
+      "resolved_members": [
+        {
+          "member_name": "AllowsVisibilityControl",
+          "name_source": "string_literal",
+          "requires_document_context": true,
+          "has_multiple_variants": false
+        },
+        {
+          "member_name": "Visible",
+          "name_source": "string_literal",
+          "requires_document_context": true,
+          "has_multiple_variants": false
+        },
+        {
+          "member_name": "GetGraphicsStyle",
+          "name_source": "nameof",
+          "requires_document_context": false,
+          "has_multiple_variants": true
+        },
+        {
+          "member_name": "GetLinePatternId",
+          "name_source": "nameof",
+          "requires_document_context": false,
+          "has_multiple_variants": true
+        },
+        {
+          "member_name": "GetLineWeight",
+          "name_source": "nameof",
+          "requires_document_context": false,
+          "has_multiple_variants": true
+        }
+      ],
+      "synthetic_extensions": [
+        "GetElements",
+        "BuiltInCategory"
+      ],
+      "parser_notes": []
+    },
+    {
+      "descriptor_class": "CityDescriptor",
+      "resolved_members": [],
+      "synthetic_extensions": [],
+      "parser_notes": []
+    },
+    {
+      "descriptor_class": "ColorDescriptor",
+      "resolved_members": [],
+      "synthetic_extensions": [
+        "HEX",
+        "HEX int",
+        "RGB",
+        "HSL",
+        "HSV",
+        "CMYK",
+        "HSB",
+        "HSI",
+        "HWB",
+        "NCol",
+        "CIELAB",
+        "CIEXYZ",
+        "VEC4",
+        "Decimal",
+        "Name"
+      ],
+      "parser_notes": []
+    },
+    {
+      "descriptor_class": "ColorMediaDescriptor",
+      "resolved_members": [],
+      "synthetic_extensions": [
+        "HEX",
+        "HEX int",
+        "RGB",
+        "HSL",
+        "HSV",
+        "CMYK",
+        "HSB",
+        "HSI",
+        "HWB",
+        "NCol",
+        "CIELAB",
+        "CIEXYZ",
+        "VEC4",
+        "Decimal",
+        "Name"
+      ],
+      "parser_notes": []
+    },
+    {
+      "descriptor_class": "CompoundStructureLayerDescriptor",
+      "resolved_members": [],
+      "synthetic_extensions": [],
+      "parser_notes": []
+    },
+    {
+      "descriptor_class": "CurveDescriptor",
+      "resolved_members": [
+        {
+          "member_name": "GetEndPoint",
+          "name_source": "nameof",
+          "requires_document_context": false,
+          "has_multiple_variants": true
+        },
+        {
+          "member_name": "GetEndParameter",
+          "name_source": "nameof",
+          "requires_document_context": false,
+          "has_multiple_variants": true
+        },
+        {
+          "member_name": "GetEndPointReference",
+          "name_source": "nameof",
+          "requires_document_context": false,
+          "has_multiple_variants": true
+        },
+        {
+          "member_name": "Evaluate",
+          "name_source": "nameof",
+          "requires_document_context": false,
+          "has_multiple_variants": true
+        }
+      ],
+      "synthetic_extensions": [],
+      "parser_notes": []
+    },
+    {
+      "descriptor_class": "DefinitionBindingMapIteratorDescriptor",
+      "resolved_members": [],
+      "synthetic_extensions": [],
+      "parser_notes": []
+    },
+    {
+      "descriptor_class": "DefinitionDescriptor",
+      "resolved_members": [],
+      "synthetic_extensions": [],
+      "parser_notes": []
+    },
+    {
+      "descriptor_class": "DefinitionGroupDescriptor",
+      "resolved_members": [],
+      "synthetic_extensions": [],
+      "parser_notes": []
+    },
+    {
+      "descriptor_class": "DependencyObjectDescriptor",
+      "resolved_members": [
+        {
+          "member_name": "GetLocalValueEnumerator",
+          "name_source": "nameof",
+          "requires_document_context": false,
+          "has_multiple_variants": false
+        }
+      ],
+      "synthetic_extensions": [],
+      "parser_notes": []
+    },
+    {
+      "descriptor_class": "DocumentDescriptor",
+      "resolved_members": [
+        {
+          "member_name": "GetUnusedElements",
+          "name_source": "nameof",
+          "requires_document_context": false,
+          "has_multiple_variants": false
+        }
+      ],
+      "synthetic_extensions": [],
+      "parser_notes": []
+    },
+    {
+      "descriptor_class": "EdgeDescriptor",
+      "resolved_members": [],
+      "synthetic_extensions": [],
+      "parser_notes": []
+    },
+    {
+      "descriptor_class": "ElementDescriptor",
+      "resolved_members": [
+        {
+          "member_name": "CanBeHidden",
+          "name_source": "nameof",
+          "requires_document_context": true,
+          "has_multiple_variants": false
+        },
+        {
+          "member_name": "IsHidden",
+          "name_source": "nameof",
+          "requires_document_context": true,
+          "has_multiple_variants": false
+        },
+        {
+          "member_name": "GetDependentElements",
+          "name_source": "nameof",
+          "requires_document_context": false,
+          "has_multiple_variants": false
+        },
+        {
+          "member_name": "GetMaterialIds",
+          "name_source": "nameof",
+          "requires_document_context": false,
+          "has_multiple_variants": true
+        },
+        {
+          "member_name": "BoundingBox",
+          "name_source": "string_literal",
+          "requires_document_context": true,
+          "has_multiple_variants": true
+        },
+        {
+          "member_name": "Geometry",
+          "name_source": "string_literal",
+          "requires_document_context": true,
+          "has_multiple_variants": true
+        },
+        {
+          "member_name": "GetMaterialArea",
+          "name_source": "nameof",
+          "requires_document_context": false,
+          "has_multiple_variants": true
+        },
+        {
+          "member_name": "GetMaterialVolume",
+          "name_source": "nameof",
+          "requires_document_context": false,
+          "has_multiple_variants": true
+        },
+        {
+          "member_name": "GetEntity",
+          "name_source": "nameof",
+          "requires_document_context": true,
+          "has_multiple_variants": true
+        }
+      ],
+      "synthetic_extensions": [
+        "CanBeMirrored",
+        "GetJoinedElements"
+      ],
+      "parser_notes": []
+    },
+    {
+      "descriptor_class": "ElementIdDescriptor",
+      "resolved_members": [],
+      "synthetic_extensions": [],
+      "parser_notes": []
+    },
+    {
+      "descriptor_class": "EntityDescriptor",
+      "resolved_members": [],
+      "synthetic_extensions": [],
+      "parser_notes": []
+    },
+    {
+      "descriptor_class": "EnumerableDescriptor",
+      "resolved_members": [
+        {
+          "member_name": "GetEnumerator",
+          "name_source": "nameof",
+          "requires_document_context": false,
+          "has_multiple_variants": false
+        }
+      ],
+      "synthetic_extensions": [],
+      "parser_notes": []
+    },
+    {
+      "descriptor_class": "EnumeratorDescriptor",
+      "resolved_members": [],
+      "synthetic_extensions": [],
+      "parser_notes": []
+    },
+    {
+      "descriptor_class": "EvaluatedParameterDescriptor",
+      "resolved_members": [],
+      "synthetic_extensions": [],
+      "parser_notes": []
+    },
+    {
+      "descriptor_class": "ExceptionDescriptor",
+      "resolved_members": [],
+      "synthetic_extensions": [],
+      "parser_notes": []
+    },
+    {
+      "descriptor_class": "ExternalServiceDescriptor",
+      "resolved_members": [
+        {
+          "member_name": "GetServer",
+          "name_source": "nameof",
+          "requires_document_context": false,
+          "has_multiple_variants": true
+        }
+      ],
+      "synthetic_extensions": [],
+      "parser_notes": []
+    },
+    {
+      "descriptor_class": "FaceDescriptor",
+      "resolved_members": [],
+      "synthetic_extensions": [],
+      "parser_notes": []
+    },
+    {
+      "descriptor_class": "FailureMessageDescriptor",
+      "resolved_members": [],
+      "synthetic_extensions": [],
+      "parser_notes": []
+    },
+    {
+      "descriptor_class": "FamilyInstanceDescriptor",
+      "resolved_members": [
+        {
+          "member_name": "GetReferences",
+          "name_source": "nameof",
+          "requires_document_context": true,
+          "has_multiple_variants": true
+        }
+      ],
+      "synthetic_extensions": [],
+      "parser_notes": []
+    },
+    {
+      "descriptor_class": "FamilyManagerDescriptor",
+      "resolved_members": [
+        {
+          "member_name": "GetAssociatedFamilyParameter",
+          "name_source": "nameof",
+          "requires_document_context": true,
+          "has_multiple_variants": true
+        }
+      ],
+      "synthetic_extensions": [],
+      "parser_notes": []
+    },
+    {
+      "descriptor_class": "FamilyParameterDescriptor",
+      "resolved_members": [],
+      "synthetic_extensions": [],
+      "parser_notes": []
+    },
+    {
+      "descriptor_class": "FieldDescriptor",
+      "resolved_members": [],
+      "synthetic_extensions": [],
+      "parser_notes": []
+    },
+    {
+      "descriptor_class": "ForgeTypeIdDescriptor",
+      "resolved_members": [],
+      "synthetic_extensions": [],
+      "parser_notes": []
+    },
+    {
+      "descriptor_class": "GuidEnumDescriptor",
+      "resolved_members": [],
+      "synthetic_extensions": [],
+      "parser_notes": []
+    },
+    {
+      "descriptor_class": "HostObjectDescriptor",
+      "resolved_members": [
+        {
+          "member_name": "FindInserts",
+          "name_source": "nameof",
+          "requires_document_context": false,
+          "has_multiple_variants": false
+        }
+      ],
+      "synthetic_extensions": [
+        "GetBottomFaces",
+        "GetTopFaces",
+        "GetSideFaces"
+      ],
+      "parser_notes": []
+    },
+    {
+      "descriptor_class": "MepSectionDescriptor",
+      "resolved_members": [
+        {
+          "member_name": "GetElementIds",
+          "name_source": "nameof",
+          "requires_document_context": false,
+          "has_multiple_variants": true
+        },
+        {
+          "member_name": "GetCoefficient",
+          "name_source": "nameof",
+          "requires_document_context": false,
+          "has_multiple_variants": true
+        },
+        {
+          "member_name": "GetPressureDrop",
+          "name_source": "nameof",
+          "requires_document_context": false,
+          "has_multiple_variants": true
+        },
+        {
+          "member_name": "GetSegmentLength",
+          "name_source": "nameof",
+          "requires_document_context": false,
+          "has_multiple_variants": true
+        },
+        {
+          "member_name": "IsMain",
+          "name_source": "nameof",
+          "requires_document_context": false,
+          "has_multiple_variants": true
+        }
+      ],
+      "synthetic_extensions": [],
+      "parser_notes": []
+    },
+    {
+      "descriptor_class": "MepSystemDescriptor",
+      "resolved_members": [
+        {
+          "member_name": "GetSectionByIndex",
+          "name_source": "nameof",
+          "requires_document_context": false,
+          "has_multiple_variants": true
+        },
+        {
+          "member_name": "GetSectionByNumber",
+          "name_source": "nameof",
+          "requires_document_context": false,
+          "has_multiple_variants": true
+        }
+      ],
+      "synthetic_extensions": [],
+      "parser_notes": []
+    },
+    {
+      "descriptor_class": "ObjectDescriptor",
+      "resolved_members": [],
+      "synthetic_extensions": [],
+      "parser_notes": []
+    },
+    {
+      "descriptor_class": "ParameterDescriptor",
+      "resolved_members": [],
+      "synthetic_extensions": [
+        "AsBool",
+        "AsColor",
+        "GetAssociatedFamilyParameter"
+      ],
+      "parser_notes": []
+    },
+    {
+      "descriptor_class": "PerformanceAdviserDescriptor",
+      "resolved_members": [],
+      "synthetic_extensions": [],
+      "parser_notes": []
+    },
+    {
+      "descriptor_class": "PlanViewRangeDescriptor",
+      "resolved_members": [
+        {
+          "member_name": "GetOffset",
+          "name_source": "nameof",
+          "requires_document_context": false,
+          "has_multiple_variants": true
+        },
+        {
+          "member_name": "GetLevelId",
+          "name_source": "nameof",
+          "requires_document_context": false,
+          "has_multiple_variants": true
+        }
+      ],
+      "synthetic_extensions": [],
+      "parser_notes": []
+    },
+    {
+      "descriptor_class": "PrintManagerDescriptor",
+      "resolved_members": [],
+      "synthetic_extensions": [],
+      "parser_notes": []
+    },
+    {
+      "descriptor_class": "ReferenceDescriptor",
+      "resolved_members": [
+        {
+          "member_name": "ConvertToStableRepresentation",
+          "name_source": "nameof",
+          "requires_document_context": false,
+          "has_multiple_variants": false
+        }
+      ],
+      "synthetic_extensions": [],
+      "parser_notes": []
+    },
+    {
+      "descriptor_class": "ResolveSetDescriptor",
+      "resolved_members": [],
+      "synthetic_extensions": [],
+      "parser_notes": []
+    },
+    {
+      "descriptor_class": "ResolveSummaryDescriptor",
+      "resolved_members": [],
+      "synthetic_extensions": [],
+      "parser_notes": []
+    },
+    {
+      "descriptor_class": "RevitLinkTypeDescriptor",
+      "resolved_members": [
+        {
+          "member_name": "Load",
+          "name_source": "nameof",
+          "requires_document_context": false,
+          "has_multiple_variants": false
+        },
+        {
+          "member_name": "Reload",
+          "name_source": "nameof",
+          "requires_document_context": false,
+          "has_multiple_variants": false
+        }
+      ],
+      "synthetic_extensions": [],
+      "parser_notes": []
+    },
+    {
+      "descriptor_class": "RibbonItemDescriptor",
+      "resolved_members": [],
+      "synthetic_extensions": [],
+      "parser_notes": []
+    },
+    {
+      "descriptor_class": "RibbonPanelDescriptor",
+      "resolved_members": [],
+      "synthetic_extensions": [],
+      "parser_notes": []
+    },
+    {
+      "descriptor_class": "RibbonTabDescriptor",
+      "resolved_members": [],
+      "synthetic_extensions": [],
+      "parser_notes": []
+    },
+    {
+      "descriptor_class": "SchemaDescriptor",
+      "resolved_members": [],
+      "synthetic_extensions": [
+        "GetElements"
+      ],
+      "parser_notes": []
+    },
+    {
+      "descriptor_class": "SchedulableFieldDescriptor",
+      "resolved_members": [
+        {
+          "member_name": "GetName",
+          "name_source": "nameof",
+          "requires_document_context": false,
+          "has_multiple_variants": false
+        }
+      ],
+      "synthetic_extensions": [],
+      "parser_notes": []
+    },
+    {
+      "descriptor_class": "SolidDescriptor",
+      "resolved_members": [],
+      "synthetic_extensions": [],
+      "parser_notes": []
+    },
+    {
+      "descriptor_class": "SpatialElementDescriptor",
+      "resolved_members": [
+        {
+          "member_name": "GetBoundarySegments",
+          "name_source": "nameof",
+          "requires_document_context": false,
+          "has_multiple_variants": true
+        }
+      ],
+      "synthetic_extensions": [],
+      "parser_notes": []
+    },
+    {
+      "descriptor_class": "StringDescriptor",
+      "resolved_members": [],
+      "synthetic_extensions": [],
+      "parser_notes": []
+    },
+    {
+      "descriptor_class": "UiElementDescriptor",
+      "resolved_members": [
+        {
+          "member_name": "GetLocalValueEnumerator",
+          "name_source": "nameof",
+          "requires_document_context": false,
+          "has_multiple_variants": false
+        },
+        {
+          "member_name": "CaptureMouse",
+          "name_source": "nameof",
+          "requires_document_context": false,
+          "has_multiple_variants": false
+        },
+        {
+          "member_name": "CaptureStylus",
+          "name_source": "nameof",
+          "requires_document_context": false,
+          "has_multiple_variants": false
+        },
+        {
+          "member_name": "Focus",
+          "name_source": "nameof",
+          "requires_document_context": false,
+          "has_multiple_variants": false
+        }
+      ],
+      "synthetic_extensions": [],
+      "parser_notes": []
+    },
+    {
+      "descriptor_class": "UiObjectDescriptor",
+      "resolved_members": [],
+      "synthetic_extensions": [],
+      "parser_notes": []
+    },
+    {
+      "descriptor_class": "UpdaterInfoDescriptor",
+      "resolved_members": [],
+      "synthetic_extensions": [],
+      "parser_notes": []
+    },
+    {
+      "descriptor_class": "WorksetDescriptor",
+      "resolved_members": [],
+      "synthetic_extensions": [],
+      "parser_notes": []
+    },
+    {
+      "descriptor_class": "WorksetTableDescriptor",
+      "resolved_members": [],
+      "synthetic_extensions": [],
+      "parser_notes": []
+    },
+    {
+      "descriptor_class": "Descriptor",
+      "resolved_members": [],
+      "synthetic_extensions": [],
+      "parser_notes": []
+    }
+  ]
+}
