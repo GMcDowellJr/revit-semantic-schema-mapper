@@ -68,7 +68,15 @@ class GroundTruthManifest:
 
 
 def load_manifest(path: Path) -> GroundTruthManifest:
-    raw = json.loads(Path(path).read_text(encoding="utf-8"))
+    # utf-8-sig (not plain utf-8): Windows PowerShell 5.1's Set-Content/Out-File -Encoding
+    # utf8 always prepends a BOM (Microsoft's own about_character_encoding docs confirm this
+    # is unconditional on that host), which json.loads rejects outright ("Unexpected UTF-8
+    # BOM"). reflect_revit_api.ps1 now writes without a BOM either way, but this loader stays
+    # tolerant of one regardless -- a manifest hand-edited on Windows (e.g. in Notepad, which
+    # still defaults to BOM-prefixed UTF-8) or produced by some future variant of Stage A
+    # shouldn't fail to parse over a single invisible byte. utf-8-sig strips a leading BOM if
+    # present and is otherwise identical to utf-8 for BOM-less input.
+    raw = json.loads(Path(path).read_text(encoding="utf-8-sig"))
     types = [
         ManifestType(
             full_type_name=t["full_type_name"],
@@ -117,16 +125,24 @@ def load_manifest(path: Path) -> GroundTruthManifest:
 #      fully-qualified a type name is (graph.py's confirmed
 #      Autodesk.Revit.DB.Room vs. Autodesk.Revit.DB.Architecture.Room case).
 #
-# This is deliberately not a full CLR type-name parser -- it handles single-
-# level generics (a collection of a plain type), which covers every real
-# case seen so far (ElementId collections). A deeply nested multi-type-arg
-# generic is not specifically handled and would need this function extended
-# and re-tested, not silently trusted.
+# This is deliberately not a full CLR type-name parser. Multi-type-argument generics (e.g.
+# IDictionary<K,V>) *are* handled for the shape reflect_revit_api.ps1 actually produces --
+# a flat, single-level comma-separated arg list, since Stage A always uses Type.ToString(),
+# never the assembly-qualified Type.FullName, for return/parameter type strings -- confirmed
+# against a real Revit 2024 manifest, where Element.ChangeTypeId's static overload really
+# returns IDictionary<ElementId,ElementId>, not a single-arg collection as originally guessed.
+# A hypothetical *assembly-qualified* multi-arg form (`Foo[[A, Asm,...],[B, Asm,...]]`, one
+# bracket pair per arg) is still not handled correctly -- but Stage A never actually emits
+# that shape, only a single-arg assembly-qualified form does that (and is handled below), so
+# this isn't a live gap in this project's own pipeline. A nested generic-of-generic is also
+# not specifically handled and would need this function extended and re-tested, not silently
+# trusted.
 
 _BACKTICK_ARITY_RE = re.compile(r"`\d+")
 _ASSEMBLY_QUALIFIED_INNER_RE = re.compile(r"\[\[([^\[\],]+)(?:,[^\[\]]*)?\]\]")
 _GENERIC_PARENS_RE = re.compile(r"^([\w.]+)\(([^()]*)\)$")
 _NAMESPACE_SEGMENT_RE = re.compile(r"\b[A-Za-z_][\w.]*\.[A-Za-z_]\w*\b")
+_COMMA_SPACE_RE = re.compile(r",\s+")
 
 
 def normalize_type_name(raw: Optional[str]) -> str:
@@ -156,6 +172,28 @@ def normalize_type_name(raw: Optional[str]) -> str:
     # elsewhere in this project (graph._Resolver), applied here to signature
     # comparison instead of node/edge target resolution.
     s = _NAMESPACE_SEGMENT_RE.sub(lambda m: m.group(0).rsplit(".", 1)[-1], s)
+    # A multi-arg generic's docs-side prose form separates arguments with ", " (comma-space) --
+    # confirmed real Sandcastle title text (crawl_notes.md): "ChangeTypeId Method (Document,
+    # ICollection(ElementId), ElementId)" -- while reflection's own comma-separated arg list
+    # (Type.ToString()) has no space. Collapse "comma + whitespace" uniformly so a real
+    # multi-arg generic (confirmed on Element.ChangeTypeId's IDictionary<ElementId,ElementId>
+    # return type) doesn't falsely report SIGNATURE_MISMATCH purely over comma-spacing.
+    s = _COMMA_SPACE_RE.sub(",", s)
+    # "void" is not a real type either side ever has to look up -- but the two sides spell
+    # "no return value" differently. classify.classify_member only requires a truthy
+    # member.return_type to build an EdgeCandidate at all, so a void method whose *name*
+    # still matches a relationship keyword (e.g. SetMaterialId, SetDefaultFamilyTypeId) is
+    # still emitted, with the docs-parsed literal C# return type "void" preserved verbatim
+    # (classify.py's own PRIMITIVE_TYPES set already treats "void" as a real, expected
+    # primitive-type string, not a missing value). reflect_revit_api.ps1, on the reflection
+    # side, maps ReturnType.FullName == "System.Void" to a manifest return_type of null
+    # (Get-ReturnTypeString) -- so without this, "void" normalizes to the literal string
+    # "void" while null normalizes to "" via the `if not raw: return ""` guard above, and a
+    # real, correctly-matching void method falsely reports SIGNATURE_MISMATCH. Canonicalize
+    # every void spelling (docs' "void", reflection's "System.Void" -- reduced to "Void" by
+    # the namespace-segment step above -- and the already-"" no-value case) to the same "".
+    if s.lower() == "void":
+        return ""
     return s
 
 

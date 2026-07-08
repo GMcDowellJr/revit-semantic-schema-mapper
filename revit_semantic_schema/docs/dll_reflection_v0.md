@@ -350,14 +350,31 @@ assumed current — RevitLookup is an actively developed project.
   Stage A — determines whether `ReflectionOnlyLoadFrom` (built in) or `MetadataLoadContext`
   (separate package) is the real starting point. Don't assume; check on the actual machine
   first, the same way every other real-run finding in `crawl_notes.md` was confirmed
-  empirically rather than guessed.
+  empirically rather than guessed. **Partially resolved, from the wrong side**: the dev
+  sandbox that wrote `reflect_revit_api.ps1` turned out to have no Windows/Revit access at
+  all (see `crawl_notes.md` → "Stage A ... first real run"), so both branches are implemented
+  and the PS7/`MetadataLoadContext` branch is confirmed working end-to-end against real (non-
+  Revit) DLLs, but the PS 5.1/`ReflectionOnlyLoadFrom` branch — the one an actual Windows+Revit
+  box will most likely use — has never been executed at all. That remains the real open item.
 - **Assembly count/time budget.** Reflection-only-loading and filtering 3151 DLLs to find the
   handful that matter could be slow; may want a `-KnownAssemblyHints RevitAPI.dll,RevitAPIUI.dll`
   fast-path that's checked first, with the full recursive scan as a fallback/completeness
   check rather than the only path — but only after confirming the fast path is actually
-  correct and complete, not assumed.
+  correct and complete, not assumed. A 536-DLL non-Revit scan (`crawl_notes.md`) completed in
+  well under a second, suggesting the full ~3151-DLL Revit scan is unlikely to need this, but
+  that's still an inference from a smaller, non-Revit substitute, not a confirmed timing.
 - **Signature normalization correctness** (see above) is the single biggest risk to the
-  report being trustworthy at all.
+  report being trustworthy at all. Confirmed correct against real reflection strings (both
+  `Type.ToString()` and `Type.FullName` forms) for the single-type-argument generic case;
+  confirmed to still mishandle multi-type-argument generics exactly as its own docstring
+  already disclosed — see `crawl_notes.md` for both confirmations. No Revit signature has ever
+  been found that needs the multi-arg case fixed, so it hasn't been touched.
+- **MetadataLoadContext's cross-framework requirement, newly confirmed.** Revit's DLLs target
+  .NET Framework; a PowerShell 7 host runs .NET/.NET Core. `MetadataLoadContext` needs
+  reference assemblies matching the *target* framework (`mscorlib` etc.), not just the host
+  runtime's own — `reflect_revit_api.ps1`'s `-NetFrameworkReferenceAssembliesDir` parameter
+  exists for this, but the combination is implemented/reasoned-through, not yet run against a
+  real net48 assembly. See `crawl_notes.md`.
 - **Multiple Revit versions.** This design is per-version (`ground_truth_manifest_2024.json`,
   `..._2025.json`, etc.), matching the existing per-version `outputs/revit_<version>/`
   layout — no cross-version logic is in scope here.
