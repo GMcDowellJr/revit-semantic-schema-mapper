@@ -679,6 +679,57 @@ failure was somewhere else entirely (first the resolve handler, now argument val
 worth remembering that "the scan completed" doesn't mean "the whole script is done running
 cleanly end-to-end" until a full run actually produces a written manifest file.
 
+### First real manifest content from actual Revit 2024 (2026-07, user-pasted excerpt)
+
+After both fixes above, the user's real run produced actual manifest JSON -- the first time
+this project has ever seen real reflection output from a genuine `RevitAPI`-family assembly,
+as opposed to this sandbox's own non-Revit BCL stand-ins. Only a truncated excerpt was pasted
+(not valid complete JSON on its own -- `assemblies_scanned` is cut off mid-array), so this
+isn't yet validated end-to-end against `ground_truth.load_manifest()`, but several real,
+confirmable facts are visible in the excerpt itself:
+
+1. **Confirms the core design decision not to hard-code `RevitAPI.dll`/`RevitAPIUI.dll` as
+   "the" answer.** A *third* assembly, `DBManagedServices`, also exposes a type under
+   `Autodesk.Revit.DB` (`Autodesk.Revit.DB.ExceptionHelper.NativeExceptionHelper`) -- exactly
+   the "don't guess which DLLs matter, scan and check" reasoning `docs/dll_reflection_v0.md`
+   argues for, now confirmed against the real install rather than assumed.
+2. **Confirms the manifest surfaces real, undocumented, internal types -- expected `DLL_ONLY`
+   territory, not a bug.** `NativeExceptionHelper` is native-exception-marshaling plumbing
+   (`IDisposable`, `throwException`/`addExceptionMap` methods) -- not a type revitapidocs.com
+   would ever document. Stage B's `dll_only_types` is exactly the mechanism designed to
+   surface this kind of thing without it being mistaken for a docs-coverage gap.
+3. **A new, previously-unseen signature shape: unmanaged pointer parameter types.**
+   `throwException`'s parameter reflects as `"type": "ApplicationException*"` -- a C++/CLI
+   native interop pointer type (`ApplicationException*`), not a plain managed type or a
+   generic collection. Neither `reflect_revit_api.ps1` nor
+   `ground_truth.normalize_type_name` were written with this shape in mind; it doesn't crash
+   anything (it's just an opaque string with a trailing `*` through the normalizer, since it
+   contains no dots for `_NAMESPACE_SEGMENT_RE` to touch), but it's a real reminder that native
+   interop plumbing bundled alongside the public API can have signature shapes the public,
+   documented API surface never does. Very unlikely to ever collide with a real docs-derived
+   `EdgeCandidate` (this method lives on an internal exception-marshaling type, not anything
+   revitapidocs.com documents), so no fix applied -- noted for awareness, not treated as a bug
+   to chase.
+4. **Confirms the array-collapse fixes hold on the real PS 5.1/Desktop host, not just this
+   sandbox's Core host.** `"members"` is a real JSON array (4 entries) including a
+   zero-parameter `Dispose` method correctly serialized as `"parameters": []` (not `null`), and
+   `"inheritance_chain": ["System.Object"]` is a real 1-element array (not the bare string
+   `"System.Object"` the pre-fix bug would have produced) -- the first direct confirmation that
+   the `@(...)`-wrapping fix generalizes to the host it actually needed to fix, not just the
+   host used to discover and test it.
+5. **A same-signature overload pair with different parameter names**: `throwException` appears
+   twice, both `(ApplicationException* -> void)`, one parameter named `pException` and the
+   other `exception` -- distinguished only by parameter name, not type. Real reflection fact,
+   not a script bug; `_find_members`'s "try every same-named overload" logic in
+   `ground_truth.py` doesn't key on parameter names at all, so this wouldn't confuse it, but
+   it's a reminder that "same name, same normalized signature" overloads can genuinely exist.
+
+**Still needed**: the complete manifest file (or at least confirmation the whole thing is
+valid JSON, plus summary counts -- total types, total matched assemblies) to actually run
+`ground_truth.load_manifest()`/`cross_validate_dll()` against it, which is the real Step 4
+check this design has been waiting for. A truncated chat-pasted excerpt can confirm individual
+facts like the above but can't stand in for that.
+
 ## Why member pages are discovered from class pages, not just the index/TOC
 
 Sandcastle-style sites list a type's members with links to their own property/method pages
