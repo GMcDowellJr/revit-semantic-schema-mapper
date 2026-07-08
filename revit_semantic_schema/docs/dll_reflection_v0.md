@@ -35,10 +35,14 @@ layered on top, for whoever has a local Revit installation and wants to validate
 output against it — this stage specifically stays limited to static reflection over
 already-compiled assemblies sitting on disk (no `Application`/`Document`/UIless-mode launch),
 which is the narrowest possible reading of "opt-in secondary evidence." A later,
-explicitly-scoped runtime-verification stage (see "Related project" below) would go further
-and is a separate decision, not something this document commits to.
+explicitly-scoped stage that actually *runs* anything against a live document (RevitLookup
+in a live Revit session, or a bespoke probe script) would go further and is a separate
+decision, not something this document commits to. Reading RevitLookup's own **source code**
+(Stage C below) is not that stage — it is static text analysis of a third public project, no
+different in kind from parsing revitapidocs.com's HTML or reflecting over a compiled DLL, and
+stays inside this same boundary.
 
-## Two-stage architecture
+## Architecture
 
 ```
 Stage A (Windows, wherever Revit 2024 is installed)
@@ -49,6 +53,11 @@ Stage A (Windows, wherever Revit 2024 is installed)
 Stage B (this repo, any machine, no Revit required)
   python -m revit_schema_mapper --version 2024 --cross-validate-dll ground_truth_manifest_2024.json
     -> ground_truth_report.json + a new summary.md section
+
+Stage C (optional, this repo, any machine, no Revit required)
+  mine lookup-foundation/RevitLookup's own C# source (public, MIT-licensed) for descriptor
+  coverage and guard-condition patterns -> revitlookup_reference.json, feeding two more
+  EdgeCandidate fields alongside the dll_* ones from Stage B (see "Stage C" below)
 ```
 
 Stage A produces a portable JSON file; Stage B never touches a Windows machine or a real DLL
@@ -212,6 +221,8 @@ fan-out problem). Revised proposal, keeping those visible separately:
   computes from the fields above for `summary.md`/spot-checking, e.g. `not_found`,
   `signature_mismatch`, `signature_verified_declared`, `signature_verified_inherited` — always
   derived, never hand-set.
+- `revitlookup_referenced: Optional[bool]` and `revitlookup_requires_document_context:
+  Optional[bool]` on `EdgeCandidate` — populated by Stage C, not Stage B; see below.
 
 **Does this require changes to `crawl.py`?** No. None of the fields above are ever touched by
 `crawl.py`/`parse.py`/`classify.py` — they are purely additive, defaulted (`None`) fields on
@@ -247,6 +258,79 @@ building the full diff report on top of it — a wrong normalizer would silently
 `SIGNATURE_MISMATCH` noise across the whole report, the exact opposite of what this stage is
 for.
 
+## Stage C (proposed): mining RevitLookup's descriptor *source* as a third static evidence layer
+
+The earlier review of this design filed RevitLookup under "runtime tooling," on the same side
+of the non-goal boundary as actually opening Revit. That conflates two different things:
+
+- **Running RevitLookup inside Revit against a live document** — a genuine runtime source, out
+  of scope here, same as any other runtime-verification stage.
+- **Reading RevitLookup's own C# source from its public repo** — a static text-parsing
+  exercise, no different in kind from parsing revitapidocs.com's HTML (Stage 1) or reflecting
+  over a compiled DLL (Stage A). This is confirmed reachable
+  ([`lookup-foundation/RevitLookup`](https://github.com/lookup-foundation/RevitLookup), fetched
+  directly, MIT-licensed) and sits entirely inside the docs-first, no-live-Revit boundary —
+  it never runs Revit, RevitLookup, or `RevitAPI.dll`.
+
+That makes Stage C a genuinely near-term addition, not a someday item: `DescriptorsMap.cs`'s
+`switch` is a curated list of ~80+ `Autodesk.Revit.DB` types RevitLookup's own maintainers
+judged worth a hand-written descriptor (confirmed directly from three real descriptor files:
+`DescriptorsMap.cs`, `ViewDescriptor.cs`, `CompoundStructureDescriptor.cs`). Within a type's
+descriptor, static parsing can extract three signals, none requiring Revit to run:
+
+1. **Positive corroboration.** Every `nameof(X.Member) => ...` case inside a `Resolve()` method
+   names a member RevitLookup's authors specifically wrote custom resolution logic for, as
+   opposed to letting it fall through to generic reflection display. An `EdgeCandidate` whose
+   `member_name` shows up as a named case is corroborated by an independent, actively-maintained
+   project's authors having judged that exact member's return value doesn't speak for itself
+   generically — a different kind of evidence than anything docs-derived or DLL-derived.
+   Absence proves nothing (RevitLookup doesn't special-case everything) — this is a
+   positive-only signal, never used to argue an edge is wrong.
+2. **Guard-condition / cardinality mining, for free.** Resolver bodies already encode the "why
+   is this hard to verify generically" reasoning from the confidence-model discussion, as
+   working code: `CompoundStructureDescriptor.Resolve` wraps `GetMaterialId`/`GetLayerFunction`/
+   etc. in `VariantsResolver.ResolveIndex(compoundStructure.LayerCount, ...)` (cardinality is
+   per-layer-index, not a single value); `ViewDescriptor.Resolve` needs
+   `view.Document.Settings...`/`new FilteredWorksetCollector(view.Document)` (meaningless
+   without a live document). Statically detecting which resolver bodies reference `.Document`/
+   collectors/other document-scoped calls is a cheap textual proxy for
+   `revitlookup_requires_document_context: true` — i.e. "this edge is real, but its two-line
+   confidence-model story ('the docs say X') is incomplete without a document," a signal for
+   `needs_runtime_validation` that comes from working code instead of first-principles
+   reasoning about each member individually.
+3. **Synthetic-member exclusion.** Some descriptors add members via `RegisterExtensions` that
+   don't exist on the real type at all (`ViewDescriptor.RegisterExtensions` adds `"GetInstances"`,
+   which wraps `view.Document.CollectElements(view.Id)...` — not a real `View` member). These
+   must be excluded from Stage C's own output entirely; if left in, Stage B's DLL
+   cross-validation would see them as a "member," fail to find them in
+   `ground_truth_manifest_<version>.json` (they were never in the compiled assembly to begin
+   with), and misreport a `MEMBER_NOT_FOUND` that's actually just RevitLookup's own UI
+   convenience, not a gap in the crawl.
+
+`revitlookup_reference.json` shape — entirely derived by parsing RevitLookup's C# source text,
+no Revit or `RevitAPI.dll` involved in producing it:
+
+```json
+{
+  "revitlookup_commit": "2401d82e4da1f95ab2648834597cb29f4842aa5d",
+  "descriptors": [
+    {
+      "descriptor_class": "ViewDescriptor",
+      "target_type": "Autodesk.Revit.DB.View",
+      "resolved_members": [
+        {"member_name": "GetFilterOverrides", "requires_document_context": true},
+        {"member_name": "IsValidViewTemplate", "requires_document_context": true}
+      ],
+      "synthetic_extensions": ["GetInstances"]
+    }
+  ]
+}
+```
+
+Same caution as the confirmed-facts note elsewhere in this document: whatever commit gets
+mined should be recorded (`revitlookup_commit` above) and re-synced deliberately, not silently
+assumed current — RevitLookup is an actively developed project.
+
 ## Workflow once built
 
 1. On a Windows machine with Revit 2024 installed: run
@@ -277,41 +361,31 @@ for.
 - **Multiple Revit versions.** This design is per-version (`ground_truth_manifest_2024.json`,
   `..._2025.json`, etc.), matching the existing per-version `outputs/revit_<version>/`
   layout — no cross-version logic is in scope here.
+- **Stage C's C#-parsing surface.** `Resolve()` methods use plain pattern-matching `switch`
+  expressions in the confirmed files, but Stage C's parser needs to be honest about what it
+  can't confidently extract (e.g. a differently-shaped descriptor, or a future RevitLookup
+  refactor) rather than silently under-reporting `resolved_members` — same "explicit, checkable
+  fact instead of a silent assumption" principle as the rest of this design. A `descriptors`
+  entry with zero `resolved_members` should be distinguishable in the output from "genuinely no
+  special-cased members" vs. "the parser didn't recognize this file's shape."
 
-## Related project: RevitLookup, and a longer-horizon vision
+## Related project: Fingerprint, and a longer-horizon vision
 
-[`lookup-foundation/RevitLookup`](https://github.com/lookup-foundation/RevitLookup) is a real,
-separate open-source Revit add-in for interactively inspecting live API objects inside a
-running Revit session — confirmed reachable and genuine (fetched directly: C#, MIT-licensed,
-`source/RevitLookup/Core/Decomposition/Descriptors/...`). A prior review pass surfaced claims
-about a separate `Fingerprint` project (not in this workspace) that keeps a cached, pinned
-snapshot of RevitLookup's descriptor files as write-extractor reference material
-(`REVIT_LOOKUP_DOMAIN_MAP.md`, `DescriptorsMap.cs`, per-type `*Descriptor.cs` files like
-`ViewDescriptor`/`CompoundStructureDescriptor`). Three of those files have since been shared
-directly and are genuine, unmodified RevitLookup source (not fabricated by the earlier
-conversation) — but they're a three-month-old copy in a repo this one has no connection to, so
-treat any specific claim about current RevitLookup internals as unverified *here* until that
-repo is actually in scope. What they do confirm, concretely:
-
-- `DescriptorsMap.cs` is exactly the runtime-type dispatch table described earlier — a single
-  `switch` from a live CLR object's type to a `*Descriptor` class, covering the great majority
-  of `Autodesk.Revit.DB`'s concrete types (`Wall`, `View`, `CompoundStructure`,
-  `FamilyInstance`, `Workset`, ~80 more).
-- `ViewDescriptor`/`CompoundStructureDescriptor` show the "guard conditions" claim was real
-  and specific: `CompoundStructureDescriptor.Resolve` doesn't call `GetMaterialId`/
-  `GetLayerFunction`/etc. blindly, it resolves them per-layer-index via
-  `VariantsResolver.ResolveIndex(compoundStructure.LayerCount, ...)`; `ViewDescriptor` needs
-  live `Document` context to resolve filters/worksets/categories (`view.Document.Settings...`,
-  `new FilteredWorksetCollector(view.Document)...`) — i.e. exactly the "project state affects
-  results" problem from the confidence-model discussion, encoded as working code rather than
-  prose.
+A prior review pass surfaced claims about a separate `Fingerprint` project (not in this
+workspace) that keeps a cached, pinned snapshot of RevitLookup's descriptor files as
+write-extractor reference material (`REVIT_LOOKUP_DOMAIN_MAP.md`, a `sync_revitlookup_reference.py`
+script, per-type `*Descriptor.cs` copies). Three of those files were shared directly and
+confirmed genuine, unmodified RevitLookup source (not fabricated by the earlier conversation)
+— they informed Stage C above. That snapshot is otherwise unrelated to this repo and three
+months stale as of this writing; nothing here depends on `Fingerprint` existing or being
+reachable, since Stage C mines RevitLookup's own public repo directly rather than through it.
 
 **Longer-horizon vision, not committed scope**: once this project has a DLL-reflection-verified
-ground-truth graph (this design) and, eventually, a scoped runtime-verification layer, that
-verified graph could become an upstream input for `Fingerprint`'s own extractor-writing
-process — replacing ad hoc consultation of a pinned RevitLookup snapshot with a systematically
-verified schema, and potentially reducing how much `Fingerprint` (or other tools) need
-RevitLookup at all. That's a real direction worth keeping in mind while designing the
-`dll_semantic_verified`/`dll_verified_status` fields above, but it's explicitly **not** scoped
-into this document — it would need its own design pass once `Fingerprint` is actually
-reachable from this workspace.
+ground-truth graph (Stages A/B) and the RevitLookup-source corroboration signals (Stage C),
+that combined output could become an upstream input for `Fingerprint`'s own extractor-writing
+process — replacing ad hoc consultation of a manually-pinned RevitLookup snapshot with a
+systematically verified schema, and potentially reducing how much `Fingerprint` (or other
+tools) need to consult RevitLookup directly at all. That's a real direction worth keeping in
+mind while designing the fields above, but it's explicitly **not** scoped into this
+document — it would need its own design pass once `Fingerprint` is actually reachable from
+this workspace.
