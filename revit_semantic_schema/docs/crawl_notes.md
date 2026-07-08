@@ -1588,3 +1588,61 @@ directory, registered immediately before its own `Add-Type -Path` call -- so any
 script hits this fixed, not the same wall the user just fought through by hand. Documented the
 three known dependencies (confirmed exact identities above) in `-MetadataLoadContextAssembly`'s
 own `.PARAMETER` help text, including that `Unblock-File` alone is not sufficient.
+
+Two more transitive dependencies surfaced one at a time on subsequent runs, each at the
+`New-Object System.Reflection.MetadataLoadContext(...)` constructor call rather than `Add-Type`
+itself: `System.Runtime.CompilerServices.Unsafe, Version=6.0.0.0` and `System.Numerics.Vectors,
+Version=4.1.3.0` -- both resolved the same way (same `lib\netstandard2.0\` extraction, same
+directory). Checked the real dependency-group metadata for
+`System.Reflection.MetadataLoadContext` 10.0.9 via the NuGet API afterward: its `netstandard2.0`/
+`.NETFramework4.6.2` dependency group needs `System.Memory` (which is what pulls in
+`System.Runtime.CompilerServices.Unsafe`/`System.Numerics.Vectors` transitively), but its `net8.0`/
+`net9.0` groups don't -- so running this same package under PowerShell 7 (backed by the .NET 8
+runtime) and pulling the `lib\net8.0\` build instead would only need
+`System.Reflection.Metadata`+`System.Collections.Immutable` as siblings, not five total. Not
+pursued since the `netstandard2.0` build was already confirmed working end-to-end.
+
+## Confirmed: MetadataLoadContext on Desktop fully recovers Revit 2025's manifest (2026-07-08)
+
+A real run on the same Windows PowerShell 5.1 machine, using `-MetadataLoadContextAssembly` (all
+five dependency `.dll`s alongside it) and no `-NetFrameworkReferenceAssembliesDir`, succeeded
+end-to-end: `17 / 3190 scanned assemblies matched 'Autodesk.Revit.DB'; 2687 types collected.`
+Diffing directly against the real 2024 baseline manifest:
+
+| | 2024 | 2025 (MetadataLoadContext) |
+|---|---|---|
+| matched assemblies | 15 | 17 |
+| total types | 2607 | 2687 |
+| total members | 20061 | 20639 |
+| `RevitAPI` types specifically | 2364 | 2406 |
+
+`RevitAPI` itself -- the assembly that was losing 99.6% of its types to the `ReflectionOnlyLoadFrom`
+wall a few runs ago -- is now fully populated, with slightly *more* types than 2024 (consistent
+with real API growth between versions, not a partial recovery). Per-assembly counts for
+`RevitAPIExtData`/`RevitAPIIFC`/`RevitAPIMacros`/`RevitAPISteel`/`DBManagedServices`/
+`Autodesk.CivilAlignments.DBApplication`/`Autodesk.StructuralRibbon.Application`/`RevitNET` all
+match 2024 almost exactly (off by at most 1, consistent with minor real API changes, not data
+loss). `Autodesk.Revit.CloudRendering.SPD.Exporter` roughly doubled (33 -> 66), plausibly real API
+growth in that add-in rather than a residual gap -- not independently confirmed either way.
+
+Only two assemblies that matched in 2024 are still missing: `CollaborateCommon` (confirmed
+genuinely absent from the 2025 install entirely, not a resolution failure -- see the earlier
+"silently vanished" note) and `RSCloudClient` (still needs `System.Runtime, Version=6.0.0.0`
+specifically -- a .NET 6 runtime, not installed alongside the .NET 8 one; low priority, since it's
+cloud-collaboration plumbing rather than `Autodesk.Revit.DB` schema surface). A new match,
+`Autodesk.Revit.CloudWorksharing.DocumentManagement` (10 types), is evidently `RSCloudClient`'s
+real 2025 replacement.
+
+Two further findings from this same round of automated PR review, both fixed:
+1. `$mlcResolveHandler`'s `Split-Path -Parent $MlcAssemblyPath` returns `""` (not `$null`) for a
+   bare filename with no directory component, and `Join-Path` errors on an empty `-Path` --
+   defeating the handler before it ever reaches the sibling-dll lookup, for the simplest, most
+   likely-to-be-typed form of `-MetadataLoadContextAssembly`. Fixed by defaulting to `"."`.
+2. `$runtimeDlls` (from `RuntimeEnvironment.GetRuntimeDirectory()`) was included in the CoreLib
+   family's candidate pool whenever `$coreAssemblyName` wasn't `"mscorlib"`, regardless of which
+   *host* was actually running -- but on Windows PowerShell 5.1 opted into MetadataLoadContext for
+   the CoreLib case, that directory is the .NET *Framework* CLR, not a .NET Core shared framework.
+   Mixing those in could silently mask an incomplete `-DotNetSharedFrameworkRoot` install (a
+   reference resolving to a same-named Framework file instead of surfacing as unresolved) rather
+   than failing loudly. Fixed by only including `$runtimeDlls` there when
+   `$PSVersionTable.PSEdition -eq 'Core'` is actually true.

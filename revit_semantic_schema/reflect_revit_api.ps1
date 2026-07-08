@@ -623,7 +623,13 @@ function Invoke-CoreReflection {
     # one from ReflectionOnlyAssemblyResolve (used elsewhere in this script and by
     # Invoke-DesktopReflection), since Add-Type does a real, executing load, not a reflection-only
     # one.
+    # Split-Path -Parent returns "" (not $null) for a bare filename with no directory component
+    # (e.g. -MetadataLoadContextAssembly passed as just "System.Reflection.MetadataLoadContext.dll"
+    # from the current directory) -- confirmed by automated PR review that Join-Path then errors
+    # on that empty path before ever reaching the sibling-dll lookup below, defeating this handler
+    # entirely for exactly the simplest, most likely-to-be-typed invocation.
     $mlcDir = Split-Path -Parent $MlcAssemblyPath
+    if (-not $mlcDir) { $mlcDir = "." }
     $mlcResolveHandler = [ResolveEventHandler] {
         param($sender, $e)
         $simpleName = ($e.Name -split ',')[0].Trim()
@@ -703,8 +709,23 @@ function Invoke-CoreReflection {
     # family, and a same-named reference (e.g. System.Runtime) could bind to the host's Core copy
     # by version instead of the framework one -- reintroducing the same mixed-root problem this
     # was just fixed for. Only include $runtimeDlls for the CoreLib case, where the host's own
-    # runtime directory is actually the right (and original, pre-Revit-2025) source for them.
-    $familyRefDlls = if ($coreAssemblyName -eq "mscorlib") { $frameworkRefDlls } else { $dotNetSharedDlls + $runtimeDlls }
+    # runtime directory is actually the right (and original, pre-Revit-2025) source for them --
+    # but only when that host genuinely *is* a .NET Core/PowerShell 7+ process. Confirmed a real,
+    # separate gap by a further round of the same automated review: on Windows PowerShell 5.1
+    # opted into MetadataLoadContext for the CoreLib case (Revit 2025+), GetRuntimeDirectory()
+    # still returns the .NET *Framework* CLR directory, not a .NET Core shared framework --
+    # mixing those mscorlib-family files into a CoreLib-rooted pool could silently mask a
+    # missing/incomplete -DotNetSharedFrameworkRoot install (some reference resolving to a
+    # same-named Framework file instead of surfacing as unresolved), corrupting the manifest with
+    # Framework types instead of failing loudly the way an incomplete .NET 8 install should.
+    $isRunningOnCore = $PSVersionTable.PSEdition -eq 'Core'
+    $familyRefDlls = if ($coreAssemblyName -eq "mscorlib") {
+        $frameworkRefDlls
+    } elseif ($isRunningOnCore) {
+        $dotNetSharedDlls + $runtimeDlls
+    } else {
+        $dotNetSharedDlls
+    }
     $allCandidatePaths = @($DllPaths) + @($familyRefDlls)
     $resolver = New-Object System.Reflection.PathAssemblyResolver (, [string[]]$allCandidatePaths)
     $mlc = New-Object System.Reflection.MetadataLoadContext($resolver, $coreAssemblyName)
