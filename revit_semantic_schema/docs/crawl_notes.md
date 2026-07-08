@@ -1391,3 +1391,55 @@ previously now showing 0 types). Actually fixing the resolution gap itself (e.g.
 version-bumped simple name, or seeding the resolver with a coherent reference set) needs the real
 `LoaderExceptions` text from a `-Verbose` re-run against the live 2025 install first -- this is a
 confirmed real risk, not yet a confirmed root cause per assembly.
+
+## The `-Verbose` re-run: the rename/version-bump hypothesis above was wrong (2026-07-08)
+
+A real `-Verbose` re-run against the same live Revit 2025 install (using the
+`LoaderExceptions`-logging fix above) told a completely different story than the
+`AdskLicensingSDK`/`ASM*`/`ATFRevitWCFInterface` rename theory guessed. The actual scope is much
+bigger too: **434 assemblies** hit `ReflectionTypeLoadException` (not just the 10 found by manifest
+diffing), losing **296,357 types** before this run ever saw them. Deduplicating every distinct
+`Cannot resolve dependency to assembly '...'` message across the whole log gives 26 identities,
+overwhelmingly one family:
+
+- `System.Runtime, Version=8.0.0.0, ...` -- 410 occurrences (by far the largest)
+- `System.Runtime, Version=6.0.0.0/7.0.0.0/5.0.0.0/4.2.x/4.1.x, ...` -- 106 more, spread across
+  older .NET/.NET-Standard numbering
+- `PresentationFramework`/`WindowsBase`/`System.Xaml`, all `Version=8.0.0.0` -- WPF-on-.NET-Core
+- `netstandard, Version=2.1.0.0`
+- a long tail (`System.Collections`, `System.ObjectModel`, `System.Windows.Forms`,
+  `System.Security.AccessControl`, `Autodesk.Http`, `Newtonsoft.Json`, ...), each 1-3 occurrences
+
+Every one of these is a **modern .NET (Core) 5-8 / WPF-on-.NET-Core reference identity, not a
+renamed or version-bumped Autodesk component**. `AcDbMgd` alone loses 3552 of its 3560 types to
+this. Confirmed neither Revit's own install directory nor the target machine has any of these
+files anywhere: grepping the manifest's own `assemblies_scanned` for exact simple-name matches
+(`System.Runtime`, `PresentationFramework`, `WindowsBase`, `System.Xaml`, `netstandard`,
+`System.Collections`, `System.ObjectModel`, `System.Windows.Forms`) under
+`C:\Program Files\Autodesk\Revit 2025\` found none of them; running `dotnet --list-runtimes` on
+that same machine reported no .NET SDK/runtime installed at all. So this was never a matter of
+the resolver's by-simple-name lookup missing a renamed file under `-InstallDir` (the entire
+premise of the rename hypothesis) -- the real files these references need don't exist anywhere on
+that machine, under any name, full stop. Revit 2025 evidently ships some components (chiefly
+`AcDbMgd`, plus whatever else transitively references it) built against modern .NET, sitting
+alongside the classic .NET-Framework-targeted `RevitAPI.dll` -- and a classic .NET Framework GAC
+can never contain a `System.Runtime, Version=8.0.0.0` identity; that's not a gap in this
+particular GAC, it's a different runtime family entirely.
+
+**Fix**: since `ReflectionOnlyLoadFrom` only parses metadata and never executes a loaded assembly,
+a real modern .NET runtime's own DLL (e.g. `...\dotnet\shared\Microsoft.NETCore.App\8.0.11\
+System.Runtime.dll`) loads there just fine even though the whole scanning process is old .NET
+Framework -- confirmed as the standard technique for this exact cross-framework-reflection
+scenario. Added `-DotNetSharedFrameworkRoot` (default `$env:ProgramFiles\dotnet\shared`, i.e.
+`dotnet --list-runtimes`'s own layout) and `Get-DotNetSharedFrameworkIndex`, which indexes every
+`*.dll` under any installed `Microsoft.NETCore.App`/`Microsoft.WindowsDesktop.App`/
+`Microsoft.AspNetCore.App` version folder, keyed by (simple name, *major* version only -- an
+installed runtime's own files keep `AssemblyVersion` pinned to `<major>.0.0.0` across every patch,
+so any installed patch folder for a requested major version satisfies the reference regardless of
+exact patch). `Invoke-DesktopReflection`'s resolve handler now tries this index (matching the
+request's own major version) between the existing by-`-InstallDir`-name check and the final GAC
+fallback. **Not yet re-run**: this needs the matching .NET runtime(s) actually installed on the
+target machine first (confirmed none are, as above) -- installing at least the .NET 8 Desktop
+Runtime (covering `Microsoft.NETCore.App`+`Microsoft.WindowsDesktop.App` for the dominant
+410-of-434 `Version=8.0.0.0` case) is the next real step, then re-running to see how much of the
+296,357 lost types actually recovers.

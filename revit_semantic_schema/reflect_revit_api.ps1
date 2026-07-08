@@ -54,6 +54,23 @@
     (mscorlib.dll, System.dll, etc.) to seed the resolver with, needed because Revit's DLLs
     target .NET Framework while a PowerShell 7 host runs .NET/.NET Core -- the host's own core
     assemblies are a different framework and won't satisfy that resolution on their own.
+
+.PARAMETER DotNetSharedFrameworkRoot
+    Only used on the Desktop/ReflectionOnlyLoadFrom path. Root of an installed .NET (Core)
+    runtime's shared-framework layout (default: "$env:ProgramFiles\dotnet\shared", i.e.
+    `dotnet --list-runtimes`'s own install location) -- confirmed a real, large need on a
+    live Revit 2025 run (see docs/crawl_notes.md): some Revit assemblies (AcDbMgd chief among
+    them) are themselves built against modern .NET 5-8 (plus WPF-on-.NET-Core), not .NET
+    Framework, and reference identities like "System.Runtime, Version=8.0.0.0, ..." that a
+    classic .NET Framework GAC can never contain, at any version, regardless of what's under
+    -InstallDir. If the matching .NET runtime (e.g. the .NET 8 Desktop Runtime, for
+    Microsoft.NETCore.App's System.Runtime/System.Collections/etc. and
+    Microsoft.WindowsDesktop.App's PresentationFramework/WindowsBase/System.Xaml) is installed
+    on this machine, this lets the resolver find its real DLLs and load them purely for
+    metadata -- ReflectionOnlyLoadFrom never executes a loaded assembly, so a modern .NET
+    assembly loads here fine even though this whole process is old .NET Framework. If no
+    matching runtime is installed at all, this can't manufacture the missing metadata --
+    install the .NET runtime version(s) named in -Verbose's LoaderExceptions output first.
 #>
 [CmdletBinding()]
 param(
@@ -69,7 +86,9 @@ param(
 
     [string] $MetadataLoadContextAssembly,
 
-    [string] $NetFrameworkReferenceAssembliesDir
+    [string] $NetFrameworkReferenceAssembliesDir,
+
+    [string] $DotNetSharedFrameworkRoot = (Join-Path $env:ProgramFiles "dotnet\shared")
 )
 
 $ErrorActionPreference = "Stop"
@@ -118,6 +137,44 @@ function Get-DllPaths([string] $Root) {
         Select-Object -ExpandProperty FullName)
     Write-Verbose "Found $($paths.Count) dlls in $([math]::Round($sw.Elapsed.TotalSeconds, 2))s"
     return $paths
+}
+
+
+# -- Desktop-path only: real .NET (Core) runtime files, for references that are never Framework/GAC --
+
+function Get-DotNetSharedFrameworkIndex([string] $Root) {
+    # Maps "<simpleName>|<majorVersion>" -> full path, for every *.dll under any
+    # Microsoft.NETCore.App/Microsoft.WindowsDesktop.App/Microsoft.AspNetCore.App version
+    # folder under $Root -- the standard `dotnet --list-runtimes` layout (e.g.
+    # "...\dotnet\shared\Microsoft.NETCore.App\8.0.11\System.Runtime.dll"). Confirmed a real,
+    # large need on a live Revit 2025 run (see docs/crawl_notes.md): 434 assemblies'
+    # ReflectionTypeLoadExceptions all traced back to a handful of exact identities --
+    # System.Runtime/PresentationFramework/WindowsBase/System.Xaml/netstandard/etc at various
+    # .NET 5-8 versions -- none of which a classic Framework/GAC resolve can ever satisfy,
+    # regardless of what's under -InstallDir, since they aren't Framework assemblies at all.
+    # Only the *major* version is indexed, not the full patch version: an installed runtime's
+    # own files keep AssemblyVersion pinned to "<major>.0.0.0" across every patch release
+    # (confirmed Microsoft's own .NET versioning convention), so any installed patch folder for
+    # a given major version satisfies a reference asking for that major version.
+    $index = @{}
+    if (-not (Test-Path -LiteralPath $Root -PathType Container)) {
+        Write-Verbose "DotNetSharedFrameworkRoot '$Root' not found -- a reference to a modern .NET runtime assembly (System.Runtime, PresentationFramework, ...) will stay unresolved unless the matching .NET runtime is installed and -DotNetSharedFrameworkRoot points at it."
+        return $index
+    }
+    $appModelDirs = @("Microsoft.NETCore.App", "Microsoft.WindowsDesktop.App", "Microsoft.AspNetCore.App") |
+        ForEach-Object { Join-Path $Root $_ } | Where-Object { Test-Path -LiteralPath $_ -PathType Container }
+    foreach ($appModelDir in $appModelDirs) {
+        Get-ChildItem -LiteralPath $appModelDir -Directory -ErrorAction SilentlyContinue | ForEach-Object {
+            $major = ($_.Name -split '\.')[0]
+            Get-ChildItem -LiteralPath $_.FullName -Filter *.dll -ErrorAction SilentlyContinue | ForEach-Object {
+                $simpleName = [System.IO.Path]::GetFileNameWithoutExtension($_.Name)
+                $key = "$simpleName|$major"
+                if (-not $index.ContainsKey($key)) { $index[$key] = $_.FullName }
+            }
+        }
+    }
+    Write-Verbose "Indexed $($index.Count) (name, major version) dotnet shared-framework dll(s) under $Root"
+    return $index
 }
 
 
@@ -369,13 +426,15 @@ function Get-LoadableTypes([System.Reflection.Assembly] $Assembly, [string] $Ass
 # -- Desktop (PowerShell 5.1 / .NET Framework) path ----------------------------
 
 function Invoke-DesktopReflection {
-    param([string[]] $DllPaths, [string] $Prefix)
+    param([string[]] $DllPaths, [string] $Prefix, [string] $DotNetSharedFrameworkRoot)
 
     $byName = @{}
     foreach ($p in $DllPaths) {
         $name = [System.IO.Path]::GetFileNameWithoutExtension($p)
         if (-not $byName.ContainsKey($name)) { $byName[$name] = $p }
     }
+
+    $dotNetSharedFrameworkIndex = Get-DotNetSharedFrameworkIndex $DotNetSharedFrameworkRoot
 
     # Cross-assembly references aren't auto-resolved by reflection-only loading -- redirect
     # any unresolved reference to the matching DLL already found under InstallDir, by simple
@@ -409,6 +468,19 @@ function Invoke-DesktopReflection {
         if ($byName.ContainsKey($simpleName)) {
             try { return [System.Reflection.Assembly]::ReflectionOnlyLoadFrom($byName[$simpleName]) }
             catch { }  # fall through to GAC/normal-probing below rather than giving up here
+        }
+        # A requested identity like "System.Runtime, Version=8.0.0.0, ..." is never a
+        # Framework/GAC assembly -- see Get-DotNetSharedFrameworkIndex's own comment.
+        # ReflectionOnlyLoadFrom never executes a loaded assembly, only parses its metadata, so
+        # a real modern .NET runtime's own file loads fine here even though this whole process
+        # is old .NET Framework -- matching the *major* version (not the full patch version)
+        # is what makes the returned assembly's identity actually satisfy the request.
+        if ($e.Name -match 'Version=(\d+)\.') {
+            $key = "$simpleName|$($Matches[1])"
+            if ($dotNetSharedFrameworkIndex.ContainsKey($key)) {
+                try { return [System.Reflection.Assembly]::ReflectionOnlyLoadFrom($dotNetSharedFrameworkIndex[$key]) }
+                catch { }  # fall through to GAC/normal-probing below rather than giving up here
+            }
         }
         try { return [System.Reflection.Assembly]::ReflectionOnlyLoad($e.Name) }
         catch { return $null }
@@ -571,7 +643,7 @@ $result = if ($isCore) {
     Invoke-CoreReflection -DllPaths $dllPaths -Prefix $NamespacePrefix `
         -MlcAssemblyPath $MetadataLoadContextAssembly -ExtraRefDir $NetFrameworkReferenceAssembliesDir
 } else {
-    Invoke-DesktopReflection -DllPaths $dllPaths -Prefix $NamespacePrefix
+    Invoke-DesktopReflection -DllPaths $dllPaths -Prefix $NamespacePrefix -DotNetSharedFrameworkRoot $DotNetSharedFrameworkRoot
 }
 
 $manifest = [ordered]@{
