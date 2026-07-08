@@ -433,17 +433,31 @@ def parse_type_page(html: str, url: str, version: str) -> ApiPage:
             if len(cells) < 2:
                 continue
             name_cell = _member_name_cell(cells)
-            member_name = name_cell.get_text(strip=True) if name_cell is not None else ""
+            cell_text = name_cell.get_text(strip=True) if name_cell is not None else ""
             description = cells[-1].get_text(" ", strip=True)
-            if not member_name:
+            if not cell_text:
                 continue
-            member_kind = MemberKind.METHOD if "(" in member_name else MemberKind.PROPERTY
+            member_kind = MemberKind.METHOD if "(" in cell_text else MemberKind.PROPERTY
+            # An overloaded method's Name cell on a class/struct page's own inline member
+            # table (as opposed to parse_member_page's per-member sub-page, which already
+            # goes through the same helper via its title) shows the real Sandcastle
+            # disambiguation text verbatim, e.g. "SpliceRebar(Document, ElementId,
+            # RebarSpliceOptions, Line, ElementId)" -- confirmed real leak on a Revit 2025
+            # crawl: left unstripped, this becomes both MemberInfo.name and (downstream)
+            # EdgeCandidate.member_name, which then can never match a manifest member by
+            # name in ground_truth.cross_validate_dll (Stage B correctly reported these as
+            # MEMBER_NOT_FOUND, but the real bug was here, upstream of Stage B entirely).
+            # _strip_trailing_overload_signature already handles exactly this shape (and
+            # a non-overloaded method's plain "Foo()" reduces to "Foo" the same way) --
+            # applied to member_kind detection's *input* text above, not its output, since
+            # a property's cell text never has parens to strip in the first place.
+            member_name = _strip_trailing_overload_signature(cell_text)
             members.append(
                 MemberInfo(
                     name=member_name,
                     kind=member_kind,
                     declaring_type=full_type_name,
-                    raw_signature=member_name,
+                    raw_signature=cell_text,
                     summary=description,
                     source_url=url,
                 )
