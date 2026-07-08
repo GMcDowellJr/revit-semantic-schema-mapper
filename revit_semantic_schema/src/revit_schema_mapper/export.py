@@ -10,6 +10,7 @@ from pathlib import Path
 
 from . import semantic_roles
 from .graph import GraphBuildResult, filter_core
+from .ground_truth import GroundTruthReport
 from .models import (
     ApiPage,
     ClassRole,
@@ -85,6 +86,11 @@ def read_node_candidates(output_dir: Path) -> list[NodeCandidate]:
             class_role=ClassRole(r["class_role"]),
             evidence=r.get("evidence", []),
             source_url=r.get("source_url", ""),
+            # Round-tripped so a second --cross-validate-dll run (or any other read of
+            # this file) doesn't silently lose a previous pass's annotation -- these are
+            # None until ground_truth.cross_validate_dll (Stage B) has actually run once
+            # and its output been written back via write_node_candidates.
+            dll_type_verified=r.get("dll_type_verified"),
         )
         for r in raw
     ]
@@ -109,6 +115,11 @@ def read_edge_candidates(output_dir: Path) -> list[EdgeCandidate]:
             evidence=r.get("evidence", []),
             source_url=r.get("source_url", ""),
             parser_notes=r.get("parser_notes", []),
+            # Round-tripped -- see the matching comment in read_node_candidates above.
+            dll_signature_verified=r.get("dll_signature_verified"),
+            dll_relationship_scope=r.get("dll_relationship_scope"),
+            dll_semantic_verified=r.get("dll_semantic_verified"),
+            dll_verified_status=r.get("dll_verified_status"),
         )
         for r in raw
     ]
@@ -375,6 +386,115 @@ def refresh_graph_section_in_file(path: Path, result: GraphBuildResult, *, secti
     if match:
         text = text[: match.start()]
     section = _graph_section(result, section_number=section_number)
+    path.write_text(text.rstrip("\n") + "\n\n" + "\n".join(section) + "\n", encoding="utf-8")
+
+
+def write_ground_truth_report(output_dir: Path, report: GroundTruthReport) -> None:
+    _write_json(output_dir / "ground_truth_report.json", report)
+
+
+def _ground_truth_section(report: GroundTruthReport | None, *, section_number: int, top_n: int = 10) -> list[str]:
+    """Stage B of docs/dll_reflection_v0.md -- cross-checking the docs-derived
+    node/edge candidates against a real ``ground_truth_manifest_<version>.json``
+    (Stage A's .NET reflection output). ``report`` is ``None`` until
+    ``--cross-validate-dll`` is actually run against this output directory (an
+    entirely separate, opt-in pass -- see the module docstring on
+    ``ground_truth.py``), in which case this contributes nothing rather than a
+    misleading all-zero section.
+    """
+    if report is None:
+        return []
+
+    lines = [f"## {section_number}. DLL reflection cross-validation (Stage B)", ""]
+    lines.append(
+        f"Cross-checked against `ground_truth_manifest_{report.revit_version}.json` -- see "
+        "docs/dll_reflection_v0.md. This is a distinct, orthogonal axis from `edge_confidence` "
+        "(how strongly the docs alone imply an edge); a low-confidence docs edge can still be "
+        "`signature_confirmed` here, and vice versa."
+    )
+    lines.append("")
+
+    type_counts: dict[str, int] = {}
+    for r in report.type_results:
+        type_counts[r.status.value] = type_counts.get(r.status.value, 0) + 1
+    total_types = len(report.type_results) or 1
+    lines.append("### Type verification")
+    for status, count in sorted(type_counts.items(), key=lambda kv: -kv[1]):
+        lines.append(f"- {status}: {count} ({100 * count / total_types:.1f}%)")
+    lines.append(
+        f"- dll_only (in the manifest, no matching crawled type at all): {len(report.dll_only_types)}"
+    )
+    lines.append("")
+
+    edge_counts: dict[str, int] = {}
+    for r in report.edge_results:
+        edge_counts[r.status.value] = edge_counts.get(r.status.value, 0) + 1
+    total_edges = len(report.edge_results) or 1
+    lines.append("### Edge verification")
+    for status, count in sorted(edge_counts.items(), key=lambda kv: -kv[1]):
+        lines.append(f"- {status}: {count} ({100 * count / total_edges:.1f}%)")
+    scope_counts: dict[str, int] = {}
+    for r in report.edge_results:
+        if r.relationship_scope:
+            scope_counts[r.relationship_scope] = scope_counts.get(r.relationship_scope, 0) + 1
+    if scope_counts:
+        lines.append("- Relationship scope (of edges with a resolved member): " + ", ".join(f"{k}={v}" for k, v in sorted(scope_counts.items())))
+    lines.append("")
+
+    doc_only = [r.full_type_name for r in report.type_results if r.status.value == "doc_only"]
+    lines.append(f"### Sample doc_only types (docs claim exists, manifest disagrees) -- {len(doc_only)} total")
+    if doc_only:
+        lines.extend(f"- `{name}`" for name in doc_only[:top_n])
+        if len(doc_only) > top_n:
+            lines.append(f"- ...and {len(doc_only) - top_n} more")
+    else:
+        lines.append("- (none)")
+    lines.append("")
+
+    lines.append(f"### Sample dll_only types (manifest has it, never crawled) -- {len(report.dll_only_types)} total")
+    if report.dll_only_types:
+        lines.extend(f"- `{name}`" for name in report.dll_only_types[:top_n])
+        if len(report.dll_only_types) > top_n:
+            lines.append(f"- ...and {len(report.dll_only_types) - top_n} more")
+    else:
+        lines.append("- (none)")
+    lines.append("")
+
+    mismatches = [r for r in report.edge_results if r.status.value == "signature_mismatch"]
+    lines.append(f"### Sample signature_mismatch edges -- {len(mismatches)} total")
+    if mismatches:
+        for r in mismatches[:top_n]:
+            lines.append(f"- `{r.source_type}.{r.member_name}`: {r.note}")
+        if len(mismatches) > top_n:
+            lines.append(f"- ...and {len(mismatches) - top_n} more")
+    else:
+        lines.append("- (none)")
+    lines.append("")
+
+    return lines
+
+
+_GROUND_TRUTH_SECTION_HEADING_RE = re.compile(r"^## \d+\. DLL reflection cross-validation \(Stage B\)\s*$", re.MULTILINE)
+
+
+def refresh_ground_truth_section_in_file(path: Path, report: GroundTruthReport, *, section_number: int) -> None:
+    """Replace (or append, if absent) the 'DLL reflection cross-validation'
+    section of an already-written ``summary.md``/``validation_summary.md``
+    with one reflecting ``report`` -- the same in-place-refresh pattern
+    ``refresh_graph_section_in_file`` already uses for the graph section, so
+    ``--cross-validate-dll`` can update a summary without needing to
+    regenerate the rest of it (which needs the full page/index data this
+    mode deliberately skips). A no-op if ``path`` doesn't exist.
+    """
+    if not path.exists():
+        return
+    text = path.read_text(encoding="utf-8")
+    match = _GROUND_TRUTH_SECTION_HEADING_RE.search(text)
+    if match:
+        text = text[: match.start()]
+    section = _ground_truth_section(report, section_number=section_number)
+    if not section:
+        return
     path.write_text(text.rstrip("\n") + "\n\n" + "\n".join(section) + "\n", encoding="utf-8")
 
 

@@ -20,6 +20,7 @@ from .http_compat import HAVE_REQUESTS
 from .pipeline import (
     DEFAULT_KNOWN_EDGE_CHECKS,
     DEFAULT_TARGET_CLASSES,
+    run_cross_validate_dll,
     run_discovery,
     run_graph_only,
     run_pipeline,
@@ -73,6 +74,17 @@ def main(argv: list[str] | None = None) -> int:
         "crawling or re-parsing anything -- much faster than a full re-run when only graph.py "
         "changed, especially on slow hardware. Requires a previous run's output to already exist "
         "in --output-dir.",
+    )
+    parser.add_argument(
+        "--cross-validate-dll",
+        metavar="MANIFEST_PATH",
+        default=None,
+        help="Stage B of DLL reflection cross-validation (docs/dll_reflection_v0.md): cross-check "
+        "this --output-dir's existing node_type_candidates.json/candidate_edges.json against a "
+        "ground_truth_manifest_<version>.json produced separately by reflect_revit_api.ps1 (Stage "
+        "A, run on a Windows machine with Revit installed). Writes ground_truth_report.json and a "
+        "refreshed summary section in place -- no crawling, fetching, or live Revit/DLL access of "
+        "any kind. Requires a previous run's output to already exist in --output-dir.",
     )
     parser.add_argument(
         "--include-doc-text",
@@ -133,6 +145,27 @@ def main(argv: list[str] | None = None) -> int:
             f"Outputs written to: {output_dir / 'graph.json'} / {output_dir / 'graph_core.json'} / "
             f"{output_dir / 'graph.html'} / {output_dir / 'semantic_relationship_map.html'}"
         )
+        return 0
+
+    if args.cross_validate_dll:
+        if not (output_dir / "node_type_candidates.json").exists() or not (output_dir / "candidate_edges.json").exists():
+            print(f"error: {output_dir} has no node_type_candidates.json/candidate_edges.json to cross-validate -- run a real crawl first", file=sys.stderr)
+            return 1
+        manifest_path = Path(args.cross_validate_dll)
+        if not manifest_path.exists():
+            print(f"error: manifest not found: {manifest_path}", file=sys.stderr)
+            return 1
+        report = run_cross_validate_dll(output_dir, manifest_path)
+        type_counts: dict[str, int] = {}
+        for r in report.type_results:
+            type_counts[r.status.value] = type_counts.get(r.status.value, 0) + 1
+        edge_counts: dict[str, int] = {}
+        for r in report.edge_results:
+            edge_counts[r.status.value] = edge_counts.get(r.status.value, 0) + 1
+        print(f"Types:              {len(report.type_results)} ({type_counts})")
+        print(f"dll_only types:     {len(report.dll_only_types)}")
+        print(f"Edges:              {len(report.edge_results)} ({edge_counts})")
+        print(f"Outputs written to: {output_dir / 'ground_truth_report.json'} (node_type_candidates.json/candidate_edges.json updated in place)")
         return 0
 
     config = CrawlConfig(

@@ -21,6 +21,7 @@ from revit_schema_mapper.models import (
 from revit_schema_mapper.pipeline import (
     _build_known_edge_report,
     _crawl_and_parse,
+    run_cross_validate_dll,
     run_discovery,
     run_graph_only,
     run_pipeline,
@@ -1048,6 +1049,67 @@ def test_run_graph_only_rebuilds_graph_and_refreshes_summary_without_crawling(tm
     assert "STALE" not in summary_text
     assert "# Old summary" in summary_text
     assert summary_text.count("## 14. Knowledge graph materialization") == 1
+
+
+def test_run_cross_validate_dll_persists_dll_fields_and_writes_report(tmp_path):
+    """--cross-validate-dll's whole point is to layer on top of an existing
+    crawl's output without touching Crawler/CrawlConfig -- only reading a
+    manifest file plus this directory's node_type_candidates.json/
+    candidate_edges.json, and writing back the mutated dll_* fields plus a
+    ground_truth_report.json and a refreshed summary section.
+    """
+    nodes = [_node_candidate("Autodesk.Revit.DB.View", [])]
+    edges = [_edge_candidate("Autodesk.Revit.DB.View", "Autodesk.Revit.DB.ViewSheet", EdgeType.PLACED_ON_SHEET, ConfidenceLabel.DIRECT_RETURN_TYPE)]
+    export.write_node_candidates(tmp_path, nodes)
+    export.write_edge_candidates(tmp_path, edges)
+    (tmp_path / "summary.md").write_text("# Old summary\n\n## 15. DLL reflection cross-validation (Stage B)\n\nSTALE\n", encoding="utf-8")
+
+    manifest_path = tmp_path / "ground_truth_manifest_2024.json"
+    manifest_path.write_text(
+        json.dumps(
+            {
+                "revit_version": "2024",
+                "generated_at": "",
+                "namespace_prefix": "Autodesk.Revit.DB",
+                "assemblies_scanned": [],
+                "types": [
+                    {
+                        "full_type_name": "Autodesk.Revit.DB.View",
+                        "assembly": "RevitAPI",
+                        "kind": "class",
+                        "is_abstract": False,
+                        "base_type": None,
+                        "inheritance_chain": [],
+                        "implemented_interfaces": [],
+                        "members": [
+                            {"name": "SomeMember", "kind": "property", "declaring_type": "Autodesk.Revit.DB.View", "return_type": "ViewSheet"}
+                        ],
+                        "enum_members": [],
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    report = run_cross_validate_dll(tmp_path, manifest_path)
+
+    assert report.type_results[0].status.value == "confirmed"
+    assert report.edge_results[0].status.value == "signature_confirmed"
+
+    # Mutated in place and persisted back to the same files run_graph_only reads from.
+    persisted_nodes = export.read_node_candidates(tmp_path)
+    assert persisted_nodes[0].dll_type_verified is True
+    persisted_edges = export.read_edge_candidates(tmp_path)
+    assert persisted_edges[0].dll_signature_verified is True
+
+    report_json = json.loads((tmp_path / "ground_truth_report.json").read_text())
+    assert report_json["revit_version"] == "2024"
+
+    summary_text = (tmp_path / "summary.md").read_text()
+    assert "STALE" not in summary_text
+    assert "# Old summary" in summary_text
+    assert summary_text.count("## 15. DLL reflection cross-validation (Stage B)") == 1
 
 
 def test_known_edge_report_genuinely_missing_member_is_not_confused_with_cross_type_match():
