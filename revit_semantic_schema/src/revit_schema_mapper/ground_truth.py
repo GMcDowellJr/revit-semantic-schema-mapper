@@ -200,6 +200,21 @@ def normalize_type_name(raw: Optional[str]) -> str:
 # -- type resolution (mirrors graph._Resolver's exact/short-name algorithm) --
 
 
+def _dotted(full_type_name: str) -> str:
+    """.NET reflection's own ``Type.FullName`` spells a nested class with
+    ``+`` (``Outer+Inner``) -- confirmed real shape in a live Revit 2025
+    manifest (``Autodesk.Revit.DB.BuiltInFailures+AlignmentFailures`` and
+    171 similar entries, plus a handful of non-BuiltInFailures nested types
+    like ``SpecTypeId.Boolean``). The docs-derived crawl side (``ApiPage``/
+    ``NodeCandidate``/``EdgeCandidate.source_type``) always uses ``.``
+    instead, matching how Sandcastle itself renders a nested type's name on
+    revitapidocs.com. Both sides must be compared in the same form, or every
+    nested manifest type falsely reports DOC_ONLY/dll_only despite actually
+    being present on both sides.
+    """
+    return full_type_name.replace("+", ".")
+
+
 class _ManifestTypeResolver:
     """Resolves a type-name string to a ``ManifestType``: exact match first,
     then an unambiguous short-name fallback -- the same two-pass algorithm
@@ -208,21 +223,22 @@ class _ManifestTypeResolver:
     different collection, so the resolver itself isn't reused directly, but
     the algorithm -- and the reason for it, see graph._Resolver's docstring
     on the confirmed Autodesk.Revit.DB.Room vs. ...Architecture.Room mismatch
-    -- is exactly the same).
+    -- is exactly the same). Lookup keys are always ``_dotted`` first, so a
+    docs-derived ``Outer.Inner`` query matches a manifest's ``Outer+Inner``.
     """
 
     def __init__(self, manifest_types: list[ManifestType]) -> None:
-        self._by_full_name = {t.full_type_name: t for t in manifest_types}
+        self._by_full_name = {_dotted(t.full_type_name): t for t in manifest_types}
         by_short: dict[str, list[str]] = {}
         for t in manifest_types:
-            by_short.setdefault(t.full_type_name.rsplit(".", 1)[-1], []).append(t.full_type_name)
+            by_short.setdefault(_dotted(t.full_type_name).rsplit(".", 1)[-1], []).append(_dotted(t.full_type_name))
         self._unambiguous_by_short = {short: names[0] for short, names in by_short.items() if len(names) == 1}
 
     def resolve(self, full_type_name: str) -> tuple[Optional[ManifestType], str]:
-        exact = self._by_full_name.get(full_type_name)
+        exact = self._by_full_name.get(_dotted(full_type_name))
         if exact is not None:
             return exact, "exact"
-        short = full_type_name.rsplit(".", 1)[-1]
+        short = _dotted(full_type_name).rsplit(".", 1)[-1]
         fallback_name = self._unambiguous_by_short.get(short)
         if fallback_name is not None:
             return self._by_full_name[fallback_name], "short_name_fallback"
