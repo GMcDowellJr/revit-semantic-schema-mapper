@@ -15,6 +15,27 @@
       "inheritance_chain": [],
       "implemented_interfaces": [],
       "members": [
+        {
+          "name": "ChangeTypeId",
+          "kind": "method",
+          "declaring_type": "Autodesk.Revit.DB.Element",
+          "return_type": "System.Collections.Generic.ICollection`1[[Autodesk.Revit.DB.ElementId, RevitAPI, Version=1.0.0.0, Culture=neutral, PublicKeyToken=null]]",
+          "is_static": true,
+          "parameters": [
+            {"name": "document", "type": "Autodesk.Revit.DB.Document"},
+            {"name": "elementIds", "type": "System.Collections.Generic.ICollection`1[[Autodesk.Revit.DB.ElementId, RevitAPI, Version=1.0.0.0, Culture=neutral, PublicKeyToken=null]]"},
+            {"name": "typeId", "type": "Autodesk.Revit.DB.ElementId"}
+          ]
+        },
+        {
+          "name": "ChangeTypeId",
+          "kind": "method",
+          "declaring_type": "Autodesk.Revit.DB.Element",
+          "return_type": "Autodesk.Revit.DB.ElementId",
+          "parameters": [
+            {"name": "typeId", "type": "Autodesk.Revit.DB.ElementId"}
+          ]
+        },
         {"name": "Id", "kind": "property", "declaring_type": "Autodesk.Revit.DB.Element", "return_type": "Autodesk.Revit.DB.ElementId", "parameters": []},
         {"name": "WorksetId", "kind": "property", "declaring_type": "Autodesk.Revit.DB.Element", "return_type": "Autodesk.Revit.DB.WorksetId", "parameters": []}
       ],

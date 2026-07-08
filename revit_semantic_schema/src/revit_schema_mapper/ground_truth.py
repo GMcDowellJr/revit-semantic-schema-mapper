@@ -191,14 +191,30 @@ class _ManifestTypeResolver:
         return None, "none"
 
 
-def _find_member(
-    manifest_type: ManifestType, member_name: str, types_by_full_name: dict[str, ManifestType]
-) -> Optional[ManifestMember]:
-    """Look up ``member_name`` on ``manifest_type`` itself first, falling
-    back to every type in its ``inheritance_chain`` -- generalizing
-    ``pipeline._build_known_edge_report``'s exact mechanism (checking a
-    fixed nine hand-picked members against a type-or-its-known-ancestors) to
-    every edge, per docs/dll_reflection_v0.md.
+def _find_members(
+    manifest_type: ManifestType, member_name: str, member_kind: str, types_by_full_name: dict[str, ManifestType]
+) -> list[ManifestMember]:
+    """Every member named ``member_name`` (of ``member_kind``) visible on
+    ``manifest_type`` -- its own members plus every type in its
+    ``inheritance_chain`` -- generalizing ``pipeline._build_known_edge_report``'s
+    exact mechanism (checking a fixed nine hand-picked members against a
+    type-or-its-known-ancestors) to every edge, per docs/dll_reflection_v0.md.
+
+    Returns *all* matches, not just the first, because ``member_name`` alone
+    is not a unique key: an overloaded method (e.g. ``Element.ChangeTypeId``,
+    which has a single-``ElementId`` overload and a
+    ``Document``/``ICollection<ElementId>``/``ElementId`` overload -- see
+    docs/crawl_notes.md) produces multiple manifest entries sharing the same
+    name and often the same declaring_type, distinguished only by parameter
+    types. Returning just the first would make whether a given edge (itself
+    naming one specific overload via its own ``parameter_types``) reports
+    SIGNATURE_CONFIRMED or SIGNATURE_MISMATCH depend on manifest/reflection
+    ordering rather than on which overload it actually matches --
+    ``cross_validate_dll`` tries every entry this returns before concluding a
+    real mismatch. Filtering by ``member_kind`` here (not just ``member_name``)
+    is the same reasoning applied to the lookup key itself, per
+    docs/dll_reflection_v0.md's edge key of (source_type, member_name,
+    member_kind, parameter types).
 
     Checking ``manifest_type.members`` first also covers a manifest whose
     producer already flattened inherited members into every type's own list
@@ -206,17 +222,13 @@ def _find_member(
     ancestor walk below is what still finds the member for a manifest that
     doesn't.
     """
-    for m in manifest_type.members:
-        if m.name == member_name:
-            return m
+    matches = [m for m in manifest_type.members if m.name == member_name and m.kind == member_kind]
     for ancestor_name in manifest_type.inheritance_chain:
         ancestor = types_by_full_name.get(ancestor_name)
         if ancestor is None:
             continue
-        for m in ancestor.members:
-            if m.name == member_name:
-                return m
-    return None
+        matches.extend(m for m in ancestor.members if m.name == member_name and m.kind == member_kind)
+    return matches
 
 
 # -- report shape --------------------------------------------------------------
@@ -332,8 +344,8 @@ def cross_validate_dll(
             )
             continue
 
-        member = _find_member(manifest_type, edge.member_name, types_by_full_name)
-        if member is None:
+        candidates = _find_members(manifest_type, edge.member_name, edge.member_kind.value, types_by_full_name)
+        if not candidates:
             edge.dll_signature_verified = False
             edge.dll_relationship_scope = None
             edge.dll_verified_status = "member_not_found"
@@ -351,32 +363,71 @@ def cross_validate_dll(
             )
             continue
 
-        relationship_scope = "declared" if member.declaring_type == manifest_type.full_type_name else "inherited"
         expected_return = normalize_type_name(edge.return_type)
-        actual_return = normalize_type_name(member.return_type)
         expected_params = [normalize_type_name(p) for p in edge.parameter_types]
-        actual_params = [normalize_type_name(p.type) for p in member.parameters]
-        signature_matches = expected_return == actual_return and expected_params == actual_params
 
-        edge.dll_signature_verified = signature_matches
+        # Try every same-named overload before concluding a mismatch -- see
+        # _find_members' docstring. Only the edge's own (return type,
+        # parameter types) identify which specific overload it refers to;
+        # matching by name alone (as a single dll_signature_verified bool
+        # keyed on (source_type, member_name) would force) can't distinguish
+        # them at all.
+        matched = next(
+            (
+                c
+                for c in candidates
+                if normalize_type_name(c.return_type) == expected_return
+                and [normalize_type_name(p.type) for p in c.parameters] == expected_params
+            ),
+            None,
+        )
+
+        if matched is not None:
+            relationship_scope = "declared" if matched.declaring_type == manifest_type.full_type_name else "inherited"
+            edge.dll_signature_verified = True
+            edge.dll_relationship_scope = relationship_scope
+            edge.dll_verified_status = f"signature_verified_{relationship_scope}"
+            overload_note = f" ({len(candidates)} overload(s) named {edge.member_name} considered)" if len(candidates) > 1 else ""
+            edge_results.append(
+                EdgeVerificationResult(
+                    source_type=edge.source_type,
+                    member_name=edge.member_name,
+                    status=EdgeVerificationStatus.SIGNATURE_CONFIRMED,
+                    relationship_scope=relationship_scope,
+                    expected_return_type=edge.return_type,
+                    actual_return_type=matched.return_type,
+                    actual_declaring_type=matched.declaring_type,
+                    note=f"member exists ({relationship_scope}); normalized signature matches{overload_note}",
+                )
+            )
+            continue
+
+        # No candidate's signature matched -- a genuine mismatch, not an
+        # artifact of manifest/reflection ordering, since every same-named,
+        # same-kind member visible on this type (every overload included) was
+        # tried above. Report against whichever candidate is declared
+        # directly on source_type, if any, as the most representative single
+        # comparison point; falls back to the first candidate otherwise.
+        representative = next((c for c in candidates if c.declaring_type == manifest_type.full_type_name), candidates[0])
+        relationship_scope = "declared" if representative.declaring_type == manifest_type.full_type_name else "inherited"
+        edge.dll_signature_verified = False
         edge.dll_relationship_scope = relationship_scope
-        edge.dll_verified_status = f"signature_verified_{relationship_scope}" if signature_matches else "signature_mismatch"
-
+        edge.dll_verified_status = "signature_mismatch"
         edge_results.append(
             EdgeVerificationResult(
                 source_type=edge.source_type,
                 member_name=edge.member_name,
-                status=EdgeVerificationStatus.SIGNATURE_CONFIRMED if signature_matches else EdgeVerificationStatus.SIGNATURE_MISMATCH,
+                status=EdgeVerificationStatus.SIGNATURE_MISMATCH,
                 relationship_scope=relationship_scope,
                 expected_return_type=edge.return_type,
-                actual_return_type=member.return_type,
-                actual_declaring_type=member.declaring_type,
+                actual_return_type=representative.return_type,
+                actual_declaring_type=representative.declaring_type,
                 note=(
-                    f"member exists ({relationship_scope}); normalized signature matches"
-                    if signature_matches
-                    else f"member exists ({relationship_scope}) but normalized signature differs: "
-                    f"docs return type `{edge.return_type}` (normalized `{expected_return}`), "
-                    f"DLL return type `{member.return_type}` (normalized `{actual_return}`)"
+                    f"member exists ({relationship_scope}) but normalized signature differs from all "
+                    f"{len(candidates)} overload(s) named {edge.member_name} found in the manifest: "
+                    f"docs return type `{edge.return_type}` (normalized `{expected_return}`), params "
+                    f"{expected_params} -- closest candidate DLL return type `{representative.return_type}` "
+                    f"(normalized `{normalize_type_name(representative.return_type)}`)"
                 ),
             )
         )

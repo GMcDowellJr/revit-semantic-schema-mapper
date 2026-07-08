@@ -1,3 +1,21 @@
+"""Tests for ground_truth.py (docs/dll_reflection_v0.md, Stage B).
+
+``fixtures/ground_truth_manifest_2024.json`` is a **synthetic** manifest,
+hand-authored to match Stage A's documented output schema -- it was never
+produced by reflecting over a real compiled RevitAPI.dll, because no such
+reflection has ever run in this project. Its values are chosen to be
+*plausible*, several directly informed by real findings recorded in
+docs/crawl_notes.md (e.g. Material's real Cut/SurfaceBackground/Foreground
+PatternId properties, Room.Number's declaring type, the Element.ChangeTypeId
+overload pair) -- but those findings themselves came from a live crawl of
+revitapidocs.com's HTML, not from DLL reflection. Docs and the compiled API
+disagreeing is the entire reason Stage A exists, so nothing in this fixture
+should be read as a confirmed fact about the real Revit API: it only
+verifies that cross_validate_dll's diffing logic is correct against *some*
+schema-conformant manifest, independent of whether that manifest's content
+ever matches a real one.
+"""
+
 from pathlib import Path
 
 import pytest
@@ -234,6 +252,75 @@ def test_edge_signature_confirmed_with_generic_normalization(manifest):
     assert edge.dll_signature_verified is True
     assert edge.dll_relationship_scope == "declared"
     assert report.edge_results[0].status is EdgeVerificationStatus.SIGNATURE_CONFIRMED
+
+
+# -- overload handling ----------------------------------------------------------
+#
+# Element.ChangeTypeId is a real overloaded method (docs/crawl_notes.md) with
+# two manifest entries sharing the same name: a single-ElementId instance
+# overload and a static Document/ICollection<ElementId>/ElementId overload.
+# The multi-arg static overload is listed *first* in the fixture JSON
+# deliberately, so these tests fail if the code ever goes back to using
+# whichever same-named member happens to come first in the manifest.
+
+
+def test_edge_matches_correct_overload_by_parameter_types(manifest):
+    node = _node("Autodesk.Revit.DB.Element")
+    edge = _edge(
+        "Autodesk.Revit.DB.Element",
+        "ChangeTypeId",
+        "Autodesk.Revit.DB.ElementId",
+        parameter_types=["Autodesk.Revit.DB.ElementId"],
+        member_kind=MemberKind.METHOD,
+    )
+    report = cross_validate_dll([node], [edge], manifest)
+
+    assert edge.dll_signature_verified is True
+    assert edge.dll_relationship_scope == "declared"
+    result = report.edge_results[0]
+    assert result.status is EdgeVerificationStatus.SIGNATURE_CONFIRMED
+    assert result.actual_return_type == "Autodesk.Revit.DB.ElementId"
+
+
+def test_edge_matches_other_overload_by_parameter_types(manifest):
+    """Same member_name as the test above, but the *other* overload's shape
+    -- and normalizes a docs-form generic collection arg while doing it.
+    """
+    node = _node("Autodesk.Revit.DB.Element")
+    edge = _edge(
+        "Autodesk.Revit.DB.Element",
+        "ChangeTypeId",
+        "ICollection(ElementId)",
+        parameter_types=["Autodesk.Revit.DB.Document", "ICollection(ElementId)", "Autodesk.Revit.DB.ElementId"],
+        member_kind=MemberKind.METHOD,
+    )
+    report = cross_validate_dll([node], [edge], manifest)
+
+    assert edge.dll_signature_verified is True
+    result = report.edge_results[0]
+    assert result.status is EdgeVerificationStatus.SIGNATURE_CONFIRMED
+    assert "2 overload(s)" in result.note
+
+
+def test_edge_overload_mismatch_when_no_overload_matches(manifest):
+    """Neither ChangeTypeId overload takes a single System.String -- this
+    must report SIGNATURE_MISMATCH, not accidentally match either overload.
+    """
+    node = _node("Autodesk.Revit.DB.Element")
+    edge = _edge(
+        "Autodesk.Revit.DB.Element",
+        "ChangeTypeId",
+        "Autodesk.Revit.DB.ElementId",
+        parameter_types=["System.String"],
+        member_kind=MemberKind.METHOD,
+    )
+    report = cross_validate_dll([node], [edge], manifest)
+
+    assert edge.dll_signature_verified is False
+    assert edge.dll_verified_status == "signature_mismatch"
+    result = report.edge_results[0]
+    assert result.status is EdgeVerificationStatus.SIGNATURE_MISMATCH
+    assert "2 overload(s)" in result.note
 
 
 def test_dll_semantic_verified_is_never_set(manifest):
