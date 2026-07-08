@@ -668,8 +668,17 @@ function Invoke-CoreReflection {
     # *wrong* family even with the right root declared, silently mixing mscorlib- and
     # CoreLib-rooted types in the same context. Only the family matching $coreAssemblyName is
     # included below; the other is left out of the pool entirely, not just out of the root choice.
-    $familyRefDlls = if ($coreAssemblyName -eq "mscorlib") { $frameworkRefDlls } else { $dotNetSharedDlls }
-    $allCandidatePaths = @($DllPaths) + @($familyRefDlls) + @($runtimeDlls)
+    #
+    # $runtimeDlls (the *host process's own* runtime directory) needs exactly the same treatment,
+    # confirmed by a follow-up round of the same automated review: a PowerShell 7 host reflecting
+    # an older, mscorlib-targeted Revit via -NetFrameworkReferenceAssembliesDir would otherwise
+    # still hand the host's own .NET Core runtime dlls to the resolver alongside the mscorlib
+    # family, and a same-named reference (e.g. System.Runtime) could bind to the host's Core copy
+    # by version instead of the framework one -- reintroducing the same mixed-root problem this
+    # was just fixed for. Only include $runtimeDlls for the CoreLib case, where the host's own
+    # runtime directory is actually the right (and original, pre-Revit-2025) source for them.
+    $familyRefDlls = if ($coreAssemblyName -eq "mscorlib") { $frameworkRefDlls } else { $dotNetSharedDlls + $runtimeDlls }
+    $allCandidatePaths = @($DllPaths) + @($familyRefDlls)
     $resolver = New-Object System.Reflection.PathAssemblyResolver (, [string[]]$allCandidatePaths)
     $mlc = New-Object System.Reflection.MetadataLoadContext($resolver, $coreAssemblyName)
 
