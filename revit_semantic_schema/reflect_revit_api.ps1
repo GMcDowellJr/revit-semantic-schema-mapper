@@ -88,7 +88,14 @@ param(
 
     [string] $NetFrameworkReferenceAssembliesDir,
 
-    [string] $DotNetSharedFrameworkRoot = (Join-Path $env:ProgramFiles "dotnet\shared")
+    # Deliberately not defaulted here to a Windows path (e.g. via $env:ProgramFiles): this
+    # parameter is only ever used by the Desktop/ReflectionOnlyLoadFrom path below, but a
+    # parameter default expression is evaluated at bind time for *every* invocation regardless
+    # of which path ends up running -- on PowerShell Core off Windows (this project's own
+    # confirmed dev-sandbox host, see docs/dll_reflection_v0.md), $env:ProgramFiles is unset,
+    # which broke script invocation before this was fixed. The real default is computed further
+    # down, only on the Desktop branch that actually needs it.
+    [string] $DotNetSharedFrameworkRoot = ""
 )
 
 $ErrorActionPreference = "Stop"
@@ -152,12 +159,20 @@ function Get-DotNetSharedFrameworkIndex([string] $Root) {
     # System.Runtime/PresentationFramework/WindowsBase/System.Xaml/netstandard/etc at various
     # .NET 5-8 versions -- none of which a classic Framework/GAC resolve can ever satisfy,
     # regardless of what's under -InstallDir, since they aren't Framework assemblies at all.
-    # Only the *major* version is indexed, not the full patch version: an installed runtime's
-    # own files keep AssemblyVersion pinned to "<major>.0.0.0" across every patch release
-    # (confirmed Microsoft's own .NET versioning convention), so any installed patch folder for
-    # a given major version satisfies a reference asking for that major version.
+    # Only the *major* version is indexed as the lookup key, not the full patch version, since
+    # a reference's own requested Version= is always exactly "<major>.0.0.0" for these framework
+    # assemblies. The major version is read from each DLL's own real AssemblyName -- NOT
+    # inferred from the containing version folder's name (e.g. "8.0.11") -- because that
+    # doesn't hold for every file in the folder: most framework assemblies' own AssemblyVersion
+    # does match their hosting runtime's major version, but netstandard.dll is a fixed
+    # compatibility-shim identity that stays "2.1.0.0" regardless of which runtime major
+    # version's folder it ships inside (confirmed a real gap: a folder-name-inferred index
+    # stored it as "netstandard|8", but a reference asking for "netstandard, Version=2.1.0.0"
+    # looks up "netstandard|2" and never finds it, silently leaving that failure unfixed even
+    # with the matching runtime installed). Reading the real per-file version handles this and
+    # any other such exception the same way, without needing a specific-filename special case.
     $index = @{}
-    if (-not (Test-Path -LiteralPath $Root -PathType Container)) {
+    if (-not $Root -or -not (Test-Path -LiteralPath $Root -PathType Container)) {
         Write-Verbose "DotNetSharedFrameworkRoot '$Root' not found -- a reference to a modern .NET runtime assembly (System.Runtime, PresentationFramework, ...) will stay unresolved unless the matching .NET runtime is installed and -DotNetSharedFrameworkRoot points at it."
         return $index
     }
@@ -165,8 +180,16 @@ function Get-DotNetSharedFrameworkIndex([string] $Root) {
         ForEach-Object { Join-Path $Root $_ } | Where-Object { Test-Path -LiteralPath $_ -PathType Container }
     foreach ($appModelDir in $appModelDirs) {
         Get-ChildItem -LiteralPath $appModelDir -Directory -ErrorAction SilentlyContinue | ForEach-Object {
-            $major = ($_.Name -split '\.')[0]
             Get-ChildItem -LiteralPath $_.FullName -Filter *.dll -ErrorAction SilentlyContinue | ForEach-Object {
+                # GetAssemblyName reads only the file's own metadata (no load/execution), so it
+                # works the same cross-runtime way ReflectionOnlyLoadFrom itself does -- but
+                # some files in this folder are native (hostfxr.dll, coreclr.dll, clrjit.dll,
+                # ...), not managed assemblies at all, and throw here; skip just that one file.
+                try {
+                    $major = [System.Reflection.AssemblyName]::GetAssemblyName($_.FullName).Version.Major
+                } catch {
+                    return
+                }
                 $simpleName = [System.IO.Path]::GetFileNameWithoutExtension($_.Name)
                 $key = "$simpleName|$major"
                 if (-not $index.ContainsKey($key)) { $index[$key] = $_.FullName }
@@ -643,6 +666,9 @@ $result = if ($isCore) {
     Invoke-CoreReflection -DllPaths $dllPaths -Prefix $NamespacePrefix `
         -MlcAssemblyPath $MetadataLoadContextAssembly -ExtraRefDir $NetFrameworkReferenceAssembliesDir
 } else {
+    if (-not $DotNetSharedFrameworkRoot) {
+        $DotNetSharedFrameworkRoot = Join-Path $env:ProgramFiles "dotnet\shared"
+    }
     Invoke-DesktopReflection -DllPaths $dllPaths -Prefix $NamespacePrefix -DotNetSharedFrameworkRoot $DotNetSharedFrameworkRoot
 }
 
