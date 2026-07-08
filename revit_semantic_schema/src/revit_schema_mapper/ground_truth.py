@@ -68,7 +68,15 @@ class GroundTruthManifest:
 
 
 def load_manifest(path: Path) -> GroundTruthManifest:
-    raw = json.loads(Path(path).read_text(encoding="utf-8"))
+    # utf-8-sig (not plain utf-8): Windows PowerShell 5.1's Set-Content/Out-File -Encoding
+    # utf8 always prepends a BOM (Microsoft's own about_character_encoding docs confirm this
+    # is unconditional on that host), which json.loads rejects outright ("Unexpected UTF-8
+    # BOM"). reflect_revit_api.ps1 now writes without a BOM either way, but this loader stays
+    # tolerant of one regardless -- a manifest hand-edited on Windows (e.g. in Notepad, which
+    # still defaults to BOM-prefixed UTF-8) or produced by some future variant of Stage A
+    # shouldn't fail to parse over a single invisible byte. utf-8-sig strips a leading BOM if
+    # present and is otherwise identical to utf-8 for BOM-less input.
+    raw = json.loads(Path(path).read_text(encoding="utf-8-sig"))
     types = [
         ManifestType(
             full_type_name=t["full_type_name"],

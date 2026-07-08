@@ -399,5 +399,14 @@ $manifest = [ordered]@{
 $matchedCount = @($result.AssembliesScanned | Where-Object { $_.matched }).Count
 Write-Verbose "$matchedCount / $($result.AssembliesScanned.Count) scanned assemblies matched '$NamespacePrefix'; $($result.Types.Count) types collected."
 
-$manifest | ConvertTo-Json -Depth 12 | Set-Content -LiteralPath $Out -Encoding utf8
+$json = $manifest | ConvertTo-Json -Depth 12
+# Set-Content/Out-File -Encoding utf8 always prepends a BOM on Windows PowerShell 5.1
+# ("Desktop" edition) -- confirmed via Microsoft's own about_character_encoding docs -- which
+# Stage B's ground_truth.load_manifest() (Python's json.loads) rejects outright ("Unexpected
+# UTF-8 BOM"). UTF8Encoding($false) explicitly suppresses the BOM and behaves identically on
+# both hosts (PS7/Core's Set-Content -Encoding utf8 is already BOM-less by default, so this
+# doesn't change that side's behavior), so writing via File.WriteAllText with it sidesteps the
+# Desktop-only BOM entirely rather than special-casing by host.
+$utf8NoBom = New-Object System.Text.UTF8Encoding $false
+[System.IO.File]::WriteAllText($Out, $json, $utf8NoBom)
 Write-Output "Wrote $Out ($($result.Types.Count) types from $matchedCount matched assemblies)"

@@ -531,6 +531,45 @@ This is the same lesson repeated a fourth way: **any PowerShell pipeline/array e
 result feeds a JSON field or a `.Count` needs to be checked against 0- and 1-item inputs
 specifically**, not just the many-item case that happens to look right by construction.
 
+### A fifth bug, found by review rather than by a run: Windows PowerShell 5.1's BOM
+
+All four bugs above were found by actually running the script on this sandbox's pwsh7/Core
+host. A fifth was caught by review (citing Microsoft's own `about_character_encoding` docs)
+before ever running on the host it actually affects: Windows PowerShell 5.1 ("Desktop"
+edition) -- the primary host this whole script targets, and the one this sandbox cannot
+run at all -- makes `Set-Content`/`Out-File -Encoding utf8` **unconditionally** prepend a
+UTF-8 BOM. `ground_truth.load_manifest()` reads with `encoding="utf-8"` and calls
+`json.loads`, which rejects a leading BOM outright (`"Unexpected UTF-8 BOM (decode using
+utf-8-sig)"`, confirmed directly). So the manifest produced by the *likely* real-world host
+for this script would have failed Stage B validation before ever reaching the diffing logic
+-- a correctness bug in the primary path, invisible in this sandbox's own testing because
+pwsh7/Core's `Set-Content -Encoding utf8` does **not** add a BOM by default (confirmed
+directly: identical `Set-Content -Encoding utf8` calls on this host produce BOM-less output),
+so the two hosts genuinely disagree on this cmdlet's behavior, not just on which reflection
+API is available.
+
+Fixed on both sides rather than picking just one, since they protect different things:
+
+- **The writer** (`reflect_revit_api.ps1`) now bypasses `Set-Content -Encoding utf8` entirely,
+  writing via `[System.IO.File]::WriteAllText($Out, $json, (New-Object
+  System.Text.UTF8Encoding $false))` instead -- confirmed to still produce BOM-less output on
+  the Core host (no regression there) and, per the `UTF8Encoding(false)` constructor's
+  documented behavior, identical on .NET Framework/PS 5.1 -- one code path for both hosts
+  instead of a host-specific branch.
+- **The reader** (`ground_truth.load_manifest()`) now reads with `encoding="utf-8-sig"`
+  instead of `"utf-8"` -- strips a leading BOM if present, identical to plain `utf-8` if not,
+  so a manifest that somehow does carry a BOM (a hand-edit in an editor that still defaults to
+  BOM-prefixed UTF-8, e.g. Notepad, or some future variant of Stage A) doesn't hard-fail over
+  one invisible byte.
+
+Confirmed directly: a real manifest re-generated after the writer fix has no BOM (first bytes
+are `{\n  "rev...`, not `0xEF 0xBB 0xBF`); `load_manifest()` parses both that file and a
+synthetic BOM-prepended copy of it identically. Covered by
+`test_load_manifest_tolerates_leading_utf8_bom` (constructs a BOM-prefixed copy of the fixture
+at test time). Still not run on Windows PowerShell 5.1 itself -- the BOM behavior is confirmed
+against Microsoft's own docs and reasoned from the Core-side comparison above, not from an
+actual Desktop-edition execution, since none is reachable here.
+
 ### Step 4: validated against `ground_truth.load_manifest()`/`cross_validate_dll()` directly, not just eyeballed
 
 The fixed manifest (722 types: 106 enums, 30 interfaces, 7 structs, the rest classes; methods

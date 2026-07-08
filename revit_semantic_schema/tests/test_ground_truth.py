@@ -123,6 +123,23 @@ def test_load_manifest_parses_fixture():
     assert view_sheet.members[0].name == "GetAllPlacedViews"
 
 
+def test_load_manifest_tolerates_leading_utf8_bom(tmp_path):
+    """Windows PowerShell 5.1's Set-Content/Out-File -Encoding utf8 always prepends a BOM
+    (Microsoft's about_character_encoding docs confirm this is unconditional on that host) --
+    a manifest written that way, or hand-edited in an editor that defaults to BOM-prefixed
+    UTF-8, must still parse rather than failing with json.loads' "Unexpected UTF-8 BOM".
+    reflect_revit_api.ps1 itself now writes without a BOM either way, but this loader stays
+    tolerant of one regardless of what produced the file.
+    """
+    bom_path = tmp_path / "manifest_with_bom.json"
+    bom_path.write_bytes(b"\xef\xbb\xbf" + _FIXTURE_PATH.read_bytes())
+
+    manifest = load_manifest(bom_path)
+
+    assert manifest.revit_version == "2024"
+    assert {t.full_type_name for t in manifest.types} >= {"Autodesk.Revit.DB.Element"}
+
+
 # -- cross_validate_dll ---------------------------------------------------------
 
 
