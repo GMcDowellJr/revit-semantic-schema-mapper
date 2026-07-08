@@ -142,7 +142,46 @@ _BACKTICK_ARITY_RE = re.compile(r"`\d+")
 _ASSEMBLY_QUALIFIED_INNER_RE = re.compile(r"\[\[([^\[\],]+)(?:,[^\[\]]*)?\]\]")
 _GENERIC_PARENS_RE = re.compile(r"^([\w.]+)\(([^()]*)\)$")
 _NAMESPACE_SEGMENT_RE = re.compile(r"\b[A-Za-z_][\w.]*\.[A-Za-z_]\w*\b")
-_COMMA_SPACE_RE = re.compile(r",\s+")
+_COMMA_SPACE_RE = re.compile(r"\s*,\s*")
+# Sandcastle sometimes renders a generic return/parameter type with spaces around the angle
+# brackets it already uses natively (confirmed real doc text on a Revit 2025 crawl: "IList <
+# ElementId >", "ICollection < string >"), rather than the parenthesized "Name(Args)" form
+# _GENERIC_PARENS_RE above handles -- that regex requires the *whole* string to be exactly
+# Name(Args), so it never fires for a string that already has literal "<"/">" in it, leaving
+# the spaces untouched. Reflection's own Type.ToString()-derived form never has this space
+# (`IList<ElementId>`), so left as-is this alone accounted for ~73% of a real Revit 2025 Stage
+# B run's SIGNATURE_MISMATCH edges (1139 of 1551) -- all cosmetic, not real mismatches. Collapse
+# just the whitespace touching a bracket, not whitespace generally: an out/ref parameter's
+# meaningful space ("out ModelCurveArray") must survive this step untouched.
+_ANGLE_BRACKET_SPACE_RE = re.compile(r"\s*([<>])\s*")
+# Sandcastle renders a primitive with its C# keyword ("string", "bool", "int", ...); .NET
+# reflection's Type.ToString() gives the CLR type name ("String", "Boolean", "Int32", ...) --
+# confirmed real disagreement on a Revit 2025 crawl (e.g. Category.IsTagCategory's docs return
+# type "bool" vs. the manifest's "Boolean"), accounting for most of the SIGNATURE_MISMATCH
+# edges still remaining after the angle-bracket-spacing fix above. classify.py's own
+# PRIMITIVE_TYPES set already treats both spellings of a few of these (bool/Boolean,
+# string/String, ...) as equally valid primitive-type strings elsewhere in this project; this
+# is the same fact, applied to signature comparison. Canonicalizing to the CLR spelling (not
+# the C# keyword) since reflection's side already arrives in that form via the
+# namespace-segment-reduction step above and needs no further change.
+_PRIMITIVE_ALIAS_TO_CLR = {
+    "bool": "Boolean",
+    "byte": "Byte",
+    "sbyte": "SByte",
+    "char": "Char",
+    "decimal": "Decimal",
+    "double": "Double",
+    "float": "Single",
+    "int": "Int32",
+    "uint": "UInt32",
+    "long": "Int64",
+    "ulong": "UInt64",
+    "short": "Int16",
+    "ushort": "UInt16",
+    "object": "Object",
+    "string": "String",
+}
+_PRIMITIVE_ALIAS_RE = re.compile(r"\b(" + "|".join(_PRIMITIVE_ALIAS_TO_CLR) + r")\b")
 
 
 def normalize_type_name(raw: Optional[str]) -> str:
@@ -167,17 +206,26 @@ def normalize_type_name(raw: Optional[str]) -> str:
     m = _GENERIC_PARENS_RE.match(s)
     if m:
         s = f"{m.group(1)}<{m.group(2)}>"
+    # Collapse whitespace touching an angle bracket -- see _ANGLE_BRACKET_SPACE_RE above.
+    # Deliberately only around "<"/">", not a blanket whitespace strip: an out/ref parameter's
+    # own space ("out ModelCurveArray") is meaningful and must survive this step.
+    s = _ANGLE_BRACKET_SPACE_RE.sub(lambda m: m.group(1), s)
     # Reduce every dotted, namespace-qualified identifier to its short name
     # -- the same short-name bridge already used for type/target resolution
     # elsewhere in this project (graph._Resolver), applied here to signature
     # comparison instead of node/edge target resolution.
     s = _NAMESPACE_SEGMENT_RE.sub(lambda m: m.group(0).rsplit(".", 1)[-1], s)
-    # A multi-arg generic's docs-side prose form separates arguments with ", " (comma-space) --
-    # confirmed real Sandcastle title text (crawl_notes.md): "ChangeTypeId Method (Document,
-    # ICollection(ElementId), ElementId)" -- while reflection's own comma-separated arg list
-    # (Type.ToString()) has no space. Collapse "comma + whitespace" uniformly so a real
-    # multi-arg generic (confirmed on Element.ChangeTypeId's IDictionary<ElementId,ElementId>
-    # return type) doesn't falsely report SIGNATURE_MISMATCH purely over comma-spacing.
+    # C# keyword primitive -> CLR type name -- see _PRIMITIVE_ALIAS_TO_CLR above.
+    s = _PRIMITIVE_ALIAS_RE.sub(lambda m: _PRIMITIVE_ALIAS_TO_CLR[m.group(1)], s)
+    # A multi-arg generic's docs-side prose form separates arguments with whitespace around the
+    # comma -- confirmed real Sandcastle title text (crawl_notes.md): "ChangeTypeId Method
+    # (Document, ICollection(ElementId), ElementId)" (space after only), and, separately, a real
+    # angle-bracket-form return type with space on *both* sides (confirmed on a Revit 2025 crawl:
+    # "IDictionary < ExportIFCCategoryKey , ExportIFCCategoryInfo >") -- while reflection's own
+    # comma-separated arg list (Type.ToString()) has no space either side. Collapse whitespace on
+    # either side of a comma uniformly so a real multi-arg generic (confirmed on
+    # Element.ChangeTypeId's IDictionary<ElementId,ElementId> return type) doesn't falsely report
+    # SIGNATURE_MISMATCH purely over comma-spacing.
     s = _COMMA_SPACE_RE.sub(",", s)
     # "void" is not a real type either side ever has to look up -- but the two sides spell
     # "no return value" differently. classify.classify_member only requires a truthy
