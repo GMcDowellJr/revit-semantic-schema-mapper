@@ -134,14 +134,59 @@ function Get-TypeKindString([Type] $Type) {
     return "class"
 }
 
+function Get-BaseTypeName([Type] $Type) {
+    # Type.BaseType's getter is what actually resolves the base type's own assembly -- if
+    # that assembly is neither under -InstallDir nor loadable from the GAC, accessing this
+    # throws instead of returning an "unresolved" marker. "<unresolved>" is a deliberately
+    # distinguishable sentinel (never a real FullName, since real ones are dotted CLR names)
+    # rather than $null, which would be indistinguishable from "genuinely has no base type".
+    try {
+        $base = $Type.BaseType
+        if ($null -eq $base) { return $null }
+        return $base.FullName
+    } catch {
+        Write-Verbose "Could not resolve base type of $($Type.FullName): $($_.Exception.Message)"
+        return "<unresolved>"
+    }
+}
+
 function Get-InheritanceChainNames([Type] $Type) {
+    # Guards each .BaseType access individually (not the loop as a whole), since that's the
+    # specific call that can throw for an ancestor whose own assembly can't be resolved --
+    # confirmed a real risk on the live Revit 2024 run (see crawl_notes.md), the same
+    # category of problem as the per-member guards in Convert-MembersToManifest below. On
+    # failure, record "<unresolved>" as the chain's last entry (an explicit, checkable fact)
+    # and stop walking further, rather than losing the whole type -- see Get-BaseTypeName's
+    # comment on why "<unresolved>" and not $null/silently truncating.
     $chain = New-Object System.Collections.Generic.List[string]
-    $cur = $Type.BaseType
-    while ($null -ne $cur) {
-        [void]$chain.Add($cur.FullName)
-        $cur = $cur.BaseType
+    $cur = $Type
+    while ($true) {
+        $next = $null
+        try {
+            $next = $cur.BaseType
+        } catch {
+            Write-Verbose "Could not resolve further ancestor above $($cur.FullName) for $($Type.FullName): $($_.Exception.Message)"
+            [void]$chain.Add("<unresolved>")
+            break
+        }
+        if ($null -eq $next) { break }
+        [void]$chain.Add($next.FullName)
+        $cur = $next
     }
     return @($chain)
+}
+
+function Get-ImplementedInterfaceNames([Type] $Type) {
+    # GetInterfaces() resolves every implemented interface's own assembly to build its
+    # result; unlike Assembly.GetTypes() there's no partial-success form (no equivalent of
+    # ReflectionTypeLoadException's .Types array) -- one unresolved interface fails the
+    # whole call. Guarded the same way as Get-BaseTypeName above.
+    try {
+        return @($Type.GetInterfaces() | ForEach-Object { $_.FullName })
+    } catch {
+        Write-Verbose "Could not resolve implemented interfaces of $($Type.FullName): $($_.Exception.Message)"
+        return @("<unresolved>")
+    }
 }
 
 function Get-ReturnTypeString($ReturnType) {
@@ -268,13 +313,13 @@ function Convert-TypeToManifest([Type] $Type, [string] $AssemblyName) {
         assembly                = $AssemblyName
         kind                    = Get-TypeKindString $Type
         is_abstract             = [bool]$Type.IsAbstract
-        base_type               = if ($null -ne $Type.BaseType) { $Type.BaseType.FullName } else { $null }
+        base_type               = Get-BaseTypeName $Type
         # See the comment on the "parameters" assignment above -- @() wrapping at every
         # collection-returning-helper call site is load-bearing, confirmed by a real run
         # that serialized a single-ancestor inheritance_chain as a bare string instead of a
         # 1-element array before this was added.
         inheritance_chain       = @(Get-InheritanceChainNames $Type)
-        implemented_interfaces  = @($Type.GetInterfaces() | ForEach-Object { $_.FullName })
+        implemented_interfaces  = @(Get-ImplementedInterfaceNames $Type)
         members                 = @(Convert-MembersToManifest $Type)
         enum_members            = @(Convert-EnumMembersToManifest $Type)
     }
@@ -324,12 +369,24 @@ function Invoke-DesktopReflection {
     # been preloaded" against framework assemblies. Only fall back to $null (an unresolved,
     # external reference -- see docs/dll_reflection_v0.md's "external, not further inspected"
     # principle) if that also fails.
+    #
+    # The by-simple-name path lookup below can itself point at the *wrong* file: the script
+    # deliberately indexes every *.dll under a Revit install (thousands of them, many
+    # native/incompatible on purpose -- see "Finding the relevant assemblies" in
+    # docs/dll_reflection_v0.md), so a colliding simple name (an unrelated or wrong-framework
+    # DLL that happens to share a name with the real dependency, e.g. a vendored native
+    # "System.dll"-named file elsewhere in the tree) can make $byName point at a file that
+    # fails to load as the requested assembly even though the real one is perfectly
+    # resolvable via the GAC. The path-based catch below must fall through to the GAC/normal
+    # probing attempt instead of giving up immediately -- returning $null here before trying
+    # ReflectionOnlyLoad($e.Name) would turn an otherwise-resolvable reference into an
+    # unresolved one purely because of which file this scan happened to index first.
     $resolveHandler = [ResolveEventHandler] {
         param($sender, $e)
         $simpleName = ($e.Name -split ',')[0].Trim()
         if ($byName.ContainsKey($simpleName)) {
             try { return [System.Reflection.Assembly]::ReflectionOnlyLoadFrom($byName[$simpleName]) }
-            catch { return $null }
+            catch { }  # fall through to GAC/normal-probing below rather than giving up here
         }
         try { return [System.Reflection.Assembly]::ReflectionOnlyLoad($e.Name) }
         catch { return $null }
@@ -365,7 +422,17 @@ function Invoke-DesktopReflection {
         [void]$assembliesScanned.Add([ordered]@{ path = $path; name = $name; matched = $matched })
         if ($matched) {
             foreach ($t in $types) {
-                [void]$typeEntries.Add((Convert-TypeToManifest $t $name))
+                # Convert-TypeToManifest's own base_type/inheritance_chain/implemented_interfaces
+                # guards handle the expected unresolved-ancestor/-interface case explicitly, but
+                # this outer catch is the same "one bad thing shouldn't abort the whole scan"
+                # safety net as the per-member guards -- skip just this one type, not the rest
+                # of the assembly, if something still throws.
+                try {
+                    [void]$typeEntries.Add((Convert-TypeToManifest $t $name))
+                } catch {
+                    $script:unresolvedTypeSkips++
+                    Write-Verbose "Skipping type $($t.FullName) entirely: $($_.Exception.Message)"
+                }
             }
         }
     }
@@ -437,7 +504,17 @@ function Invoke-CoreReflection {
         [void]$assembliesScanned.Add([ordered]@{ path = $path; name = $name; matched = $matched })
         if ($matched) {
             foreach ($t in $types) {
-                [void]$typeEntries.Add((Convert-TypeToManifest $t $name))
+                # Convert-TypeToManifest's own base_type/inheritance_chain/implemented_interfaces
+                # guards handle the expected unresolved-ancestor/-interface case explicitly, but
+                # this outer catch is the same "one bad thing shouldn't abort the whole scan"
+                # safety net as the per-member guards -- skip just this one type, not the rest
+                # of the assembly, if something still throws.
+                try {
+                    [void]$typeEntries.Add((Convert-TypeToManifest $t $name))
+                } catch {
+                    $script:unresolvedTypeSkips++
+                    Write-Verbose "Skipping type $($t.FullName) entirely: $($_.Exception.Message)"
+                }
             }
         }
     }
@@ -449,11 +526,13 @@ function Invoke-CoreReflection {
 
 # -- main -----------------------------------------------------------------------
 
-# Incremented in Convert-MembersToManifest's per-member catch blocks -- a script-scoped
-# counter rather than a return value, since that function is called once per matched type
-# deep inside the scan loop and threading a count back through every call site would be
-# more invasive than this one shared counter.
+# Incremented in Convert-MembersToManifest's per-member catch blocks, and in the outer
+# per-type catch around Convert-TypeToManifest in both Invoke-*Reflection functions -- a
+# script-scoped counter rather than a return value, since those are called deep inside the
+# scan loop and threading a count back through every call site would be more invasive than
+# these two shared counters.
 $script:unresolvedMemberSkips = 0
+$script:unresolvedTypeSkips = 0
 
 $dllPaths = @(Get-DllPaths $InstallDir)
 
@@ -481,6 +560,9 @@ $matchedCount = @($result.AssembliesScanned | Where-Object { $_.matched }).Count
 Write-Verbose "$matchedCount / $($result.AssembliesScanned.Count) scanned assemblies matched '$NamespacePrefix'; $($result.Types.Count) types collected."
 if ($script:unresolvedMemberSkips -gt 0) {
     Write-Warning "$($script:unresolvedMemberSkips) member(s) skipped across the scan: their return/parameter types could not be resolved (neither under -InstallDir nor loadable from the GAC). Run with -Verbose to see which ones."
+}
+if ($script:unresolvedTypeSkips -gt 0) {
+    Write-Warning "$($script:unresolvedTypeSkips) type(s) skipped entirely across the scan: their own metadata (beyond the base_type/inheritance_chain/implemented_interfaces fields, which record '<unresolved>' rather than being skipped) could not be converted. Run with -Verbose to see which ones."
 }
 
 $json = $manifest | ConvertTo-Json -Depth 12

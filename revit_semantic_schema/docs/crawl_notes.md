@@ -893,6 +893,87 @@ exactly) and covered by two new `test_normalize_type_name` cases plus
 
 All 162 tests pass after these three fixes.
 
+## Two more resilience bugs, found by code review and reproduced with a deliberately-broken resolver (2026-07-08)
+
+Found by review, then confirmed as real, reproducible crashes (not just theoretical) using
+the same technique as the earlier unresolved-member guard: deliberately excluding a real
+dependency (`System.Management.Automation.dll`) from the resolver while scanning a real
+assembly that cross-references it (`Microsoft.PowerShell.Commands.Utility.dll`) -- this
+sandbox's own stand-in for "a matched type whose ancestor/interface lives in an assembly this
+scan can't resolve," which is exactly the shape of risk a multi-thousand-DLL Revit install
+scan runs into for real.
+
+### 1. The by-simple-name resolve handler gave up too early on a path-based load failure
+
+`Invoke-DesktopReflection`'s `ReflectionOnlyAssemblyResolve` handler checks `$byName` (every
+DLL found under `-InstallDir`, indexed by simple name) first, and only falls back to
+`[Assembly]::ReflectionOnlyLoad($e.Name)` (GAC/normal probing) if the simple name isn't in
+`$byName` at all. The bug: if the simple name *is* in `$byName` but that specific file fails to
+load (`catch { return $null }`), the handler gave up immediately -- it never tried the GAC
+fallback for that reference at all. Because this script deliberately indexes *every* `*.dll`
+under a Revit install (thousands of them, many native/incompatible/wrong-framework on purpose
+-- see "Finding the relevant assemblies" in `docs/dll_reflection_v0.md`), a single colliding
+file (an unrelated or wrong-framework DLL that happens to share a simple name with a real
+dependency, e.g. some vendored file also named `System.dll` elsewhere in the install tree)
+could turn an otherwise-perfectly-resolvable-via-the-GAC reference into a hard failure, purely
+because of which file this scan's own by-name index happened to point at. Fixed: the
+path-based `catch` now falls through (`catch { }` instead of `catch { return $null }`) to the
+same GAC/normal-probing attempt used for names not in `$byName` at all, only giving up (`return
+$null`) if *that* also fails. Confirmed the exact control-flow shape with an isolated
+reproduction (a synthetic "buggy" resolver returning `$null` despite a working GAC-style
+fallback being available, vs. the fixed version correctly reaching it) -- the real
+`ReflectionOnlyLoadFrom`/`ReflectionOnlyAssemblyResolve` APIs themselves still can't be
+executed on this sandbox (Core-only, confirmed earlier), so this is a control-flow-level
+confirmation, not a full end-to-end one; the actual Desktop-host behavior is still unverified
+until an actual Windows+Revit run exercises it.
+
+### 2. `Convert-TypeToManifest` had no guard for unresolved ancestor/interface references
+
+Reported risk: if a matched type's base type or an implemented interface lives in an assembly
+that can't be resolved, `Type.BaseType`/`Type.GetInterfaces()` throw under reflection-only/
+`MetadataLoadContext` loading (the same category of lazy-resolution problem the per-member
+guards already handle) -- and the caller (`foreach ($t in $types) { ...Convert-TypeToManifest...
+}` in both `Invoke-DesktopReflection` and `Invoke-CoreReflection`) had no `try`/`catch` around
+it at all, so one such type could abort the entire manifest. **Confirmed as a real, severe
+crash, worse than the member-level bug**: the deliberately-incomplete-resolver reproduction
+above crashed on `GetInterfaces()` immediately -- 0/183 types processed, not even the first one
+-- since the failure happens before any of that type's own members are ever examined.
+
+Fixed with per-field guards inside `Convert-TypeToManifest` itself (not just an outer
+catch-all), so a type keeps as much real data as possible instead of being dropped wholesale:
+
+- `Get-BaseTypeName`: guards the `Type.BaseType` getter (the call that actually triggers
+  resolution); returns the sentinel string `"<unresolved>"` on failure -- deliberately
+  distinguishable from `$null` (which means "genuinely has no base type"), since real
+  `FullName`s are always dotted CLR names and could never literally be `"<unresolved>"`.
+- `Get-InheritanceChainNames`: guards each `.BaseType` access *per ancestor step* (not the walk
+  as a whole), so a chain that resolves partway still records what it found, appending
+  `"<unresolved>"` as the last entry and stopping there rather than losing the whole chain.
+- `Get-ImplementedInterfaceNames`: guards `Type.GetInterfaces()` -- unlike
+  `Assembly.GetTypes()`, there's no partial-success form here (no equivalent of
+  `ReflectionTypeLoadException`'s `.Types` array), so one unresolved interface fails the whole
+  call; falls back to `@("<unresolved>")` for the whole list on failure.
+
+Also added an outer `try`/`catch` around the `Convert-TypeToManifest` call site itself (in both
+host-specific functions) as a final safety net -- skips just that one type (counted via a new
+`$script:unresolvedTypeSkips`, surfaced as `Write-Warning` in the summary, same pattern as
+`$script:unresolvedMemberSkips`) if something beyond the three guarded fields still throws,
+rather than aborting the whole scan.
+
+**Confirmed the fix directly against the real crash scenario**: re-running the exact same
+deliberately-incomplete-resolver setup with the fix in place, all 183 types completed (0
+crashes), with `implemented_interfaces` correctly recorded as `["<unresolved>"]` for all 183 of
+them (their base cmdlet classes' interfaces are defined in the excluded
+`System.Management.Automation.dll`) and `base_type`/`inheritance_chain` resolving cleanly for
+all of them (their own base-class chains didn't need that assembly). Also confirmed
+`ground_truth.load_manifest()`/`cross_validate_dll()` handle a `"<unresolved>"` sentinel
+appearing in `base_type`/`inheritance_chain`/`implemented_interfaces` with zero code changes
+needed on the Python side -- it's just another type name that doesn't match any real
+`NodeCandidate`/manifest type, which the existing "ancestor not found -> skip" handling in
+`ground_truth._find_members` already treats as harmless.
+
+All 162 tests pass after these two fixes.
+
 ## Why member pages are discovered from class pages, not just the index/TOC
 
 Sandcastle-style sites list a type's members with links to their own property/method pages
