@@ -73,6 +73,36 @@ def test_parse_descriptor_map_handles_qualified_type_names():
     assert "Color" in short_names
 
 
+def test_parse_descriptor_map_resolves_using_alias_to_the_real_short_name():
+    """The real file has `using RevitApplication =
+    Autodesk.Revit.ApplicationServices.Application;` and a switch case
+    `RevitApplication value when ... => new ApplicationDescriptor(value)`.
+    Naively taking "RevitApplication".rsplit(".", 1)[-1] would give
+    "RevitApplication" itself -- not the real CLR short name "Application" --
+    which would never short-name-match against a DLL manifest's own type
+    list. Confirms the using-alias is resolved before truncating.
+    """
+    entries = parse_descriptor_map(_read("DescriptorMap.cs"))
+    by_type = {e.target_type_short_name: e for e in entries}
+
+    assert "RevitApplication" not in by_type
+    assert by_type["Application"].descriptor_class == "ApplicationDescriptor"
+
+
+def test_parse_descriptor_map_alias_that_already_matches_short_name_is_unaffected():
+    """`using RibbonItem = Autodesk.Revit.UI.RibbonItem;` is also an alias,
+    but one where the alias name already equals the real short name --
+    confirms alias resolution doesn't break this (harmless) case, and
+    doesn't conflict with the *dotted* `Autodesk.Windows.RibbonItem` case
+    that appears separately in the same switch (not itself an alias
+    reference, since C# alias names are always simple identifiers, never
+    dotted -- so it must be unaffected by the alias map entirely).
+    """
+    entries = parse_descriptor_map(_read("DescriptorMap.cs"))
+    ribbon_item_entries = [e for e in entries if e.target_type_short_name == "RibbonItem"]
+    assert len(ribbon_item_entries) == 2
+
+
 # -- parse_descriptor_file: Resolve() -------------------------------------------
 
 
@@ -153,6 +183,61 @@ def test_parse_descriptor_file_does_not_falsely_flag_document_context():
     # test instead confirms the one member present is correctly flagged,
     # guarding against a "flags everything" false-positive implementation).
     assert by_name["GetAssociatedFamilyParameter"].requires_document_context is True
+
+
+def test_parse_descriptor_file_finds_guarded_switch_arms():
+    """The real ParameterDescriptor.cs case is
+    `nameof(Parameter.ClearValue) when parameters.Length == 0 => ...` -- a
+    `when` guard between the case key and `=>`. Confirms this doesn't get
+    silently skipped the way the case-start regex originally required only
+    whitespace there (a case this specific -- an overload-disambiguating
+    guard -- is exactly the kind of corroborated member Stage C exists to
+    surface, and the real file's only resolved member besides `_ => null`).
+    """
+    descriptor = parse_descriptor_file(_read("ParameterDescriptor.cs"))
+    by_name = {m.member_name: m for m in descriptor.resolved_members}
+    assert "ClearValue" in by_name
+
+
+def test_parse_descriptor_file_finds_multiple_guarded_switch_arms_in_one_file():
+    """DocumentDescriptor.cs has *two* separate `when`-guarded cases
+    (`Close`, `PlanTopologies`) plus one unguarded case (`GetUnusedElements`,
+    behind an `#if R24_OR_GREATER` preprocessor block, which is just plain
+    text to this parser and doesn't need special handling) -- confirms the
+    guard fix generalizes across multiple arms in the same switch, not just
+    a single isolated case.
+    """
+    descriptor = parse_descriptor_file(_read("DocumentDescriptor.cs"))
+    by_name = {m.member_name: m for m in descriptor.resolved_members}
+    assert set(by_name) == {"Close", "PlanTopologies", "GetUnusedElements"}
+
+
+def test_parse_descriptor_file_detects_document_context_via_resolve_parameter_itself():
+    """DocumentDescriptor.cs's GetUnusedElements case calls
+    `context.GetUnusedElements(...)` directly -- using the Resolve() method's
+    own Document parameter, not one of the RevitApi.*/FilteredWorksetCollector
+    textual markers this parser already knew about. Confirms the parameter
+    name is read from the real Resolve(...) signature itself (not
+    hardcoded as "context") and checked for directly.
+    """
+    descriptor = parse_descriptor_file(_read("DocumentDescriptor.cs"))
+    by_name = {m.member_name: m for m in descriptor.resolved_members}
+    assert by_name["GetUnusedElements"].requires_document_context is True
+
+
+def test_parse_descriptor_file_does_not_flag_context_parameter_falsely():
+    """Close never references anything document-scoped at all; PlanTopologies
+    uses `_document` (a private field, lowercase, distinct from both the
+    `context` parameter and the existing `.Document`-marker's required
+    capitalization) via its own local function. Confirms the parameter-name
+    check doesn't over-match everything in the method just because the
+    parameter exists in the signature, and doesn't collide with an unrelated
+    lowercase field of a similar name.
+    """
+    descriptor = parse_descriptor_file(_read("DocumentDescriptor.cs"))
+    by_name = {m.member_name: m for m in descriptor.resolved_members}
+    assert by_name["Close"].requires_document_context is False
+    assert by_name["PlanTopologies"].requires_document_context is False
 
 
 # -- parse_descriptor_file: RegisterExtensions() --------------------------------
@@ -276,6 +361,32 @@ def test_verify_tag_match_catches_checkout_not_on_any_tag(tmp_path):
 
     assert mismatch is not None
     assert "not checked out exactly at" in mismatch
+
+
+def test_verify_tag_match_catches_modified_tracked_file(tmp_path):
+    """git describe --exact-match only checks which commit HEAD is at, not
+    whether the working tree still matches that commit's real content -- a
+    checkout exactly at the claimed tag with a locally-modified file would
+    otherwise pass the tag check while mining content that was never
+    actually part of that tag.
+    """
+    _init_repo_at_tag(tmp_path, "2024.0.13")
+    (tmp_path / "README.md").write_text("locally modified", encoding="utf-8")
+
+    mismatch = verify_tag_match(tmp_path, "2024.0.13")
+
+    assert mismatch is not None
+    assert "uncommitted changes" in mismatch
+
+
+def test_verify_tag_match_catches_untracked_file(tmp_path):
+    _init_repo_at_tag(tmp_path, "2024.0.13")
+    (tmp_path / "untracked_extra.cs").write_text("x", encoding="utf-8")
+
+    mismatch = verify_tag_match(tmp_path, "2024.0.13")
+
+    assert mismatch is not None
+    assert "uncommitted changes" in mismatch
 
 
 def test_verify_tag_match_is_none_for_a_non_git_directory(tmp_path):

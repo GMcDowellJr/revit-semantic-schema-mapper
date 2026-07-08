@@ -1271,3 +1271,62 @@ checkout really at that tag succeeds; `--tag 2025.0.1` against the same checkout
 `2024.0.13`) refuses with a clear error and a non-zero exit code.
 
 All 183 tests pass (4 new).
+
+## Four more real Stage C gaps, found by review of the shipped parser (2026-07-08)
+
+Found by code review against real files at tag `2024.0.13` (not by a fresh run turning up
+surprises) -- each one confirmed against genuine RevitLookup source before and after the fix,
+same discipline as everything else in this stage.
+
+1. **Guarded resolver switch arms were silently skipped.** The real `ParameterDescriptor.cs` has
+   `nameof(Parameter.ClearValue) when parameters.Length == 0 => ResolveSet.Append(false,
+   "Overridden"),` -- an overload-disambiguating `when` guard between the case key and `=>`.
+   `_CASE_START_RE` only allowed whitespace there, so this case (and the real `DocumentDescriptor.
+   cs`'s two guarded cases, `Close`/`PlanTopologies`) were dropped from `resolved_members`
+   entirely, with no `parser_notes` entry to flag the loss -- exactly the silent
+   under-reporting `docs/dll_reflection_v0.md`'s "Stage C's C#-parsing surface" open question
+   warned about. Root cause is the same one already fixed once in `_SWITCH_ARM_RE`
+   (`DescriptorMap.cs`'s own `when` clauses): a guard condition contains `==` (`parameters.Length
+   == 0`), and an exclude-`=`-characters pattern can't match through it. Fixed the same way, a
+   plain non-greedy `.*?` in `_CASE_START_RE` too. Confirmed against both real files: all of
+   `ClearValue`/`Close`/`PlanTopologies`/`GetUnusedElements` now found in one file
+   (`DocumentDescriptor.cs`), not just the unguarded ones.
+2. **`using` aliases weren't resolved before truncating a switch case's type token to its short
+   name.** `DescriptorMap.cs` has `using RevitApplication =
+   Autodesk.Revit.ApplicationServices.Application;`, then `RevitApplication value when ... =>
+   new ApplicationDescriptor(value),` in the switch. Naively taking
+   `"RevitApplication".rsplit(".", 1)[-1]` gives `"RevitApplication"` itself -- not the real CLR
+   short name `"Application"` -- which would never short-name-match against a DLL manifest's own
+   type list (`ground_truth._ManifestTypeResolver`'s whole mechanism), silently making this
+   `descriptor_map` entry unusable downstream with no error anywhere. Fixed by parsing every
+   `using Alias = Fully.Qualified.Name;` directive up front and resolving a bare (non-dotted)
+   switch-case type token through that alias map before taking its short name. Confirmed this
+   doesn't break the adjacent, structurally-similar-looking case where an alias's name already
+   equals the real short name (`using RibbonItem = Autodesk.Revit.UI.RibbonItem;`), nor the
+   *separate*, non-aliased `Autodesk.Windows.RibbonItem` case elsewhere in the same switch
+   (dotted tokens never match an alias key, since C# alias names are always simple identifiers).
+3. **The `Resolve()` method's own `Document` parameter wasn't checked as a document-context
+   signal.** The existing marker list (`RevitApi.Document`/`RevitApi.ActiveView`/`.Document`/
+   etc.) covers the dominant pattern in `ElementDescriptor.cs`/`FamilyManagerDescriptor.cs`
+   (static accessors, `context` declared but unused) -- but the real `DocumentDescriptor.cs` case
+   `nameof(Document.GetUnusedElements) => ResolveSet.Append(context.GetUnusedElements(...))`
+   uses the parameter directly, and none of the existing markers match `context.` at all. Fixed
+   by capturing the parameter's actual name from the real `Resolve(Document context, ...)`
+   signature (via a new `context_param` regex group -- not hardcoding `"context"`, since that
+   name isn't confirmed fixed across every descriptor) and checking for `f"{context_param}."` as
+   an additional marker. Confirmed `GetUnusedElements` is now correctly flagged, and confirmed
+   this doesn't over-match: `PlanTopologies`' local function uses `_document.IsReadOnly` (a
+   private field, lowercase, distinct from both the `context` parameter and the existing
+   `.Document` marker's required capitalization) and is correctly *not* flagged.
+4. **`verify_tag_match` didn't catch a dirty working tree at the right tag.** `git describe
+   --tags --exact-match` only checks which commit `HEAD` is at -- a checkout exactly at
+   `2024.0.13` with a locally modified or untracked descriptor file still passes that check,
+   producing a reference file *labeled* `2024.0.13` from content that was never actually part of
+   that tag. Fixed by also running `git status --porcelain` after confirming the tag match, and
+   refusing (same `SystemExit` path in `_main()`) if the working tree isn't clean. Confirmed
+   against real git repos: both a modified tracked file and an untracked file are caught, and
+   confirmed end-to-end via the actual CLI (appending a line to a real checkout's
+   `DescriptorMap.cs` after tagging it correctly, then re-running -- refused with a clear error
+   and a non-zero exit code, same as the earlier wrong-tag reproduction).
+
+All 191 tests pass (8 new).

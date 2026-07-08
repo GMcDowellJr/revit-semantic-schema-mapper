@@ -129,6 +129,23 @@ _SWITCH_ARM_RE = re.compile(
     r"\s*=>\s*new\s+(?P<descriptor>[A-Za-z_]\w*)\s*\("
 )
 _SKIP_TYPE_TOKENS = {"null", "_"}
+# `using Alias = Fully.Qualified.Name;` -- confirmed a real, non-trivial case in
+# DescriptorMap.cs: `using RevitApplication = Autodesk.Revit.ApplicationServices.
+# Application;`, then `RevitApplication value when ... => new
+# ApplicationDescriptor(value),` in the switch itself. Naively taking
+# "RevitApplication".rsplit(".", 1)[-1] gives "RevitApplication" -- not the real
+# CLR short name "Application" -- which would never short-name-match against a
+# DLL manifest's own type list. Some aliases (e.g. `using RibbonItem =
+# Autodesk.Revit.UI.RibbonItem;`) happen to already equal the real short name,
+# but that's not something to rely on for every alias.
+_USING_ALIAS_RE = re.compile(r"^\s*using\s+(\w+)\s*=\s*([\w.]+)\s*;\s*$", re.MULTILINE)
+
+
+def _parse_using_aliases(text: str) -> dict[str, str]:
+    """Maps each ``using Alias = Fully.Qualified.Name;`` directive's alias to
+    the real CLR short name it stands for.
+    """
+    return {alias: qualified.rsplit(".", 1)[-1] for alias, qualified in _USING_ALIAS_RE.findall(text)}
 
 
 def parse_descriptor_map(text: str) -> list[DescriptorMapEntry]:
@@ -144,6 +161,7 @@ def parse_descriptor_map(text: str) -> list[DescriptorMapEntry]:
     call that could shift release to release and shouldn't be silently baked
     into this parser.
     """
+    aliases = _parse_using_aliases(text)
     entries: list[DescriptorMapEntry] = []
     section = "Unlabeled"
     for line in text.splitlines():
@@ -157,7 +175,13 @@ def parse_descriptor_map(text: str) -> list[DescriptorMapEntry]:
         type_token = arm_match.group("type")
         if type_token in _SKIP_TYPE_TOKENS:
             continue
-        short_name = type_token.rsplit(".", 1)[-1]
+        # A bare (non-dotted) token that's a known using-alias resolves to the
+        # real short name it stands for; anything else (including an
+        # already-dotted token like "Autodesk.Windows.RibbonItem", which never
+        # matches an alias key since C# alias names are always simple
+        # identifiers) is unaffected and just takes its own last dotted segment.
+        resolved_token = aliases.get(type_token, type_token)
+        short_name = resolved_token.rsplit(".", 1)[-1]
         entries.append(
             DescriptorMapEntry(
                 target_type_short_name=short_name,
@@ -172,20 +196,32 @@ def parse_descriptor_map(text: str) -> list[DescriptorMapEntry]:
 
 _CLASS_NAME_RE = re.compile(r"\bclass\s+(\w+)")
 _RESOLVE_SIG_RE = re.compile(
-    r"\bResolve\s*\(\s*Document\s+\w+\s*,\s*string\s+\w+\s*,\s*ParameterInfo\[\]\s+\w+\s*\)\s*\{"
+    r"\bResolve\s*\(\s*Document\s+(?P<context_param>\w+)\s*,\s*string\s+\w+\s*,\s*ParameterInfo\[\]\s+\w+\s*\)\s*\{"
 )
 _REGISTER_EXTENSIONS_SIG_RE = re.compile(r"\bRegisterExtensions\s*\(\s*IExtensionManager\s+\w+\s*\)\s*\{")
+# The optional `when <guard>` clause (e.g. real ParameterDescriptor.cs:
+# `nameof(Parameter.ClearValue) when parameters.Length == 0 => ...`) uses the
+# same non-greedy `.*?` (not `[^=]*?`) as _SWITCH_ARM_RE below, for the same
+# reason: a guard condition routinely contains `==` (e.g. `parameters.Length
+# == 0`), and an exclude-`=`-characters class can't match through that.
 _CASE_START_RE = re.compile(
-    r'(?:nameof\(\s*(?:[\w.]+\.)?(?P<nameof_member>\w+)\s*\)|"(?P<literal>[^"]+)")\s*=>'
+    r'(?:nameof\(\s*(?:[\w.]+\.)?(?P<nameof_member>\w+)\s*\)|"(?P<literal>[^"]+)")'
+    r"(?:\s+when\s+.*?)?"
+    r"\s*=>"
 )
 _BARE_CALL_RE = re.compile(r"^\s*(\w+)\(\)\s*,?\s*$")
 _EXTENSION_NAME_RE = re.compile(r'\.Name\s*=\s*(?:nameof\(\s*(?:[\w.]+\.)?(\w+)\s*\)|"([^"]+)")\s*;')
 
 # Textual proxies for "this only makes sense with a live document open" --
 # confirmed real accessors at tag 2024.0.13 (RevitApi.ActiveView/.Document are
-# the dominant pattern in that version's code; the Resolve() method's own
-# `context` parameter is declared but often unused in favor of these statics,
-# confirmed directly against ElementDescriptor.cs/FamilyManagerDescriptor.cs).
+# the dominant pattern in ElementDescriptor.cs/FamilyManagerDescriptor.cs, which
+# don't reference the Resolve() method's own `context` parameter at all -- but
+# some real files do use it directly instead, e.g. DocumentDescriptor.cs's
+# `nameof(Document.GetUnusedElements) => ResolveSet.Append(context
+# .GetUnusedElements(...))`. That parameter's name isn't always literally
+# "context" (not confirmed to be fixed across every descriptor), so it's
+# detected from the real Resolve(...) signature via _RESOLVE_SIG_RE's
+# `context_param` group and checked for separately, not hardcoded here.
 _DOCUMENT_CONTEXT_MARKERS = (
     "RevitApi.Document",
     "RevitApi.ActiveView",
@@ -237,13 +273,13 @@ def _find_local_function_body(method_text: str, function_name: str) -> Optional[
     return _extract_balanced_block(method_text, match.end() - 1)
 
 
-def _detect_signals(body: str) -> tuple[bool, bool]:
-    requires_document_context = any(marker in body for marker in _DOCUMENT_CONTEXT_MARKERS)
+def _detect_signals(body: str, context_param: str) -> tuple[bool, bool]:
+    requires_document_context = any(marker in body for marker in _DOCUMENT_CONTEXT_MARKERS) or f"{context_param}." in body
     has_multiple_variants = ".AppendVariant(" in body
     return requires_document_context, has_multiple_variants
 
 
-def _parse_resolve_method(method_text: str) -> list[ResolvedMember]:
+def _parse_resolve_method(method_text: str, context_param: str) -> list[ResolvedMember]:
     case_starts = list(_CASE_START_RE.finditer(method_text))
     members: list[ResolvedMember] = []
     for i, case_match in enumerate(case_starts):
@@ -265,7 +301,7 @@ def _parse_resolve_method(method_text: str) -> list[ResolvedMember]:
             if local_body is not None:
                 search_body = inline_body + local_body
 
-        requires_document_context, has_multiple_variants = _detect_signals(search_body)
+        requires_document_context, has_multiple_variants = _detect_signals(search_body, context_param)
         members.append(
             ResolvedMember(
                 member_name=member_name,
@@ -293,9 +329,11 @@ def parse_descriptor_file(text: str) -> RevitLookupDescriptor:
         parser_notes.append("could not find a 'class <Name>' declaration in this file")
 
     resolved_members: list[ResolvedMember] = []
+    resolve_sig_match = _RESOLVE_SIG_RE.search(text)
     resolve_body = _find_method_body(text, _RESOLVE_SIG_RE)
     if resolve_body is not None:
-        resolved_members = _parse_resolve_method(resolve_body)
+        context_param = resolve_sig_match.group("context_param") if resolve_sig_match else "context"
+        resolved_members = _parse_resolve_method(resolve_body, context_param)
     elif "IDescriptorResolver" in text:
         parser_notes.append(
             "file references IDescriptorResolver but Resolve(Document, string, ParameterInfo[]) "
@@ -378,13 +416,22 @@ def verify_tag_match(source_dir: Path, claimed_tag: str) -> Optional[str]:
     sitting on ``develop`` (forgot to ``git checkout`` first, or checked out
     the wrong tag), producing output that *claims* to be 2024.0.13 but isn't.
 
+    Also refuses if the working tree is at the right tag but *dirty*
+    (uncommitted changes or untracked files) -- ``git describe --exact-match``
+    only checks which commit ``HEAD`` is at, not whether the working tree
+    still matches that commit's real content. A checkout that's exactly at
+    ``2024.0.13`` but has a locally-modified or added descriptor file would
+    otherwise pass the tag check while still mining content that was never
+    actually part of that tag.
+
     Returns a human-readable mismatch description if ``source_dir`` is a git
-    working tree and its checked-out ref does not match ``claimed_tag``, or
-    ``None`` if it matches -- or if it can't be verified at all (git isn't
-    installed, or ``source_dir`` isn't a git checkout, e.g. a plain
-    extracted-from-a-tag-archive directory) -- an unverifiable checkout isn't
-    treated as an error, since operating on "any local directory" (not
-    necessarily a git clone) is this module's whole point.
+    working tree and either its checked-out ref does not match ``claimed_tag``
+    or the working tree is dirty, or ``None`` if it matches and is clean --
+    or if it can't be verified at all (git isn't installed, or ``source_dir``
+    isn't a git checkout, e.g. a plain extracted-from-a-tag-archive
+    directory) -- an unverifiable checkout isn't treated as an error, since
+    operating on "any local directory" (not necessarily a git clone) is this
+    module's whole point.
     """
     import subprocess
 
@@ -416,6 +463,14 @@ def verify_tag_match(source_dir: Path, claimed_tag: str) -> Optional[str]:
         return (
             f"--tag {claimed_tag!r} was given, but {source_dir} is actually at tag {actual_tag!r} "
             f"-- refusing to trust the claimed tag label."
+        )
+
+    status = _run("status", "--porcelain")
+    if status is not None and status.returncode == 0 and status.stdout.strip():
+        return (
+            f"{source_dir} is checked out at tag {claimed_tag!r}, but the working tree has "
+            f"uncommitted changes or untracked files -- refusing to trust that the mined "
+            f"content actually matches the tag:\n{status.stdout.rstrip()}"
         )
     return None
 
