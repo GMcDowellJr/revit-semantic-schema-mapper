@@ -974,6 +974,46 @@ needed on the Python side -- it's just another type name that doesn't match any 
 
 All 162 tests pass after these two fixes.
 
+## A second real Revit 2024 manifest: diffing before/after the last round of fixes (2026-07-08)
+
+The user re-ran `reflect_revit_api.ps1` on the same real Windows + Revit 2024 machine after
+the void/by-ref/unresolved-member-guard fixes and separately after the resolve-handler-
+fallthrough/type-level-guard fixes, producing a second real manifest
+(`generated_at: 2026-07-08T18:17:51Z`, 18.4 MB) alongside the first
+(`2026-07-08T16:25:48Z`, 18.9 MB, already on hand from the earlier session). Diffing the two
+directly (not just re-validating the new one in isolation) isolates exactly what each fix
+changed in real output, rather than trusting that it *should* have changed something:
+
+- **Types (2607) and total members (20061) are identical between both runs.** No types or
+  members were silently gained or lost -- reassuring on its own, and it also means the
+  resolve-handler-fallthrough and type-level-guard fixes from the previous round, while real
+  and confirmed via deliberate reproduction (see above), **did not actually need to fire for
+  this specific Revit 2024 DLL set**: both runs report 0 types with an `"<unresolved>"`
+  `base_type`, 0 with an unresolved `inheritance_chain` entry, 0 with unresolved
+  `implemented_interfaces`. Worth being precise about what this does and doesn't mean: it does
+  *not* mean those bugs were never real (they were reproduced directly, independent of Revit
+  entirely) -- it means *this particular* Revit 2024 install's DLL set doesn't happen to
+  trigger a colliding-simple-name or unresolved-ancestor/interface scenario. The guards remain
+  correct and load-bearing safety nets for whatever install layout hits them next (a different
+  Revit version, a different machine's DLL set, or Revit's own next update), not dead code.
+- **172 parameters changed from the old run's bare CLR by-ref form to the new run's
+  canonicalized `"out <Type>"`/`"ref <Type>"` form** (141 `out`, 31 `ref`) -- the old manifest
+  had 0 parameters matching that pattern at all (it predates the by-ref canonicalization fix),
+  confirming the fix's real-world reach isn't a rare edge case: **real, well-known Revit API
+  methods** are affected, e.g. `Document.LoadFamily(out Family)`, `Document.LoadFamilySymbol(out
+  FamilySymbol)`, `Document.Link(out ElementId)`, and `ElementId.TryParse(out ElementId)` (the
+  canonical TryParse pattern). Confirmed end-to-end, not just at the string level: a hand-built
+  docs-form `EdgeCandidate` for `Document.LoadFamily(string, out Family)` run through
+  `cross_validate_dll` against this real manifest correctly resolved the right one of
+  `LoadFamily`'s 5 real overloads and reported `SIGNATURE_CONFIRMED`.
+- Void-return method count (2288) is identical between both runs, as expected -- that fix lives
+  entirely in `ground_truth.normalize_type_name` (Stage B), not in what Stage A writes into the
+  manifest, so the manifest file itself was never expected to change from it.
+- Re-ran the full array-shape correctness scan (every type's `inheritance_chain`/
+  `implemented_interfaces`/`members`/`enum_members` and every member's `parameters` genuinely a
+  JSON array, never a collapsed scalar/`null`) against the new file: zero issues, same as the
+  first real manifest.
+
 ## Why member pages are discovered from class pages, not just the index/TOC
 
 Sandcastle-style sites list a type's members with links to their own property/method pages
