@@ -648,13 +648,19 @@ function Invoke-CoreReflection {
     # to do on its own.
     $allCandidatePaths = @($DllPaths) + @($frameworkRefDlls) + @($dotNetSharedDlls) + @($runtimeDlls)
 
-    # System.Private.CoreLib is the right root whenever a .NET-8-style shared-framework
-    # reference set is in play (Revit 2025+); mscorlib is the right root for the older,
-    # -NetFrameworkReferenceAssembliesDir-supplied .NET-Framework-targeted case. When neither is
-    # supplied, default to System.Private.CoreLib -- this function's own original, still-valid
-    # use case (confirmed against real non-Revit BCL assemblies, see crawl_notes.md) is a plain
-    # PowerShell 7/.NET Core host reflecting other .NET Core assemblies, which is CoreLib-rooted.
-    $coreAssemblyName = if ($dotNetSharedDlls) { "System.Private.CoreLib" } elseif ($frameworkRefDlls) { "mscorlib" } else { "System.Private.CoreLib" }
+    # mscorlib is the right root whenever the caller explicitly passed
+    # -NetFrameworkReferenceAssembliesDir -- the older, .NET-Framework-targeted case (an earlier
+    # Revit version reflected via this path). Deciding this by "which reference source actually
+    # resolved any dlls" instead (as an earlier version of this line did) is wrong now that
+    # -DotNetSharedFrameworkRoot auto-defaults from %ProgramFiles% in the main script body
+    # whenever it's not explicitly set: on any ordinary Windows machine with .NET 8 installed,
+    # that default silently populates $dotNetSharedDlls too, so it would win over an explicit
+    # -NetFrameworkReferenceAssembliesDir and wrongly root MetadataLoadContext at
+    # System.Private.CoreLib for a genuinely mscorlib-targeted reflection -- confirmed by
+    # automated PR review. $ExtraRefDir being passed at all is the real, unambiguous signal of
+    # intent here, not which list ended up non-empty. Otherwise (Revit 2025+, or this function's
+    # original non-Revit-BCL use case) default to System.Private.CoreLib.
+    $coreAssemblyName = if ($ExtraRefDir) { "mscorlib" } else { "System.Private.CoreLib" }
     $resolver = New-Object System.Reflection.PathAssemblyResolver (, [string[]]$allCandidatePaths)
     $mlc = New-Object System.Reflection.MetadataLoadContext($resolver, $coreAssemblyName)
 
