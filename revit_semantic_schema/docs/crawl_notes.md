@@ -602,6 +602,54 @@ The next real validation step is exactly the pattern the rest of this file alrea
 ground_truth_manifest_2024.json -Verbose` on an actual Windows+Revit box, and record whatever it
 finds here -- confirmed facts, not assumptions, the same as every other stage.
 
+## First real run against Windows PowerShell 5.1 + real Revit 2024 (2026-07, user-provided error)
+
+The user ran `reflect_revit_api.ps1` on their own machine against a real
+`C:\Program Files\Autodesk\Revit 2024` install under actual Windows PowerShell 5.1 -- the
+first execution of the PS 5.1/`ReflectionOnlyLoadFrom` path in this project's history (the dev
+sandbox that wrote it has no Windows/Revit access at all -- see the Stage A section above). It
+failed partway through with:
+
+```
+Exception calling "GetParameters" with "0" argument(s): "Cannot resolve dependency to
+assembly 'System, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089'
+because it has not been preloaded. When using the ReflectionOnly APIs, dependent
+assemblies must be pre-loaded or loaded on demand through the ReflectionOnlyAssemblyResolve
+event."
+```
+
+**Root cause**: the `ReflectionOnlyAssemblyResolve` handler in `Invoke-DesktopReflection` only
+knew how to satisfy references to Revit's own DLLs (a by-simple-name lookup restricted to
+paths found under `-InstallDir`). A real `RevitAPI.dll` method's parameter/return types also
+reference plain .NET Framework BCL assemblies (`System`, and presumably others like
+`System.Core`, `System.Xml`, `System.Drawing`, `System.Windows.Forms` for anything
+UI-/geometry-adjacent) -- these live in the GAC, not under the Revit install dir at all, so the
+by-name lookup came up empty and the handler returned `$null`, which is exactly the documented
+`ReflectionOnlyLoadFrom` failure mode for an unresolved dependency. This is the standard,
+widely-documented gotcha with .NET Framework's reflection-only APIs: BCL assemblies aren't
+auto-resolved just because they're system assemblies, and `ReflectionOnlyLoadFrom` (a
+file-path-based loader) has no path to hand it for something living in the GAC.
+
+**Fixed**: the resolve handler now falls back to
+`[System.Reflection.Assembly]::ReflectionOnlyLoad($e.Name)` (the assembly's own requested
+display name, not a path) when the simple name isn't one of Revit's own DLLs -- this uses the
+runtime's normal assembly-probing/GAC lookup, just in reflection-only mode, which is the
+standard fix for this exact error message. Also added a best-effort preload of the most likely
+framework assemblies (`mscorlib`, `System`, `System.Core`, `System.Xml`, `System.Drawing`,
+`System.Windows.Forms`) before the scan loop, so the resolve event has less to do on demand;
+any that fail to preload there are still retried via the resolve handler when actually
+referenced, so this is a performance nicety, not a correctness requirement.
+
+**Not yet confirmed**: whether this fix fully resolves the real Revit 2024 scan end-to-end, or
+whether further BCL/GAC assemblies turn up unresolved once past this point (e.g. WPF assemblies
+`PresentationCore`/`PresentationFramework`/`WindowsBase` if `RevitAPIUI.dll` types reference
+them, or `System.Numerics`, `System.ComponentModel.DataAnnotations`, etc.) -- this fix was
+reasoned through and applied based on the real error message above, not yet verified by a
+clean full re-run. That re-run is the next real step; treat any further unresolved-dependency
+error the same way -- add that specific assembly's simple name to the preload list (or confirm
+the resolve-handler fallback alone is already sufficient and the preload list is unnecessary
+belt-and-suspenders).
+
 ## Why member pages are discovered from class pages, not just the index/TOC
 
 Sandcastle-style sites list a type's members with links to their own property/method pages

@@ -258,6 +258,16 @@ function Invoke-DesktopReflection {
     # any unresolved reference to the matching DLL already found under InstallDir, by simple
     # name. See docs/dll_reflection_v0.md, "Cross-assembly type references and
     # ReflectionOnlyAssemblyResolve".
+    #
+    # Confirmed on a real Windows + Revit 2024 run (see crawl_notes.md): a reference to a
+    # plain .NET Framework BCL assembly (first hit was "System, Version=4.0.0.0, ...") isn't
+    # under InstallDir at all -- it lives in the GAC. The resolve handler must fall back to
+    # [Assembly]::ReflectionOnlyLoad($e.Name) (the assembly's own display name, not a path),
+    # which uses the runtime's normal probing/GAC lookup, just in reflection-only mode -- this
+    # is the standard fix for "Cannot resolve dependency to assembly '...' because it has not
+    # been preloaded" against framework assemblies. Only fall back to $null (an unresolved,
+    # external reference -- see docs/dll_reflection_v0.md's "external, not further inspected"
+    # principle) if that also fails.
     $resolveHandler = [ResolveEventHandler] {
         param($sender, $e)
         $simpleName = ($e.Name -split ',')[0].Trim()
@@ -265,9 +275,18 @@ function Invoke-DesktopReflection {
             try { return [System.Reflection.Assembly]::ReflectionOnlyLoadFrom($byName[$simpleName]) }
             catch { return $null }
         }
-        return $null
+        try { return [System.Reflection.Assembly]::ReflectionOnlyLoad($e.Name) }
+        catch { return $null }
     }
     [System.AppDomain]::CurrentDomain.add_ReflectionOnlyAssemblyResolve($resolveHandler)
+
+    # Pre-seed the common .NET Framework assemblies most types reference (System, System.Core
+    # for LINQ, System.Xml, System.Drawing for geometry-adjacent types, etc.) so the resolve
+    # event above has less to do on-demand. Best-effort: any that fail to preload here will
+    # still be attempted again via the resolve handler when actually referenced.
+    foreach ($fx in @("mscorlib", "System", "System.Core", "System.Xml", "System.Drawing", "System.Windows.Forms")) {
+        try { [System.Reflection.Assembly]::ReflectionOnlyLoad($fx) | Out-Null } catch { }
+    }
 
     $assembliesScanned = New-Object System.Collections.Generic.List[object]
     $typeEntries = New-Object System.Collections.Generic.List[object]
