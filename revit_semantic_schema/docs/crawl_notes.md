@@ -1330,3 +1330,64 @@ same discipline as everything else in this stage.
    and a non-zero exit code, same as the earlier wrong-tag reproduction).
 
 All 191 tests pass (8 new).
+
+## Stage A on a real Revit 2025 install: most of the manifest silently vanished (2026-07-08)
+
+A real run of `reflect_revit_api.ps1` against `C:\Program Files\Autodesk\Revit 2025` (Desktop/
+`ReflectionOnlyLoadFrom` path) completed and wrote a manifest, printing only:
+
+```
+WARNING: 83 member(s) skipped across the scan: their return/parameter types could not be
+resolved (neither under -InstallDir nor loadable from the GAC). Run with -Verbose to see which
+ones. Wrote ...ground_truth_manifest_2025.json (40 types from 5 matched assemblies)
+```
+
+That output *looks* like a minor, expected loss (the 2024 run had similar member-level skips).
+It isn't. Diffing the resulting manifest against a real 2024 manifest (both produced by this
+same script) shows the real story:
+
+| | 2024 | 2025 |
+|---|---|---|
+| assemblies matched | 15 | 5 |
+| types collected | 2607 | 40 |
+| members collected | 20061 | 38 |
+
+Ten assemblies that matched in 2024 -- `RevitAPIIFC`, `DBManagedServices`, `RevitNET`,
+`RSCloudClient`, `CollaborateCommon`, `Autodesk.CivilAlignments.DBApplication`,
+`Autodesk.ResultsBuilder.DBApplication`, `Autodesk.StructuralRibbon.Application`, and the three
+`Autodesk.Revit.CloudRendering.SPD.*` add-in assemblies -- report `matched: false` (0 relevant
+types) in 2025, even though the `.dll` files themselves still exist at the same paths under the
+2025 `InstallDir` (confirmed by comparing each assembly's own `assemblies_scanned` entry across
+the two manifests, not just its absence from the matched list). Only one new cloud assembly,
+`Autodesk.Revit.CloudWorksharing.DocumentManagement`, appears in 2025's matched set in their
+place. This 98%+ collapse in captured types produces zero warning of its own -- the only warning
+printed is the unrelated 83-member one -- because `Get-LoadableTypes`'s `ReflectionTypeLoadException`
+handler silently returned an empty type list on total failure, identical in the output to an
+assembly that was never relevant to `Autodesk.Revit.DB` at all.
+
+**Likely root cause (strong circumstantial evidence, not yet confirmed via a `-Verbose` re-run):**
+diffing `assemblies_scanned` by `name` between the two installs shows Revit 2025 renamed/
+version-bumped a number of exact-named native and cloud dependencies that 2024's install shipped
+under different names -- `AdskLicensingSDK_7` -> `AdskLicensingSDK_8`; every `ASM*229A` Shape
+Manager DLL -> the matching `ASM*230A`; `IfcCore_24.6_16`/`IfcGeom_24.6_16`/`FacetModeler_24.6_16`
+-> `..._24.12_16`; the WCF-based `ATFRevitWCFInterface` (present in 2024, absent from 2025)
+replaced by a gRPC-based `ATFRevitGrpcInterface`/`ATFRevitBroker`/`ATFRevitRCEHost` stack plus new
+`Google.Protobuf`/`Grpc.*` dependencies; and the old `Autodesk.Bcg`/`Autodesk.Bcg.Http` cloud
+client SDK (2024) replaced by `Autodesk.Gateway.Client`/`Autodesk.Management.Client`/
+`Autodesk.Http.*`/the `Autodesk.Revit.CloudWorksharing.*` family (2025). Every one of the ten
+assemblies that dropped out is exactly the kind of assembly that would reference one of these
+(IFC import/export, licensing, cloud collaboration, structural/civil add-ins) -- while `RevitAPI`
+itself, which matched fine in both years, evidently doesn't expose any *public* type that
+directly surfaces these particular dependencies in its own signatures. `reflect_revit_api.ps1`'s
+`ReflectionOnlyAssemblyResolve` handler only resolves by *exact simple name* (falling back to the
+GAC) -- a version-bumped or renamed simple name is invisible to it, and these are private
+Autodesk components that were never going to be in the GAC either.
+
+**Fixed the silence, not (yet) the underlying resolution gap.** Added
+`$script:typeLoadExceptionAssemblies`/`$script:typeLoadExceptionTypesLost` counters plus verbose
+per-assembly `LoaderExceptions` logging in `Get-LoadableTypes`, and a new summary `Write-Warning`
+when either counter is nonzero, explicitly naming this exact scenario (an assembly that matched
+previously now showing 0 types). Actually fixing the resolution gap itself (e.g. accepting a
+version-bumped simple name, or seeding the resolver with a coherent reference set) needs the real
+`LoaderExceptions` text from a `-Verbose` re-run against the live 2025 install first -- this is a
+confirmed real risk, not yet a confirmed root cause per assembly.

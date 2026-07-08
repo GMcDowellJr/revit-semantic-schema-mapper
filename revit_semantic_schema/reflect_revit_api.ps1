@@ -329,17 +329,39 @@ function Test-NamespaceMatch([Type] $Type, [string] $Prefix) {
     return $Type.IsVisible -and $Type.Namespace -and $Type.Namespace.StartsWith($Prefix)
 }
 
-function Get-LoadableTypes([System.Reflection.Assembly] $Assembly) {
+function Get-LoadableTypes([System.Reflection.Assembly] $Assembly, [string] $AssemblyLabel) {
     # A reflection-only-loaded assembly can still fail GetTypes() if some referenced type
     # can't be resolved (ReflectionOnlyAssemblyResolve/PathAssemblyResolver came up empty for
     # it) -- ReflectionTypeLoadException still carries every type that *did* load in its
     # .Types array (with nulls for the ones that didn't), so this is not treated as a hard
     # failure of the whole assembly. See docs/dll_reflection_v0.md's "external, not further
     # inspected" principle.
+    #
+    # Confirmed a real risk on a live Revit 2025 run: an assembly that matched fine in 2024
+    # (RevitAPIIFC, DBManagedServices, RevitNET, RSCloudClient, ...) can come back with *zero*
+    # types here in 2025 if a cross-assembly reference it needs was renamed/version-bumped in
+    # the new install (e.g. AdskLicensingSDK_7 -> _8, the WCF-based ATFRevitWCFInterface
+    # replaced by a gRPC-based ATFRevitGrpcInterface, ASM*229A -> *230A) -- every entry in
+    # .Types comes back null, so the caller silently sees "matched: false", identical to an
+    # assembly that never had any relevant types at all. Without logging *why* here, that's
+    # indistinguishable from a normal non-match and the run's summary line stays silent about
+    # what's actually a large, previously-working chunk of the manifest disappearing (see the
+    # $script:typeLoadExceptionAssemblies warning below). LoaderExceptions carries the actual
+    # missing/broken reference for each failed type, deduplicated for -Verbose.
     try {
         return $Assembly.GetTypes()
     } catch [System.Reflection.ReflectionTypeLoadException] {
-        return @($_.Exception.Types | Where-Object { $null -ne $_ })
+        $loaded = @($_.Exception.Types | Where-Object { $null -ne $_ })
+        $lostCount = $_.Exception.Types.Count - $loaded.Count
+        if ($lostCount -gt 0) {
+            $script:typeLoadExceptionAssemblies++
+            $script:typeLoadExceptionTypesLost += $lostCount
+            $distinctMessages = @($_.Exception.LoaderExceptions | Where-Object { $null -ne $_ } |
+                ForEach-Object { $_.Message } | Select-Object -Unique -First 5)
+            Write-Verbose "$AssemblyLabel : $lostCount type(s) failed to load out of $($_.Exception.Types.Count) (ReflectionTypeLoadException). Distinct loader exception(s):"
+            foreach ($msg in $distinctMessages) { Write-Verbose "    $msg" }
+        }
+        return $loaded
     }
 }
 
@@ -417,7 +439,7 @@ function Invoke-DesktopReflection {
             continue
         }
 
-        $types = @(Get-LoadableTypes $asm | Where-Object { Test-NamespaceMatch $_ $Prefix })
+        $types = @(Get-LoadableTypes $asm $name | Where-Object { Test-NamespaceMatch $_ $Prefix })
         $matched = $types.Count -gt 0
         [void]$assembliesScanned.Add([ordered]@{ path = $path; name = $name; matched = $matched })
         if ($matched) {
@@ -499,7 +521,7 @@ function Invoke-CoreReflection {
             continue
         }
 
-        $types = @(Get-LoadableTypes $asm | Where-Object { Test-NamespaceMatch $_ $Prefix })
+        $types = @(Get-LoadableTypes $asm $name | Where-Object { Test-NamespaceMatch $_ $Prefix })
         $matched = $types.Count -gt 0
         [void]$assembliesScanned.Add([ordered]@{ path = $path; name = $name; matched = $matched })
         if ($matched) {
@@ -533,6 +555,15 @@ function Invoke-CoreReflection {
 # these two shared counters.
 $script:unresolvedMemberSkips = 0
 $script:unresolvedTypeSkips = 0
+# Incremented in Get-LoadableTypes: unlike the two counters above (which only ever drop a
+# single already-enumerable member/type), these count whole types that never even made it
+# into an assembly's $types list -- the failure mode that silently zeroed out RevitAPIIFC,
+# DBManagedServices, RevitNET, RSCloudClient and others on a real Revit 2024 -> 2025 install
+# upgrade (a cross-assembly dependency renamed/version-bumped between installs). Without this,
+# such an assembly just reports "matched: false" with 0 types, indistinguishable from an
+# assembly that was never relevant in the first place.
+$script:typeLoadExceptionAssemblies = 0
+$script:typeLoadExceptionTypesLost = 0
 
 $dllPaths = @(Get-DllPaths $InstallDir)
 
@@ -563,6 +594,15 @@ if ($script:unresolvedMemberSkips -gt 0) {
 }
 if ($script:unresolvedTypeSkips -gt 0) {
     Write-Warning "$($script:unresolvedTypeSkips) type(s) skipped entirely across the scan: their own metadata (beyond the base_type/inheritance_chain/implemented_interfaces fields, which record '<unresolved>' rather than being skipped) could not be converted. Run with -Verbose to see which ones."
+}
+if ($script:typeLoadExceptionAssemblies -gt 0) {
+    Write-Warning ("$($script:typeLoadExceptionAssemblies) assembl(y/ies) hit ReflectionTypeLoadException while enumerating types " +
+        "($($script:typeLoadExceptionTypesLost) type(s) failed to load and were dropped before this run ever saw them -- distinct " +
+        "from the unresolved-member/-type counts above, which only apply to types that DID enumerate). This is the most likely " +
+        "explanation if an assembly that matched in a previous version's manifest now shows 0 types / matched:false here: a " +
+        "cross-assembly reference it needs was renamed, removed, or version-bumped in this install and can no longer be resolved " +
+        "(neither under -InstallDir nor the GAC). Run with -Verbose to see each affected assembly's actual LoaderExceptions " +
+        "messages, which name the specific missing/broken reference.")
 }
 
 $json = $manifest | ConvertTo-Json -Depth 12
