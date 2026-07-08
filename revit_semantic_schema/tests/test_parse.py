@@ -280,6 +280,57 @@ def test_parse_members_index_page_recognizes_2025_collapsible_region_headings():
     assert by_name["Width"]["member_kind"] is MemberKind.PROPERTY
 
 
+# Real markup shape from a live Revit 2025 run (Raspberry Pi, 2026-07, see
+# docs/crawl_notes.md): the syntax block moved into a per-language "code
+# snippet" widget -- one div.codeSnippetContainerCode per .NET language
+# (cs/vb/cpp/fs), each with its own <pre><code>, individual tokens wrapped in
+# <span class=keyword>/<span class=identifier> etc. Modeled on the real
+# ACAPreference property page snippet the user pasted (a simple property:
+# "public ACAObjectPreference ACAPreference { get; set; }"). The vb block is
+# deliberately placed *before* the cs one here (the reverse of the real
+# page's order) to prove the fix selects by the ".cs" class specifically,
+# not merely "whichever <pre> comes first in the document".
+_PROPERTY_PAGE_2025_CODE_SNIPPET_WIDGET = """
+<html><body>
+<h4 id="api-title" class="truncate"> ACAPreference Property </h4>
+<div id="mainBody">
+<div class=codeSnippetContainerCodeContainer>
+<div class="codeSnippetContainerCode vb" id=IDAB_code_Div2 style="display: none">
+<pre><code><span class=keyword>Public</span> <span class=keyword>Property</span> <span class=identifier>ACAPreference</span> <span class=keyword>As</span> <span class=identifier>ACAObjectPreference</span></code></pre>
+</div>
+<div class="codeSnippetContainerCode cs" id=IDAB_code_Div1 style="display: block">
+<pre><code><span class=keyword>public</span> <span class=identifier>ACAObjectPreference</span> <span class=identifier>ACAPreference</span> { <span class=keyword>get</span>; <span class=keyword>set</span>; }</code></pre>
+</div>
+</div>
+</div>
+</body></html>
+"""
+
+
+def test_parse_member_page_recognizes_2025_code_snippet_widget_syntax_block():
+    """Regression test for the 2025 finding that zeroed out every candidate
+    edge crawl-wide: with no _SYNTAX_SELECTORS match, every member page's
+    return_type came back None, and classify.classify_member refuses to
+    consider any edge rule at all without one.
+    """
+    page = parse_member_page(
+        _PROPERTY_PAGE_2025_CODE_SNIPPET_WIDGET,
+        "https://www.revitapidocs.com/2025/1a97e079-901e-56e0-252d-2b030d04e595.htm",
+        "2025",
+        declaring_type="Autodesk.Revit.DB.ACADExportOptions",
+    )
+    assert page.kind is Kind.PROPERTY
+    member = page.members[0]
+    assert member.name == "ACAPreference"
+    assert member.return_type == "ACAObjectPreference"
+    assert member.kind is MemberKind.PROPERTY
+    # This minimal fixture has no embedded templateData JSON/breadcrumb (see
+    # test_resolve_type_name_from_members_index_without_namespace_json for
+    # the same documented limitation), so a namespace-lookup note is
+    # expected here -- what matters is the *syntax-block* note is gone.
+    assert not any("syntax block" in note for note in page.parser_notes)
+
+
 def test_find_members_page_link(load_fixture):
     html = load_fixture("real_wall_members.htm")
     url = "https://www.revitapidocs.com/2024/d0678575-843b-42ea-c91d-c94b13d7dd4f.htm"
