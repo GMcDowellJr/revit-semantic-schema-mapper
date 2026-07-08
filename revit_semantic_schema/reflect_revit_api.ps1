@@ -89,6 +89,22 @@ if (-not $RevitVersion) {
     }
 }
 
+# -Out must be a *file* path (e.g. "...\ground_truth_manifest_2024.json"), not a directory --
+# confirmed on a real run that passing an existing directory produces a confusing low-level
+# "Access to the path '...' is denied" from File.WriteAllText (Windows reports "can't create a
+# file where a directory of the same name already exists" as access-denied, not a clearer
+# error) rather than anything actionable. Fail with a clear message up front instead, and
+# create -Out's parent directory if it's simply missing rather than requiring it to pre-exist.
+if (Test-Path -LiteralPath $Out -PathType Container) {
+    throw "-Out '$Out' is an existing directory, not a file path -- pass a file path to write " +
+          "the manifest to, e.g. '$($Out.TrimEnd('\', '/'))\ground_truth_manifest_$RevitVersion.json'."
+}
+$outParent = Split-Path -Parent $Out
+if ($outParent -and -not (Test-Path -LiteralPath $outParent -PathType Container)) {
+    Write-Verbose "Creating -Out's parent directory: $outParent"
+    New-Item -ItemType Directory -Path $outParent -Force | Out-Null
+}
+
 $isCore = $PSVersionTable.PSEdition -eq 'Core'
 Write-Verbose "PowerShell host: $($PSVersionTable.PSEdition) $($PSVersionTable.PSVersion) -- using $(if ($isCore) { 'MetadataLoadContext' } else { 'ReflectionOnlyLoadFrom' })"
 

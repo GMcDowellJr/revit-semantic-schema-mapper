@@ -650,6 +650,35 @@ error the same way -- add that specific assembly's simple name to the preload li
 the resolve-handler fallback alone is already sufficient and the preload list is unnecessary
 belt-and-suspenders).
 
+### Second real-run error: `-Out` pointed at an existing directory
+
+After the fix above cleared the assembly-resolve error, the same real run reached the very
+end -- the scan itself completed and only the final write failed:
+
+```
+Exception calling "WriteAllText" with "3" argument(s): "Access to the path
+'...\outputs\revit_2024\reflection' is denied."
+```
+
+The `-Out` value the user passed (`...\outputs\revit_2024\reflection`, no filename) was an
+*existing directory* (presumably created in advance to hold the eventual manifest, following
+this project's `outputs/revit_<version>/` convention) -- `File.WriteAllText` can't write a file
+over a path that's already a directory, and Windows reports that specific failure as
+`UnauthorizedAccessException`/"Access is denied" rather than a clearer "that's a directory"
+error. Not a reflection bug -- a usability gap in the script's own argument handling. Fixed by
+checking `-Out` up front: throws a clear, actionable error if it's an existing directory
+(naming the mistake directly, with a corrected example path), and auto-creates `-Out`'s parent
+directory via `New-Item -ItemType Directory -Force` if it's simply missing, rather than
+requiring the caller to `mkdir` it first. Both branches confirmed directly (a real "existing
+directory" case throws the new clear message; a real "parent directory doesn't exist yet" case
+now succeeds and creates the tree) against this sandbox's own non-Revit stand-in scan.
+
+This is the second consecutive real-run error from the user's actual Windows + Revit 2024
+machine, and the second consecutive case where the assembly-loading itself was fine and the
+failure was somewhere else entirely (first the resolve handler, now argument validation) --
+worth remembering that "the scan completed" doesn't mean "the whole script is done running
+cleanly end-to-end" until a full run actually produces a written manifest file.
+
 ## Why member pages are discovered from class pages, not just the index/TOC
 
 Sandcastle-style sites list a type's members with links to their own property/method pages
