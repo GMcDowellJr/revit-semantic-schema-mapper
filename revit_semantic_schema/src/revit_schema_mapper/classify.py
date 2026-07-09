@@ -279,6 +279,14 @@ _NAME_KEYWORD_RULES: list[tuple[re.Pattern[str], EdgeType, str | None]] = [
     # assembly instance") -- zero counterexamples, same evidence shape as
     # the View rule above.
     (re.compile(r"^Location$", re.IGNORECASE), EdgeType.REFERENCES, "Location"),
+    # Exact match. Evidence from a real crawl's candidate_edges.json: 3
+    # UNKNOWN_DB_OBJECT_REFERENCE edges across 3 distinct source types, all
+    # named exactly "GetExternalResourceReference" (Element/
+    # ExternalResourceLoadData/LinkLoadResult), all returning
+    # ExternalResourceReference, zero counterexamples -- the method name
+    # already spells out its own return type, self-confirming the same way
+    # GetDocument/SketchPlane do.
+    (re.compile(r"^GetExternalResourceReference$", re.IGNORECASE), EdgeType.REFERENCES, "ExternalResourceReference"),
     # Evidence from a real 2024 crawl's unknown_pareto.py breakdown: 7 edges
     # across 4 distinct source types (FamilyInstance.Room/.FromRoom/.ToRoom,
     # Document.GetRoomAtPoint), 3 of 7 independently corroborated by

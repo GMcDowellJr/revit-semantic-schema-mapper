@@ -367,6 +367,24 @@ def test_bare_view_reference_keeps_direct_return_type_confidence_in_scoped_crawl
     assert candidate.candidate_target_type == "Autodesk.Revit.DB.View"
 
 
+def test_get_external_resource_reference_is_classified_as_references():
+    """Evidence from a real crawl's candidate_edges.json: 3
+    UNKNOWN_DB_OBJECT_REFERENCE edges across 3 distinct source types, all
+    named exactly 'GetExternalResourceReference' (Element/
+    ExternalResourceLoadData/LinkLoadResult), all returning
+    ExternalResourceReference, zero counterexamples -- the method name
+    already spells out its own return type."""
+    member = _member(
+        "GetExternalResourceReference", "ExternalResourceReference", declaring_type="Autodesk.Revit.DB.LinkLoadResult"
+    )
+    candidate = classify_member(member, source_type="Autodesk.Revit.DB.LinkLoadResult", known_type_short_names=set())
+
+    assert candidate is not None
+    assert candidate.candidate_edge_type is EdgeType.REFERENCES
+    assert candidate.edge_confidence is ConfidenceLabel.DIRECT_RETURN_TYPE
+    assert candidate.candidate_target_type == "Autodesk.Revit.DB.ExternalResourceReference"
+
+
 def test_location_property_name_is_classified_as_references():
     """Evidence from a real crawl's candidate_edges.json: 7
     UNKNOWN_DB_OBJECT_REFERENCE edges across 7 distinct source types, all
