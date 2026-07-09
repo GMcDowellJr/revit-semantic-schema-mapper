@@ -53,7 +53,12 @@ signal in this order:
    self-return check originally required a `Set*` name prefix, but this cluster's entire
    query-builder API uses other verb prefixes for the identical pattern -- 12/12 edges, zero
    counterexamples -- so the name-prefix requirement was dropped entirely, gated only on
-   `MemberKind.METHOD`).
+   `MemberKind.METHOD`). The self-return check also covers a **collection of the declaring
+   type** (e.g. `Schema.ListSchemas() -> IList<Schema>`, a static registry/lookup utility, not a
+   real `Schema -> Schema` relationship) -- the bare-return comparison alone missed this because
+   `bare_return` for a generic collection is the whole collection type string, not its element
+   type; `generic_inner_bare` (computed for the generic-collection branch below) is what
+   actually holds the element type name, so it's checked too.
 1. **Return type is itself a Revit DB object type** (not `ElementId`, not a primitive) →
    `direct_return_type` confidence; edge type comes from a name-keyword match if any, else
    `UNKNOWN_DB_OBJECT_REFERENCE`. If a name-keyword match's own target type disagrees with the
