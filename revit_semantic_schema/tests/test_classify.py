@@ -917,11 +917,29 @@ def test_connector_manager_exact_match_is_classified_as_references():
     """Evidence from the unknown_pareto.py breakdown of live 2024/2025/2026
     crawls: a stable 6-edge/6-distinct-source-type cluster every year
     (Connector/FabricationPart/MEPCurve/MEPModel/MEPSystem.ConnectorManager,
-    plus one more not captured by the tool's 5-example cap), all named
-    exactly 'ConnectorManager', no counterexample observed in any of the 15
-    sampled examples across the three years."""
+    plus Hub.GetHubConnectorManager -- see the ends-with test below), all
+    returning ConnectorManager, no counterexample observed."""
     member = _member("ConnectorManager", "ConnectorManager", declaring_type="Autodesk.Revit.DB.MEPCurve")
     candidate = classify_member(member, source_type="Autodesk.Revit.DB.MEPCurve", known_type_short_names={"ConnectorManager"})
+
+    assert candidate is not None
+    assert candidate.candidate_edge_type is EdgeType.REFERENCES
+    assert candidate.edge_confidence is ConfidenceLabel.DIRECT_RETURN_TYPE
+    assert candidate.candidate_target_type == "Autodesk.Revit.DB.ConnectorManager"
+
+
+def test_connector_manager_suffix_covers_the_hub_straggler():
+    """Regression test: a follow-up pareto re-run (same three crawled years)
+    confirmed the exact-match rule left exactly one edge behind every year --
+    Structure.Hub.GetHubConnectorManager, the same real member all three
+    times, also returning ConnectorManager but not named exactly
+    'ConnectorManager'. The rule was broadened to an ends-with match to
+    cover it; the return-type conflict check still gates this on the actual
+    return type being ConnectorManager."""
+    member = _method_member("GetHubConnectorManager", "ConnectorManager", declaring_type="Autodesk.Revit.DB.Structure.Hub")
+    candidate = classify_member(
+        member, source_type="Autodesk.Revit.DB.Structure.Hub", known_type_short_names={"ConnectorManager"}
+    )
 
     assert candidate is not None
     assert candidate.candidate_edge_type is EdgeType.REFERENCES

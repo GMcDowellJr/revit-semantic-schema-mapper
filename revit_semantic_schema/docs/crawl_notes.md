@@ -1742,3 +1742,52 @@ docs-summary text means it can suggest a plausible-looking rule that a full `can
 grep or the actual docs page would have ruled out immediately. Recommend keeping raw-HTML/full-
 JSON access available for any future pass that wants to go past this review's remaining ~950
 small (mostly 2-4 edge) clusters.
+
+## Unknown-edge Pareto review follow-up: verified the fix, one straggler, unexplained +2 edges/year (2026-07-09)
+
+A second `unknown_pareto.py` report (same three Revit doc years) was generated after the five
+rules from the review above were applied, to check the effect directly rather than just reason
+about it.
+
+**Confirmed working as designed.** `REFERENCES` rose from 74 to 102 in all three years;
+`ThermalProperties`, `RebarRoundingManager`, `FabricRoundingManager`, and the combined
+`GraphicsStyle`/`Subcategory` clusters are fully drained from the `UNKNOWN_*` buckets in every
+year (26 edges' worth of clean reclassification: 5+5+4+4+3+3+... see below for the exact split).
+
+**One straggler, identical in all three years:** `Structure.Hub.GetHubConnectorManager` also
+returns `ConnectorManager` but wasn't caught by the exact-match `^ConnectorManager$` rule (its
+member name is `GetHubConnectorManager`, not `ConnectorManager`) -- it's the single edge left
+behind in that cluster's count going from 6 to 1, same example every year. Broadened the rule to
+an ends-with match (`ConnectorManager$`); the direct-return-object path's target-vs-return-type
+conflict check still gates it on the actual return type, so this can't fire on an unrelated type
+that merely contains the substring elsewhere.
+
+**Open question, not resolved by this pass:** the two report snapshots disagree by more than the
+five rules alone explain, identically in all three years:
+
+| bucket | 2024/2025/2026 delta |
+|---|---|
+| `REFERENCES` | +28 |
+| `UNKNOWN_DB_OBJECT_REFERENCE` | -20 |
+| `UNKNOWN_ELEMENTID_REFERENCE` | -3 |
+| `HAS_CATEGORY` | -3 |
+| `total_edges` | +2 |
+
+The `UNKNOWN_ELEMENTID_REFERENCE` -3 matches the `GraphicsStyleId` cluster exactly (clean). But
+`UNKNOWN_DB_OBJECT_REFERENCE` should have dropped by 23 (5 `ConnectorManager` + 5
+`ThermalProperties` + 5 `RebarRoundingManager` + 4 `FabricRoundingManager` + 4 `GraphicsStyle`
+direct-return), not 20, and `REFERENCES` gained 28, not the 26 the five rules account for. Checked
+by hand against a worktree of the pre-review commit (`git worktree add ... HEAD~1`, then calling
+`classify_member` directly on a synthetic `ModelCurve.Subcategory` member): the old code already
+correctly sent `Subcategory` to `UNKNOWN_DB_OBJECT_REFERENCE` (the target-vs-return-type conflict
+check was already doing its job), so the `HAS_CATEGORY` drop is **not** an artifact of this
+review's rule changes -- something else moved 3 edges out of `HAS_CATEGORY` between when the two
+pareto zips were generated. Since the discrepancy is byte-identical across three differently-sized
+crawls (2024/2025/2026 have different total page counts and different `total_edges` baselines),
+it's very unlikely to be ordinary per-run crawl flakiness (retried/dead pages would not produce
+the exact same delta three times over) -- more likely the two pareto snapshots came from two
+different `candidate_edges.json` exports (e.g. a full pipeline re-run between uploads) rather than
+the identical crawl re-classified by only this review's classify.py diff. Not investigated further
+since the underlying candidate_edges.json/page HTML wasn't available to this pass, only the capped
+pareto JSON/CSV -- worth checking what else changed in the regeneration environment before trusting
+future pareto deltas as attributable purely to a given classify.py diff.

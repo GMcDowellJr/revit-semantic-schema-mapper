@@ -327,14 +327,21 @@ _NAME_KEYWORD_RULES: list[tuple[re.Pattern[str], EdgeType, str | None]] = [
     # types) was 100% literally named "TypeId" (e.g. DirectShape.TypeId,
     # Subelement.TypeId) -- none matched the pre-existing pattern at all.
     (re.compile(r"^(Type|TypeId|GetTypeId)$", re.IGNORECASE), EdgeType.TYPE_OF, None),
-    # Exact match. Evidence from the unknown_pareto.py breakdown of live
-    # 2024/2025/2026 crawls: a stable 6-edge/6-distinct-source-type cluster
-    # every year (Connector/FabricationPart/MEPCurve/MEPModel/MEPSystem, plus
-    # one more not captured by the tool's 5-example cap), all named exactly
-    # "ConnectorManager", all returning the ConnectorManager type -- no
-    # counterexample observed in any of the 15 sampled examples across the
-    # three years.
-    (re.compile(r"^ConnectorManager$", re.IGNORECASE), EdgeType.REFERENCES, "ConnectorManager"),
+    # Ends-with, not a bare exact match: a follow-up pareto re-run (same
+    # three crawled years) confirmed the exact-match version above left
+    # exactly one edge behind every year -- Structure.Hub
+    # .GetHubConnectorManager, the same real member all three times, also
+    # returning ConnectorManager but not named exactly "ConnectorManager".
+    # Safe to broaden since the direct-return-object path's target-vs-
+    # return-type conflict check still gates this on the return type
+    # actually being ConnectorManager -- a member named e.g. "FooManager"
+    # can't accidentally match ("ConnectorManager" is checked as a suffix,
+    # not a substring, so it also can't fire on an unrelated "...Connector
+    # ManagerThing"-shaped name). Original evidence: a stable 6-edge/
+    # 6-distinct-source-type cluster every year (Connector/FabricationPart/
+    # MEPCurve/MEPModel/MEPSystem.ConnectorManager + Hub.GetHubConnectorManager),
+    # zero counterexamples now that all 6 are accounted for.
+    (re.compile(r"ConnectorManager$", re.IGNORECASE), EdgeType.REFERENCES, "ConnectorManager"),
     # Exact match. Evidence from the same three-year pareto breakdown: a
     # complete (all examples captured, cluster count == 5 == examples shown)
     # 5-edge/5-distinct-source-type cluster every year
