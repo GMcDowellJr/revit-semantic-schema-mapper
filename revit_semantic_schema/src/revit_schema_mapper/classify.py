@@ -69,10 +69,161 @@ PRIMITIVE_TYPES = {
     "short",
     "XYZ",  # a value type, not reference-bearing
     "UV",
+    "Color",
+    "Plane",
+    "Transform",
+    "BoundingBoxXYZ",
+    "CurveLoop",
+    "Outline",
+    # Opaque API identifier/value-wrapper types -- confirmed against a real
+    # 2024 crawl's unknown_pareto.py breakdown: ForgeTypeId (4031 edges, 26
+    # distinct source types, e.g. BaseImportOptions.GetDefaultLengthUnit) and
+    # FailureDefinitionId (2067 edges, 166 distinct source types, almost all
+    # static fields on BuiltInFailures.* nested classes, e.g.
+    # BuiltInFailures.AlignmentFailures.AlignmentCheckStationLabels) together
+    # were 71% of every UNKNOWN_DB_OBJECT_REFERENCE/UNKNOWN_ELEMENTID_REFERENCE
+    # edge in that crawl. Neither represents a relationship to another BIM
+    # object -- a ForgeTypeId identifies a unit/spec/parameter type, a
+    # FailureDefinitionId identifies a warning/failure code -- so they belong
+    # in the same "value type, not reference-bearing" bucket as XYZ/Color
+    # above, not the semantic relationship graph. The rest of this group are
+    # smaller siblings of the same pattern (opaque identifier/descriptor
+    # wrapper types, not persistent BIM elements), each confirmed present in
+    # the same crawl at smaller counts.
+    "ForgeTypeId",
+    "FailureDefinitionId",
+    "ExternalServiceId",
+    "ExternalResourceType",
+    "IFCAnyHandle",
+    "IFCData",
+    "ModelPath",
+    "FormatOptions",
+    "FailureMessage",
+    "FailureResolutionType",
+    # LinkLoadResult describes the outcome of a link load/reload operation
+    # (success/failure/warnings) -- an operation-status object, not a BIM
+    # relationship. Evidence, stable across a real 2024/2025/2026 crawl: 11
+    # edges, 5 distinct source types, e.g. CADLinkType.LoadFrom/.Reload,
+    # LinkLoadContent.GetLinkLoadResult.
+    "LinkLoadResult",
+    # Geometry/value types beyond the CurveLoop/BoundingBoxXYZ/etc. set
+    # above -- same "value type, not reference-bearing" reasoning, also
+    # confirmed present in the same crawl (smaller counts, e.g. Curve: 65
+    # direct-return + 27 needs_runtime_validation edges across 45+ distinct
+    # source types).
+    "Curve",
+    "Solid",
+    "GeometryElement",
+    "GeometryObject",
+    "Face",
+    "CurveArrArray",
+    "CurveArray",  # legacy pre-CurveLoop geometry container, same category
+    "Polyloop",
 }
 
+# The subset of PRIMITIVE_TYPES that are genuine C# scalar primitives, as
+# opposed to concrete, already-known API value/identifier types (XYZ,
+# ForgeTypeId, FailureDefinitionId, Curve, ...). This distinction matters
+# for classify_member's name_match fallback: a bare bool/int/string is
+# intentionally still eligible for a weak name_only_candidate guess (rule 5
+# of docs/edge_taxonomy_v0.md's precedence list) because the member could
+# plausibly be a flag/count that merely hints at a real relationship
+# elsewhere. A member returning e.g. FailureDefinitionId cannot -- it's a
+# real, different, already-known type, so a keyword collision in a long
+# descriptive member name is always a false positive, never weak evidence.
+_TRUE_SCALAR_PRIMITIVES = {
+    "void", "bool", "int", "long", "double", "float", "string", "String",
+    "Boolean", "Int32", "Int64", "Double", "object", "Object", "byte", "short",
+}
+
+# Regression case that motivated this split: BuiltInFailures.* fields like
+# HighestAssociatedLevelBelowLowestAssociatedLevel return FailureDefinitionId
+# (already excluded from the direct-return path above) but their name
+# contains "Level" -- without this guard, classify_member fell through to
+# name_match and emitted a false ASSIGNED_TO_LEVEL -> Level edge, exactly
+# the kind of noise PRIMITIVE_TYPES was extended to remove in the first
+# place, just relabeled as a specific-looking (and therefore more
+# misleading) edge type instead of an honest UNKNOWN_*.
+_STRUCTURALLY_INCOMPATIBLE_VALUE_TYPES = PRIMITIVE_TYPES - _TRUE_SCALAR_PRIMITIVES
+
+# Typed identifier structs that, unlike bare ElementId, unambiguously name
+# their own target through the type system alone -- no member-name
+# disambiguation needed. Evidence from a real 2024 crawl's
+# unknown_pareto.py breakdown: WorksetId, 11 edges, 10 distinct source
+# types, all named exactly "WorksetId"/"GetWorksetId" (e.g. Element.WorksetId,
+# Document.GetWorksetId), zero counterexamples. This is a deliberate,
+# blessed exception to classify_member's direct-return conflict check right
+# below: the return type (WorksetId) and the target (Workset) are
+# intentionally different types by design, not a coincidental collision.
+_TYPED_ID_TARGETS: dict[str, tuple[str, EdgeType]] = {
+    "WorksetId": ("Workset", EdgeType.OWNED_BY_WORKSET),
+}
+
+# Most _NAME_KEYWORD_RULES target_hint values (Level, Phase, Workset,
+# Material, ...) happen to live directly under Autodesk.Revit.DB, so the
+# final "Autodesk.Revit.DB.{target}" prefixing below is correct for them by
+# coincidence, not by design. Room and Schema don't: their real
+# fully-qualified names are Autodesk.Revit.DB.Architecture.Room and
+# Autodesk.Revit.DB.ExtensibleStorage.Schema (docs/edge_taxonomy_v0.md,
+# pipeline.DEFAULT_TARGET_CLASSES) -- blindly prefixing produced a bogus
+# "Autodesk.Revit.DB.Room"/"Autodesk.Revit.DB.Schema" node that doesn't
+# correspond to any real crawled type, wrong in candidate_edges.json even
+# before graph._Resolver gets a chance to (sometimes) paper over it via
+# short-name fallback. Applied only at the final candidate_target_type
+# normalization step, not to target_hint itself -- name_match_confirms_
+# return_type/the conflict check above compare target_hint against
+# bare_return, which is always a bare short name (Room/Schema), so target_hint
+# must stay a bare short name too; only the exported full name needs fixing.
+_NON_DB_NAMESPACE_TARGETS: dict[str, str] = {
+    "Room": "Autodesk.Revit.DB.Architecture.Room",
+    "Schema": "Autodesk.Revit.DB.ExtensibleStorage.Schema",
+}
+
+# A "Create*" method constructs and returns a brand-new object -- it says
+# nothing about a relationship *of* source_type, even though it's declared
+# on it (usually a factory/utility class). The negative lookahead excludes
+# "Created*" (a real past-tense property naming convention, e.g.
+# Element.CreatedPhaseId, which the ASSIGNED_TO_PHASE keyword rule already
+# legitimately matches -- this must not suppress that). Evidence: real
+# 2024 crawl examples include ParameterFilterRuleFactory.CreateBeginsWithRule
+# -> FilterRule, ConnectorElement.CreateCableTrayConnector -> ConnectorElement,
+# AssemblyViewUtils.CreatePartList -> ViewSchedule.
+_FACTORY_METHOD_NAME_RE = re.compile(r"^Create(?!d)")
+
+# A METHOD that returns its own declaring type is, in every real case found
+# across a real 2024/2025/2026 crawl, a fluent/builder method returning
+# `this` for chaining -- not a relationship to another object of the same
+# type. Originally scoped to just a "Set*" name prefix (evidence:
+# OverrideGraphicSettings.SetCutBackgroundPatternColor and four Set*
+# siblings, all -> the same OverrideGraphicSettings type), but
+# FilteredElementCollector's entire query-builder API turned out to use
+# other verb prefixes for the exact same pattern -- ContainedInDesignOption/
+# Excluding/IntersectWith/OfCategory/OfCategoryId, all -> the same
+# FilteredElementCollector type, 12/12 edges in that cluster, zero
+# counterexamples -- so the name-prefix requirement was dropped entirely.
+# Still gated to MemberKind.METHOD (not PROPERTY), so a genuine
+# self-referential property relationship (e.g. a parent-of-same-type
+# reference) stays unaffected -- see
+# test_self_referential_property_is_not_treated_as_a_fluent_setter.
+
+# LinkElementId is a general-purpose ID wrapper, structurally the same role
+# as bare ElementId -- Revit uses it wherever a reference might cross into a
+# linked document -- not a fixed-target typed ID like WorksetId (its
+# GetRodAttachedElementId/NumberedElementId/GetSourceElementIds siblings
+# have different real targets, confirmed by reading their actual docs
+# prose). Evidence: NumberSystem.PlacementLevelId returns LinkElementId and
+# its docs literally say "The id of the base level of stairs..." -- a real
+# ASSIGNED_TO_LEVEL relationship that the direct-return-object path's
+# target_hint-vs-return-type conflict check was incorrectly rejecting,
+# because that check assumes the return type itself should equal the
+# target (right for a real DB object, wrong for an ID wrapper whose own
+# type name is never going to equal any target name). Trusting the
+# keyword-matched name here (elementid_with_strong_name), the same way
+# bare ElementId already works, is the correct treatment.
+_ELEMENTID_LIKE_TYPES = {"ElementId", "LinkElementId"}
+
 _ELEMENTID_COLLECTION_RE = re.compile(
-    r"^(?:ICollection|IList|ISet|IEnumerable|List|HashSet)\s*<\s*ElementId\s*>$"
+    r"^(?:ICollection|IList|ISet|IEnumerable|List|HashSet)\s*<\s*(?:ElementId|LinkElementId)\s*>$"
 )
 _GENERIC_ELEMENTID_COLLECTION_RE = re.compile(
     r"^(?:ICollection|IList|ISet|IEnumerable|List|HashSet)\s*<\s*([\w.]+)\s*>$"
@@ -104,7 +255,78 @@ _NAME_KEYWORD_RULES: list[tuple[re.Pattern[str], EdgeType, str | None]] = [
     # confidence, zero counterexamples -- see docs/edge_taxonomy_v0.md's
     # REFERENCES entry.
     (re.compile(r"^(Get)?Document$", re.IGNORECASE), EdgeType.REFERENCES, "Document"),
-    (re.compile(r"^(Type|GetTypeId)$", re.IGNORECASE), EdgeType.TYPE_OF, None),
+    # Evidence from a real 2024 crawl's unknown_pareto.py breakdown: 12
+    # UNKNOWN_ELEMENTID_REFERENCE edges across 12 distinct source types, all
+    # named exactly "ViewId"/"GetViewId" (e.g. BIMExportOptions.ViewId,
+    # ElevationMarker.GetViewId), zero counterexamples -- same evidence shape
+    # as the Document/GetDocument rule above.
+    (re.compile(r"^(Get)?ViewId$", re.IGNORECASE), EdgeType.REFERENCES, "View"),
+    # Exact match. Evidence from a real crawl's candidate_edges.json: 6
+    # UNKNOWN_DB_OBJECT_REFERENCE edges across 6 distinct source types, all
+    # named exactly "View" (Control.View, Dimension.View, Options.View,
+    # SpatialElementTag.View, Events.ViewPrintedEventArgs.View,
+    # Events.ViewPrintingEventArgs.View), all already direct_return_type
+    # confidence (View is always a crawled type), zero counterexamples --
+    # this rule only upgrades the edge_type from the generic unknown bucket
+    # to REFERENCES, same as the Document/ViewId rules above.
+    (re.compile(r"^View$", re.IGNORECASE), EdgeType.REFERENCES, "View"),
+    # Exact match. Evidence from a real crawl's candidate_edges.json: 7
+    # UNKNOWN_DB_OBJECT_REFERENCE edges across 7 distinct source types, all
+    # named exactly "Location" (AssemblyInstance/Element/FamilyInstance/
+    # Group/ModelText/SpatialElement/SpatialElementTag.Location) -- Element
+    # is the base declaring type, the others are all overrides of it, per
+    # AssemblyInstance's docs ("used to find the physical location of the
+    # assembly instance") -- zero counterexamples, same evidence shape as
+    # the View rule above.
+    (re.compile(r"^Location$", re.IGNORECASE), EdgeType.REFERENCES, "Location"),
+    # Exact match. Evidence from a real crawl's candidate_edges.json: 3
+    # UNKNOWN_DB_OBJECT_REFERENCE edges across 3 distinct source types, all
+    # named exactly "GetExternalResourceReference" (Element/
+    # ExternalResourceLoadData/LinkLoadResult), all returning
+    # ExternalResourceReference, zero counterexamples -- the method name
+    # already spells out its own return type, self-confirming the same way
+    # GetDocument/SketchPlane do.
+    (re.compile(r"^GetExternalResourceReference$", re.IGNORECASE), EdgeType.REFERENCES, "ExternalResourceReference"),
+    # Evidence from a real 2024 crawl's unknown_pareto.py breakdown: 7 edges
+    # across 4 distinct source types (FamilyInstance.Room/.FromRoom/.ToRoom,
+    # Document.GetRoomAtPoint), 3 of 7 independently corroborated by
+    # RevitLookup, zero apparent counterexamples -- same evidence shape as
+    # the Document/ViewId rules above.
+    (re.compile(r"Room", re.IGNORECASE), EdgeType.REFERENCES, "Room"),
+    # Exact match (not a bare substring) deliberately, unlike most rules
+    # above: the "Schema" cluster in a real 2024/2025/2026 crawl was mixed --
+    # Entity.Schema/Field.Schema/Field.SubSchema are a genuine "this
+    # object's structure is defined by this Schema" relationship, but
+    # Schema.ListSchemas/Schema.Lookup are static registry/lookup utility
+    # methods with different semantics that a bare "Schema" substring match
+    # would have incorrectly swept up too (ListSchemas contains "Schema").
+    (re.compile(r"^(Sub)?Schema$", re.IGNORECASE), EdgeType.REFERENCES, "Schema"),
+    # Exact match, checked before the "Sketch$" rule below: SketchPlane is a
+    # distinct real DB type (a work plane), not a kind of Sketch, even though
+    # its name ends in "Sketch...". Evidence from a real 2024 crawl: 4 edges,
+    # 4 distinct source types, all named exactly "SketchPlane"
+    # (CurveByPoints.SketchPlane, CurveElement.SketchPlane, Sketch.SketchPlane,
+    # View.SketchPlane), zero counterexamples.
+    (re.compile(r"^SketchPlane$", re.IGNORECASE), EdgeType.REFERENCES, "SketchPlane"),
+    # Ends-with, not a bare substring: catches BottomSketch/TopSketch/
+    # PathSketch/ProfileSketch/bare Sketch (the profile/path that defines a
+    # solid's shape) while naturally excluding SketchPlane (doesn't end in
+    # "Sketch") and unrelated coincidences like View.GetSketchyLines (a
+    # ViewDisplaySketchyLines graphics-style enum, nothing to do with
+    # geometry sketches). Evidence from a real 2024 crawl: 10 edges, 5
+    # distinct source types (Blend, Extrusion, Revolution, Sweep,
+    # SweptBlend), zero counterexamples. The optional "Id" suffix covers the
+    # ElementId-returning form of the same relationship (e.g.
+    # Toposolid.SketchId/FabricSheet.SketchId) -- doesn't collide with the
+    # SketchPlane rule above since "SketchPlaneId" ends in "PlaneId", not
+    # "SketchId" ('SketchPlaneId'.endswith('SketchId') is False).
+    (re.compile(r"Sketch(Id)?$", re.IGNORECASE), EdgeType.DEPENDS_ON, "Sketch"),
+    # "TypeId" added after the original "Type"/"GetTypeId" pair turned out to
+    # miss the dominant real naming convention entirely: the same crawl's
+    # UNKNOWN_ELEMENTID_REFERENCE "Type" cluster (9 edges, 9 distinct source
+    # types) was 100% literally named "TypeId" (e.g. DirectShape.TypeId,
+    # Subelement.TypeId) -- none matched the pre-existing pattern at all.
+    (re.compile(r"^(Type|TypeId|GetTypeId)$", re.IGNORECASE), EdgeType.TYPE_OF, None),
     (re.compile(r"Category", re.IGNORECASE), EdgeType.HAS_CATEGORY, "Category"),
     (re.compile(r"Parameter", re.IGNORECASE), EdgeType.HAS_PARAMETER, None),
     (re.compile(r"^GetAll", re.IGNORECASE), EdgeType.RETURNS_ELEMENT_IDS, None),
@@ -265,33 +487,121 @@ def classify_member(member: MemberInfo, source_type: str, known_type_short_names
         return None
     return_type = member.return_type.strip()
 
-    is_elementid = return_type == "ElementId"
+    is_elementid = return_type in _ELEMENTID_LIKE_TYPES
     collection_match = _ELEMENTID_COLLECTION_RE.match(return_type)
     is_elementid_collection = bool(collection_match)
     generic_match = _GENERIC_ELEMENTID_COLLECTION_RE.match(return_type)
-    is_unresolved_generic_collection = bool(generic_match) and not is_elementid_collection
+    generic_inner_bare = generic_match.group(1).rsplit(".", 1)[-1] if generic_match else None
+    is_unresolved_generic_collection = (
+        bool(generic_match)
+        and not is_elementid_collection
+        and generic_inner_bare not in PRIMITIVE_TYPES
+    )
 
     bare_return = return_type.rsplit(".", 1)[-1]
+
+    # Hard stop before name_match is even consulted: a member whose return
+    # type (bare or the element type of an unresolved generic collection)
+    # is a concrete, already-known value/identifier type can never
+    # structurally be the target of a name-matched relationship guess --
+    # see _STRUCTURALLY_INCOMPATIBLE_VALUE_TYPES's docstring.
+    if bare_return in _STRUCTURALLY_INCOMPATIBLE_VALUE_TYPES or generic_inner_bare in _STRUCTURALLY_INCOMPATIBLE_VALUE_TYPES:
+        return None
+
+    if member.kind is MemberKind.METHOD:
+        # A factory method constructs a brand-new object; it isn't a
+        # relationship of source_type regardless of what it returns -- see
+        # _FACTORY_METHOD_NAME_RE's docstring.
+        if _FACTORY_METHOD_NAME_RE.match(member.name):
+            return None
+        # A method that returns its own declaring type is a fluent/builder
+        # method returning `this` for chaining, not referencing another
+        # object of the same type -- see the comment above this block.
+        if bare_return == source_type.rsplit(".", 1)[-1]:
+            return None
+
+    # Checked ahead of is_direct_db_object, not nested under it: a typed ID
+    # struct's own type is the evidence (see _TYPED_ID_TARGETS's docstring),
+    # so this must not depend on known_type_short_names/KNOWN_REFERENCE_TYPES
+    # -- a scoped/targeted crawl (docs/edge_taxonomy_v0.md's
+    # DEFAULT_TARGET_CLASSES) can easily parse a member returning WorksetId
+    # (e.g. Element.WorksetId) without also crawling WorksetId's own type
+    # page, in which case is_direct_db_object would be False and this rule
+    # would silently never fire, falling back to a much weaker
+    # name_only_candidate guess (kept out of graph_core.json's CORE tier)
+    # instead of the type-system-backed evidence this rule exists to use.
+    is_typed_id = bare_return in _TYPED_ID_TARGETS
+    name_match = _match_name_keyword(member.name)
+
+    # A name-keyword match whose own hardcoded target_hint agrees *exactly*
+    # with the actual (compiler-verified) return type is self-confirming
+    # evidence, independent of whether the crawl happened to also discover
+    # that target's own type page -- the same principle as _TYPED_ID_TARGETS
+    # above, generalized to every keyword rule instead of a fixed whitelist.
+    # Regression case: a scoped/targeted crawl that parses FamilyInstance/
+    # ExtensibleStorage.Entity but never crawls Room's/Schema's own type
+    # page left known_type_short_names without "Room"/"Schema", so
+    # FamilyInstance.Room and Entity.Schema (both real, confirmed
+    # direct-return relationships -- the keyword rule wouldn't exist
+    # without that evidence) fell back to a weak name_only_candidate guess,
+    # kept out of graph_core.json's CORE tier for no good reason.
+    name_match_confirms_return_type = bool(name_match and name_match[1] is not None and name_match[1] == bare_return)
+
     is_direct_db_object = (
         not is_elementid
         and not is_elementid_collection
+        and not is_typed_id
         and bare_return not in PRIMITIVE_TYPES
-        and (bare_return in KNOWN_REFERENCE_TYPES or bare_return in known_type_short_names)
+        and (
+            bare_return in KNOWN_REFERENCE_TYPES
+            or bare_return in known_type_short_names
+            or name_match_confirms_return_type
+        )
     )
 
-    name_match = _match_name_keyword(member.name)
     docs_hint = _find_docs_hint(member.summary) or _find_docs_hint(member.remarks)
 
-    if not (is_elementid or is_elementid_collection or is_direct_db_object or is_unresolved_generic_collection or name_match):
+    if not (is_typed_id or is_elementid or is_elementid_collection or is_direct_db_object or is_unresolved_generic_collection or name_match):
         return None
 
     evidence: list[str] = []
     parser_notes: list[str] = []
 
-    if is_direct_db_object:
-        edge_type = name_match[0] if name_match else EdgeType.UNKNOWN_DB_OBJECT_REFERENCE
-        candidate_target_type = bare_return
+    if is_typed_id:
+        target_short_name, edge_type = _TYPED_ID_TARGETS[bare_return]
+        candidate_target_type = target_short_name
         confidence = ConfidenceLabel.DIRECT_RETURN_TYPE
+        evidence.append(
+            f"return type '{return_type}' is a typed identifier that unambiguously names its own "
+            f"target ('{target_short_name}') through the type system alone"
+        )
+    elif is_direct_db_object:
+        confidence = ConfidenceLabel.DIRECT_RETURN_TYPE
+        # A name-keyword match whose own target_hint names a *different*
+        # concrete type than what this member actually, verifiably returns
+        # is a coincidental name collision, not real relationship evidence
+        # -- e.g. a BuiltInFailures.* field matching the "Level" keyword
+        # while actually returning FailureDefinitionId. direct_return_type
+        # is documented (docs/confidence_model_v0.md) as "the strongest
+        # static signal available from docs alone: the compiler itself
+        # guarantees the relationship's target type" -- that guarantee is
+        # exactly what a conflicting target_hint contradicts, so the
+        # (weaker, heuristic) name match loses and this falls back to the
+        # honest unknown bucket instead of asserting a type-incoherent
+        # edge_type/target_type pair. No conflict (target_hint is None, or
+        # equals bare_return, or there's no name_match at all) keeps the
+        # existing behavior unchanged.
+        if name_match and name_match[1] is not None and name_match[1] != bare_return:
+            edge_type = EdgeType.UNKNOWN_DB_OBJECT_REFERENCE
+            candidate_target_type = bare_return
+            evidence.append(
+                f"member name '{member.name}' matches keyword pattern /{name_match[2]}/ implying target "
+                f"'{name_match[1]}', but the actual return type '{bare_return}' conflicts -- treating the "
+                "name match as a coincidental collision rather than relationship evidence"
+            )
+        else:
+            edge_type = name_match[0] if name_match else EdgeType.UNKNOWN_DB_OBJECT_REFERENCE
+            candidate_target_type = bare_return
         evidence.append(f"return type '{return_type}' directly names a Revit DB object type")
     elif is_elementid:
         if name_match:
@@ -305,7 +615,7 @@ def classify_member(member: MemberInfo, source_type: str, known_type_short_names
             edge_type = EdgeType.UNKNOWN_ELEMENTID_REFERENCE
             confidence = ConfidenceLabel.UNKNOWN_REFERENCE
             candidate_target_type = None
-            evidence.append("return type is ElementId but member name gives no strong hint of the target type")
+            evidence.append(f"return type is {return_type!r}, an ID wrapper, but member name gives no strong hint of the target type")
     elif is_elementid_collection:
         if name_match:
             edge_type, target_hint, pattern = name_match
@@ -316,7 +626,7 @@ def classify_member(member: MemberInfo, source_type: str, known_type_short_names
             edge_type = EdgeType.RETURNS_ELEMENT_IDS
             confidence = ConfidenceLabel.UNKNOWN_REFERENCE
             candidate_target_type = None
-            evidence.append(f"return type '{return_type}' is a collection of ElementId with no strong name hint")
+            evidence.append(f"return type '{return_type}' is a collection of ID wrappers with no strong name hint")
     elif is_unresolved_generic_collection:
         edge_type = name_match[0] if name_match else EdgeType.UNKNOWN_DB_OBJECT_REFERENCE
         confidence = ConfidenceLabel.NEEDS_RUNTIME_VALIDATION
@@ -335,7 +645,9 @@ def classify_member(member: MemberInfo, source_type: str, known_type_short_names
             confidence = ConfidenceLabel.DOCS_SEMANTIC_HINT
 
     if candidate_target_type and not candidate_target_type.startswith("Autodesk.Revit"):
-        candidate_target_type = f"Autodesk.Revit.DB.{candidate_target_type}"
+        candidate_target_type = _NON_DB_NAMESPACE_TARGETS.get(
+            candidate_target_type, f"Autodesk.Revit.DB.{candidate_target_type}"
+        )
 
     return EdgeCandidate(
         source_type=source_type,

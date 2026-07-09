@@ -479,6 +479,18 @@ def _run_crawl_loop(
     last_checkpoint_time = crawl_start_time
     rate_tracker = _ProgressRateTracker(_PROGRESS_RATE_WINDOW, crawl_start_time)
     fetch_duration_tracker = _FetchDurationTracker(_FETCH_DURATION_WINDOW, config.throttle_seconds)
+    # A cache hit skips the network round trip, but not parsing -- confirmed
+    # on a real mostly-cached run (25918 queued, 2 uncached) reporting a
+    # steady ~15-21 pages/s overall throughput, nowhere near "instant."
+    # _fetch_floor_eta_seconds only prices the not-yet-cached portion of the
+    # queue; without this second tracker, a queue that's almost entirely
+    # cached-but-still-unparsed reports an ETA of a few seconds when the
+    # real remaining time is tens of minutes. Fallback of 0.0 (not
+    # config.throttle_seconds, which is a network-round-trip figure that has
+    # nothing to do with parse cost) matches today's zero-samples-yet
+    # behavior until at least one cache-hit duration has actually been
+    # measured.
+    cache_hit_duration_tracker = _FetchDurationTracker(_FETCH_DURATION_WINDOW, 0.0)
     while queue:
         url = queue.pop(0)
         if url in visited:
@@ -498,13 +510,27 @@ def _run_crawl_loop(
             # reflection of a crawl whose full scope isn't known upfront,
             # not a bug.
             not_cached_remaining = _count_uncached(queue, crawler)
+            cached_remaining = len(queue) - not_cached_remaining
             avg_fetch_seconds = fetch_duration_tracker.average_seconds
-            eta_seconds = _fetch_floor_eta_seconds(not_cached_remaining, avg_fetch_seconds)
+            avg_cache_hit_seconds = cache_hit_duration_tracker.average_seconds
+            # Two additive terms: the network-bound floor for whatever isn't
+            # cached yet, plus the (previously missing) parse-only cost for
+            # what already is -- see cache_hit_duration_tracker's comment
+            # above for why the latter is not negligible at scale. Still a
+            # floor overall in the one remaining sense _fetch_floor_eta_seconds's
+            # docstring already describes: pages not yet discovered aren't
+            # counted either way.
+            eta_seconds = (
+                _fetch_floor_eta_seconds(not_cached_remaining, avg_fetch_seconds)
+                + cached_remaining * avg_cache_hit_seconds
+            )
             logger.info(
                 "progress: %d pages fetched, %d queued (%d uncached), %d parsed, %d failed -- "
-                "%.2f pages/s (recent avg), %.2f pages/s (overall), ETA %s (observed floor, ~%.2fs/fetch)",
+                "%.2f pages/s (recent avg), %.2f pages/s (overall), ETA %s "
+                "(observed floor, ~%.2fs/fetch, ~%.3fs/cache-hit)",
                 len(visited), len(queue), not_cached_remaining, len(pages), len(failed_urls),
-                recent_rate, overall_rate, _format_duration(eta_seconds), avg_fetch_seconds,
+                recent_rate, overall_rate, _format_duration(eta_seconds),
+                avg_fetch_seconds, avg_cache_hit_seconds,
             )
             # Reuses `now` (just captured above for the progress log) rather
             # than taking a fresh reading -- the log call itself is fast
@@ -537,13 +563,15 @@ def _run_crawl_loop(
 
         # Measured from before the fetch to after this url is fully parsed
         # below (see the `finally`) -- not just the raw HTTP fetch -- so
-        # fetch_duration_tracker reflects real per-page wall-clock cost,
-        # including HTML parsing (non-trivial on constrained hardware) and
-        # any nested Members-page fetch+parse a class page triggers below.
-        # None (not timed at all) for an already-cached url -- see
-        # _FetchDurationTracker's docstring for why a near-instant cache hit
-        # must never factor into this average.
-        fetch_start = None if crawler.is_cached(url) else time.monotonic()
+        # whichever tracker below ends up recording this duration reflects
+        # real per-page wall-clock cost, including HTML parsing (non-trivial
+        # on constrained hardware) and any nested Members-page fetch+parse a
+        # class page triggers below. is_cached_url is captured now (not
+        # re-derived in the `finally`) since crawler.fetch() below writes a
+        # fresh cache entry for a previously-uncached url, which would
+        # otherwise make it look cached by the time the `finally` runs.
+        is_cached_url = crawler.is_cached(url)
+        fetch_start = time.monotonic()
 
         try:
             html = crawler.fetch(url)
@@ -609,8 +637,18 @@ def _run_crawl_loop(
             # included) -- that iteration still genuinely spent this much
             # wall-clock time fetching/attempting to parse, so it belongs in
             # the average regardless of whether parsing itself succeeded.
-            if fetch_start is not None:
-                fetch_duration_tracker.record(time.monotonic() - fetch_start)
+            # Routed to whichever tracker matches what this url actually
+            # was (see is_cached_url above) -- a cache hit and a genuine
+            # network fetch have very different cost profiles and must not
+            # be blended into one average (same reasoning as
+            # _FetchDurationTracker's own docstring, just applied
+            # symmetrically to both trackers now instead of only excluding
+            # cache hits from the network one).
+            duration = time.monotonic() - fetch_start
+            if is_cached_url:
+                cache_hit_duration_tracker.record(duration)
+            else:
+                fetch_duration_tracker.record(duration)
 
 
 def run_pipeline(
