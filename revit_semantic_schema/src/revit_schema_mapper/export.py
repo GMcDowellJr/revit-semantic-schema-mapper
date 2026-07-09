@@ -240,9 +240,15 @@ def _graph_metadata(nodes: list, edges: list, *, revit_version: str) -> dict:
     """
     resolution_counts: dict[str, int] = {}
     tier_counts: dict[str, int] = {}
+    dll_verified_status_counts: dict[str, int] = {}
+    revitlookup_referenced_counts: dict[str, int] = {}
     for e in edges:
         resolution_counts[e.target_resolution.value] = resolution_counts.get(e.target_resolution.value, 0) + 1
         tier_counts[e.confidence_tier.value] = tier_counts.get(e.confidence_tier.value, 0) + 1
+        dll_status = e.dll_verified_status or "not_checked"
+        dll_verified_status_counts[dll_status] = dll_verified_status_counts.get(dll_status, 0) + 1
+        rlu_status = "referenced" if e.revitlookup_referenced else "not_checked"
+        revitlookup_referenced_counts[rlu_status] = revitlookup_referenced_counts.get(rlu_status, 0) + 1
 
     return {
         "revit_version": revit_version,
@@ -251,6 +257,13 @@ def _graph_metadata(nodes: list, edges: list, *, revit_version: str) -> dict:
         "external_node_count": sum(1 for n in nodes if n.external),
         "target_resolution_counts": resolution_counts,
         "confidence_tier_counts": tier_counts,
+        # "not_checked" covers both "Stage B/C never ran" and "ran but this
+        # specific edge wasn't in the manifest/descriptor" -- see
+        # EdgeCandidate.dll_verified_status/revitlookup_referenced for the
+        # distinction; ground_truth_report.json / revitlookup_cross_validation_report.json
+        # are the place to look for that finer breakdown.
+        "dll_verified_status_counts": dll_verified_status_counts,
+        "revitlookup_referenced_counts": revitlookup_referenced_counts,
     }
 
 
@@ -353,6 +366,21 @@ def _graph_section(result: GraphBuildResult | None, *, section_number: int) -> l
     lines.append("- Target resolution: " + ", ".join(f"{k}={v}" for k, v in sorted(result.target_resolution_counts.items())))
     lines.append("- Confidence tier breakdown: " + ", ".join(f"{k}={v}" for k, v in sorted(tier_counts.items())))
     lines.append(f"- `graph_core.json` (confidence_tier=core only): {len(core_nodes)} nodes, {len(core_edges)} edges")
+    dll_status_counts: dict[str, int] = {}
+    rlu_counts: dict[str, int] = {}
+    for e in result.edges:
+        dll_status = e.dll_verified_status or "not_checked"
+        dll_status_counts[dll_status] = dll_status_counts.get(dll_status, 0) + 1
+        rlu_status = "referenced" if e.revitlookup_referenced else "not_checked"
+        rlu_counts[rlu_status] = rlu_counts.get(rlu_status, 0) + 1
+    lines.append(
+        "- DLL reflection cross-validation (Stage B, docs/dll_reflection_v0.md): "
+        + ", ".join(f"{k}={v}" for k, v in sorted(dll_status_counts.items()))
+    )
+    lines.append(
+        "- RevitLookup cross-validation (Stage C, docs/dll_reflection_v0.md): "
+        + ", ".join(f"{k}={v}" for k, v in sorted(rlu_counts.items()))
+    )
     if result.communities:
         label_sources = {}
         for c in result.communities:
@@ -372,25 +400,71 @@ def _graph_section(result: GraphBuildResult | None, *, section_number: int) -> l
 
 _GRAPH_SECTION_HEADING_RE = re.compile(r"^## \d+\. Knowledge graph materialization\s*$", re.MULTILINE)
 
+# Matches any top-level numbered section heading ("## 14. Knowledge graph
+# materialization", "## 15. DLL reflection cross-validation (Stage B)", ...)
+# -- used only to find where the *next* section starts, so
+# _replace_section_span can bound a refresh to just its own section's span
+# instead of truncating everything after it. A sub-heading like "### Sample
+# referenced edges" never matches ("## " requires the third character to be
+# a space, not another "#").
+_ANY_SECTION_HEADING_RE = re.compile(r"^## \d+\.", re.MULTILINE)
+
+
+def _replace_section_span(text: str, heading_re: re.Pattern[str], new_section_lines: list[str]) -> str:
+    """Replace (or append, if absent) exactly one numbered section within an
+    already-written ``summary.md``/``validation_summary.md``, bounded to
+    that section's own span -- its own heading through the start of the
+    *next* top-level section heading, or EOF if it's currently the last
+    section.
+
+    Critical difference from a naive "truncate from my heading to EOF"
+    approach: these summary files accumulate sections from independent,
+    separately-timed calls (the graph section from a full run or
+    ``--graph-only``; the DLL/RevitLookup cross-validation sections from
+    their own opt-in passes, which can run before, after, or repeatedly
+    relative to each other and to a graph rebuild -- see
+    ``pipeline.run_cross_validate_dll``/``run_cross_validate_revitlookup``).
+    A truncate-to-EOF refresh of *any one* of these sections would silently
+    delete every other section physically written after it, regardless of
+    which one most recently changed. Bounding the replacement to this
+    section's own span means refreshing it never touches sibling sections,
+    no matter what order they were written in or how many times any of them
+    is re-run.
+
+    ``new_section_lines`` empty (a report that hasn't run yet) leaves an
+    existing section, if any, untouched -- callers that want "nothing to
+    write yet" to mean "don't touch the file at all" rely on this.
+    """
+    if not new_section_lines:
+        return text
+    body = "\n".join(new_section_lines).rstrip("\n") + "\n"
+    match = heading_re.search(text)
+    if match is None:
+        return text.rstrip("\n") + "\n\n" + body
+    head = text[: match.start()].rstrip("\n")
+    next_match = _ANY_SECTION_HEADING_RE.search(text, match.end())
+    if next_match is None:
+        return head + "\n\n" + body
+    return head + "\n\n" + body + "\n" + text[next_match.start() :]
+
 
 def refresh_graph_section_in_file(path: Path, result: GraphBuildResult, *, section_number: int) -> None:
     """Replace (or append, if absent) the 'Knowledge graph materialization'
     section of an already-written ``summary.md``/``validation_summary.md``
-    with one reflecting ``result`` -- used by ``--graph-only`` so the
-    summary doesn't go stale relative to a freshly recomputed graph.json
-    without needing to regenerate the rest of the summary (which needs the
-    full page/index data this mode deliberately skips). A no-op if ``path``
-    doesn't exist, so callers can try both summary filenames unconditionally
-    without knowing in advance whether this was a full or targeted run.
+    with one reflecting ``result`` -- used by ``--graph-only`` (and, via
+    ``pipeline.run_cross_validate_dll``/``run_cross_validate_revitlookup``,
+    after cross-validation) so the summary doesn't go stale relative to a
+    freshly recomputed graph.json without needing to regenerate the rest of
+    the summary (which needs the full page/index data this mode deliberately
+    skips). A no-op if ``path`` doesn't exist, so callers can try both
+    summary filenames unconditionally without knowing in advance whether
+    this was a full or targeted run.
     """
     if not path.exists():
         return
     text = path.read_text(encoding="utf-8")
-    match = _GRAPH_SECTION_HEADING_RE.search(text)
-    if match:
-        text = text[: match.start()]
     section = _graph_section(result, section_number=section_number)
-    path.write_text(text.rstrip("\n") + "\n\n" + "\n".join(section) + "\n", encoding="utf-8")
+    path.write_text(_replace_section_span(text, _GRAPH_SECTION_HEADING_RE, section), encoding="utf-8")
 
 
 def write_ground_truth_report(output_dir: Path, report: GroundTruthReport) -> None:
@@ -484,22 +558,19 @@ _GROUND_TRUTH_SECTION_HEADING_RE = re.compile(r"^## \d+\. DLL reflection cross-v
 def refresh_ground_truth_section_in_file(path: Path, report: GroundTruthReport, *, section_number: int) -> None:
     """Replace (or append, if absent) the 'DLL reflection cross-validation'
     section of an already-written ``summary.md``/``validation_summary.md``
-    with one reflecting ``report`` -- the same in-place-refresh pattern
-    ``refresh_graph_section_in_file`` already uses for the graph section, so
-    ``--cross-validate-dll`` can update a summary without needing to
-    regenerate the rest of it (which needs the full page/index data this
-    mode deliberately skips). A no-op if ``path`` doesn't exist.
+    with one reflecting ``report`` -- the same bounded-span refresh
+    ``refresh_graph_section_in_file``/``_replace_section_span`` use for the
+    graph section, so ``--cross-validate-dll`` can update a summary without
+    needing to regenerate the rest of it (which needs the full page/index
+    data this mode deliberately skips) and without deleting a RevitLookup
+    (Stage C) section that happens to already sit after this one. A no-op if
+    ``path`` doesn't exist.
     """
     if not path.exists():
         return
     text = path.read_text(encoding="utf-8")
-    match = _GROUND_TRUTH_SECTION_HEADING_RE.search(text)
-    if match:
-        text = text[: match.start()]
     section = _ground_truth_section(report, section_number=section_number)
-    if not section:
-        return
-    path.write_text(text.rstrip("\n") + "\n\n" + "\n".join(section) + "\n", encoding="utf-8")
+    path.write_text(_replace_section_span(text, _GROUND_TRUTH_SECTION_HEADING_RE, section), encoding="utf-8")
 
 
 def write_revitlookup_cross_validation_report(output_dir: Path, report: RevitLookupCrossValidationReport) -> None:
@@ -560,19 +631,15 @@ _REVITLOOKUP_SECTION_HEADING_RE = re.compile(r"^## \d+\. RevitLookup descriptor 
 def refresh_revitlookup_section_in_file(path: Path, report: RevitLookupCrossValidationReport, *, section_number: int) -> None:
     """Replace (or append, if absent) the 'RevitLookup descriptor cross-validation' section of
     an already-written ``summary.md``/``validation_summary.md`` with one reflecting ``report``
-    -- same in-place-refresh pattern as ``refresh_ground_truth_section_in_file``. A no-op if
+    -- same bounded-span refresh as ``refresh_ground_truth_section_in_file``, so this never
+    deletes a DLL (Stage B) section that happens to sit before or after this one. A no-op if
     ``path`` doesn't exist.
     """
     if not path.exists():
         return
     text = path.read_text(encoding="utf-8")
-    match = _REVITLOOKUP_SECTION_HEADING_RE.search(text)
-    if match:
-        text = text[: match.start()]
     section = _revitlookup_section(report, section_number=section_number)
-    if not section:
-        return
-    path.write_text(text.rstrip("\n") + "\n\n" + "\n".join(section) + "\n", encoding="utf-8")
+    path.write_text(_replace_section_span(text, _REVITLOOKUP_SECTION_HEADING_RE, section), encoding="utf-8")
 
 
 def write_summary(

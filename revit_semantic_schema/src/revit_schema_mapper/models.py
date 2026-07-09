@@ -274,6 +274,10 @@ class GraphNode:
     # Set by graph.apply_communities -- scoped to the core-tier subgraph
     # (see docs/edge_taxonomy_v0.md), so most nodes outside it stay None.
     community_id: Optional[int] = None
+    # Carried over from NodeCandidate.dll_type_verified (Stage B, see that
+    # field's docstring) -- always None for an external stub node, since
+    # those were never crawled/classified in the first place.
+    dll_type_verified: Optional[bool] = None
 
 
 @dataclass
@@ -296,6 +300,23 @@ class GraphEdge:
     target_resolution: TargetResolution
     evidence: list[str]
     source_url: str
+    # The six fields below are carried straight over from the originating
+    # EdgeCandidate's dll_*/revitlookup_* fields (Stages B/C, see that
+    # dataclass's docstrings for what each one means) -- graph.py never
+    # computes or reinterprets them, only copies them through, so a
+    # downstream consumer reading graph.json/graph_core.json sees the same
+    # cross-validation evidence candidate_edges.json already carried. All
+    # stay None if the corresponding optional pass never ran. Deliberately
+    # not folded into confidence_tier -- whether corroboration should ever
+    # promote an edge's tier is an open question (docs/
+    # multi_source_corroboration_v0.md, "confidence_tier / core-subgraph
+    # interaction with corroboration"), not decided here.
+    dll_signature_verified: Optional[bool] = None
+    dll_relationship_scope: Optional[str] = None
+    dll_semantic_verified: Optional[bool] = None
+    dll_verified_status: Optional[str] = None
+    revitlookup_referenced: Optional[bool] = None
+    revitlookup_requires_document_context: Optional[bool] = None
 
 
 @dataclass

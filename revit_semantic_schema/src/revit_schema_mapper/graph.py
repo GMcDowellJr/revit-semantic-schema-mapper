@@ -166,6 +166,12 @@ def build_graph(node_candidates: list[NodeCandidate], edge_candidates: list[Edge
                 target_resolution=target_resolution,
                 evidence=edge.evidence,
                 source_url=edge.source_url,
+                dll_signature_verified=edge.dll_signature_verified,
+                dll_relationship_scope=edge.dll_relationship_scope,
+                dll_semantic_verified=edge.dll_semantic_verified,
+                dll_verified_status=edge.dll_verified_status,
+                revitlookup_referenced=edge.revitlookup_referenced,
+                revitlookup_requires_document_context=edge.revitlookup_requires_document_context,
             )
         )
 
@@ -180,6 +186,7 @@ def build_graph(node_candidates: list[NodeCandidate], edge_candidates: list[Edge
             is_element_candidate=n.is_element_candidate.value,
             base_type=n.base_type,
             source_url=n.source_url,
+            dll_type_verified=n.dll_type_verified,
         )
         for n in node_candidates
     ] + resolver.external_nodes

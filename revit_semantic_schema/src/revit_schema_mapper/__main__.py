@@ -168,7 +168,14 @@ def main(argv: list[str] | None = None) -> int:
         if not manifest_path.exists():
             print(f"error: manifest not found: {manifest_path}", file=sys.stderr)
             return 1
-        report = run_cross_validate_dll(output_dir, manifest_path)
+        report = run_cross_validate_dll(
+            output_dir,
+            manifest_path,
+            revit_version=args.version,
+            label_communities_llm=args.label_communities_llm,
+            community_label_model=args.community_label_model,
+            openrouter_api_key=openrouter_api_key,
+        )
         type_counts: dict[str, int] = {}
         for r in report.type_results:
             type_counts[r.status.value] = type_counts.get(r.status.value, 0) + 1
@@ -178,22 +185,39 @@ def main(argv: list[str] | None = None) -> int:
         print(f"Types:              {len(report.type_results)} ({type_counts})")
         print(f"dll_only types:     {len(report.dll_only_types)}")
         print(f"Edges:              {len(report.edge_results)} ({edge_counts})")
-        print(f"Outputs written to: {output_dir / 'ground_truth_report.json'} (node_type_candidates.json/candidate_edges.json updated in place)")
+        print(
+            f"Outputs written to: {output_dir / 'ground_truth_report.json'} (node_type_candidates.json/"
+            f"candidate_edges.json/graph.json/graph_core.json updated in place)"
+        )
         return 0
 
     if args.cross_validate_revitlookup:
-        if not (output_dir / "candidate_edges.json").exists():
-            print(f"error: {output_dir} has no candidate_edges.json to cross-validate -- run a real crawl first", file=sys.stderr)
+        if not (output_dir / "node_type_candidates.json").exists() or not (output_dir / "candidate_edges.json").exists():
+            print(
+                f"error: {output_dir} has no node_type_candidates.json/candidate_edges.json to cross-validate "
+                "-- run a real crawl first",
+                file=sys.stderr,
+            )
             return 1
         reference_path = Path(args.cross_validate_revitlookup)
         if not reference_path.exists():
             print(f"error: revitlookup reference not found: {reference_path}", file=sys.stderr)
             return 1
-        report = run_cross_validate_revitlookup(output_dir, reference_path)
+        report = run_cross_validate_revitlookup(
+            output_dir,
+            reference_path,
+            revit_version=args.version,
+            label_communities_llm=args.label_communities_llm,
+            community_label_model=args.community_label_model,
+            openrouter_api_key=openrouter_api_key,
+        )
         referenced = sum(1 for r in report.edge_results if r.referenced)
         print(f"Edges checked:      {len(report.edge_results)} ({referenced} referenced by RevitLookup)")
         print(f"Covered types:      {len(report.covered_short_type_names)}")
-        print(f"Outputs written to: {output_dir / 'revitlookup_cross_validation_report.json'} (candidate_edges.json updated in place)")
+        print(
+            f"Outputs written to: {output_dir / 'revitlookup_cross_validation_report.json'} "
+            f"(candidate_edges.json/graph.json/graph_core.json updated in place)"
+        )
         return 0
 
     config = CrawlConfig(
