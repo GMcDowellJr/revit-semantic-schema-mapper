@@ -259,6 +259,22 @@ _NAME_KEYWORD_RULES: list[tuple[re.Pattern[str], EdgeType, str | None]] = [
     # methods with different semantics that a bare "Schema" substring match
     # would have incorrectly swept up too (ListSchemas contains "Schema").
     (re.compile(r"^(Sub)?Schema$", re.IGNORECASE), EdgeType.REFERENCES, "Schema"),
+    # Exact match, checked before the "Sketch$" rule below: SketchPlane is a
+    # distinct real DB type (a work plane), not a kind of Sketch, even though
+    # its name ends in "Sketch...". Evidence from a real 2024 crawl: 4 edges,
+    # 4 distinct source types, all named exactly "SketchPlane"
+    # (CurveByPoints.SketchPlane, CurveElement.SketchPlane, Sketch.SketchPlane,
+    # View.SketchPlane), zero counterexamples.
+    (re.compile(r"^SketchPlane$", re.IGNORECASE), EdgeType.REFERENCES, "SketchPlane"),
+    # Ends-with, not a bare substring: catches BottomSketch/TopSketch/
+    # PathSketch/ProfileSketch/bare Sketch (the profile/path that defines a
+    # solid's shape) while naturally excluding SketchPlane (doesn't end in
+    # "Sketch") and unrelated coincidences like View.GetSketchyLines (a
+    # ViewDisplaySketchyLines graphics-style enum, nothing to do with
+    # geometry sketches). Evidence from a real 2024 crawl: 10 edges, 5
+    # distinct source types (Blend, Extrusion, Revolution, Sweep,
+    # SweptBlend), zero counterexamples.
+    (re.compile(r"Sketch$", re.IGNORECASE), EdgeType.DEPENDS_ON, "Sketch"),
     # "TypeId" added after the original "Type"/"GetTypeId" pair turned out to
     # miss the dominant real naming convention entirely: the same crawl's
     # UNKNOWN_ELEMENTID_REFERENCE "Type" cluster (9 edges, 9 distinct source

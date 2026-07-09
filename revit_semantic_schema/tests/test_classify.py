@@ -704,3 +704,52 @@ def test_room_and_schema_use_their_real_sub_namespace_not_a_bare_db_prefix():
 
     assert schema_candidate is not None
     assert schema_candidate.candidate_target_type == "Autodesk.Revit.DB.ExtensibleStorage.Schema"
+
+
+def test_sketch_suffix_is_classified_as_depends_on():
+    """Evidence from a real 2024 crawl: 10 edges across 5 distinct source
+    types (Blend.BottomSketch/.TopSketch, Extrusion.Sketch, Revolution.Sketch,
+    Sweep.PathSketch/.ProfileSketch, SweptBlend.BottomSketch/.PathSketch/
+    .TopSketch), zero apparent counterexamples -- the profile/path that
+    defines each solid's shape. Ends-with (not a bare substring) so it
+    doesn't also catch SketchPlane (a distinct real type, handled by its
+    own exact-match rule below) or unrelated coincidences like
+    View.GetSketchyLines."""
+    for name in ("Sketch", "BottomSketch", "TopSketch", "PathSketch", "ProfileSketch"):
+        member = _member(name, "Sketch", declaring_type="Autodesk.Revit.DB.Extrusion")
+        candidate = classify_member(member, source_type="Autodesk.Revit.DB.Extrusion", known_type_short_names={"Sketch"})
+
+        assert candidate is not None, f"{name} should produce an edge"
+        assert candidate.candidate_edge_type is EdgeType.DEPENDS_ON
+        assert candidate.candidate_target_type == "Autodesk.Revit.DB.Sketch"
+
+
+def test_sketch_plane_exact_match_is_classified_as_references_not_depends_on():
+    """Evidence from a real 2024 crawl: 4 edges across 4 distinct source
+    types (CurveByPoints.SketchPlane, CurveElement.SketchPlane,
+    Sketch.SketchPlane, View.SketchPlane), all named exactly 'SketchPlane',
+    zero counterexamples. SketchPlane is a distinct real DB type (a work
+    plane), not a kind of Sketch -- must be checked before the 'Sketch$'
+    rule and must not fall through to it."""
+    member = _member("SketchPlane", "SketchPlane", declaring_type="Autodesk.Revit.DB.CurveElement")
+    candidate = classify_member(member, source_type="Autodesk.Revit.DB.CurveElement", known_type_short_names={"SketchPlane"})
+
+    assert candidate is not None
+    assert candidate.candidate_edge_type is EdgeType.REFERENCES
+    assert candidate.candidate_target_type == "Autodesk.Revit.DB.SketchPlane"
+
+
+def test_get_sketchy_lines_is_not_matched_by_either_sketch_rule():
+    """Regression guard: View.GetSketchyLines returns
+    ViewDisplaySketchyLines (a graphics-style enum for dashed/sketchy line
+    rendering), nothing to do with geometry sketches -- a real member found
+    while investigating the Sketch/SketchPlane clusters via a broad
+    substring search that also happened to catch this unrelated
+    coincidence. Neither the 'Sketch$' nor '^SketchPlane$' rule may match
+    'GetSketchyLines'."""
+    member = _method_member("GetSketchyLines", "ViewDisplaySketchyLines", declaring_type="Autodesk.Revit.DB.View")
+    candidate = classify_member(member, source_type="Autodesk.Revit.DB.View", known_type_short_names={"ViewDisplaySketchyLines"})
+
+    assert candidate is not None
+    assert candidate.candidate_edge_type is EdgeType.UNKNOWN_DB_OBJECT_REFERENCE
+    assert candidate.candidate_target_type == "Autodesk.Revit.DB.ViewDisplaySketchyLines"
