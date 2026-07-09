@@ -164,12 +164,14 @@ def run_cross_validate_dll(
     export.write_node_candidates(output_dir, node_candidates)
     export.write_edge_candidates(output_dir, edge_candidates)
     export.write_ground_truth_report(output_dir, report)
-    # Try both -- a no-op for whichever summary filename isn't this
-    # directory's kind (full run vs. --targeted-validation), same reasoning
-    # as run_graph_only's own pair of refresh calls above.
-    export.refresh_ground_truth_section_in_file(output_dir / "summary.md", report, section_number=15)
-    export.refresh_ground_truth_section_in_file(output_dir / "validation_summary.md", report, section_number=10)
 
+    # Rebuild the graph before appending this pass's own summary section, not
+    # after: refresh_graph_section_in_file/refresh_ground_truth_section_in_file
+    # now each bound their refresh to their own section's span (see
+    # export._replace_section_span), so this ordering is no longer
+    # correctness-critical the way it once was -- but it's still the more
+    # sensible sequence (rebuild everything the candidates feed first, then
+    # report on this specific pass last) and costs nothing to keep.
     run_graph_only(
         output_dir,
         revit_version,
@@ -177,6 +179,12 @@ def run_cross_validate_dll(
         community_label_model=community_label_model,
         openrouter_api_key=openrouter_api_key,
     )
+
+    # Try both -- a no-op for whichever summary filename isn't this
+    # directory's kind (full run vs. --targeted-validation), same reasoning
+    # as run_graph_only's own pair of refresh calls above.
+    export.refresh_ground_truth_section_in_file(output_dir / "summary.md", report, section_number=15)
+    export.refresh_ground_truth_section_in_file(output_dir / "validation_summary.md", report, section_number=10)
 
     return report
 
@@ -217,12 +225,10 @@ def run_cross_validate_revitlookup(
 
     export.write_edge_candidates(output_dir, edge_candidates)
     export.write_revitlookup_cross_validation_report(output_dir, report)
-    # Try both -- a no-op for whichever summary filename isn't this
-    # directory's kind (full run vs. --targeted-validation), same reasoning
-    # as run_cross_validate_dll's own pair of refresh calls above.
-    export.refresh_revitlookup_section_in_file(output_dir / "summary.md", report, section_number=16)
-    export.refresh_revitlookup_section_in_file(output_dir / "validation_summary.md", report, section_number=11)
 
+    # Rebuild before appending this pass's own section -- see the matching
+    # comment in run_cross_validate_dll for why this ordering is no longer
+    # correctness-critical (bounded section replacement) but still preferred.
     run_graph_only(
         output_dir,
         revit_version,
@@ -230,6 +236,12 @@ def run_cross_validate_revitlookup(
         community_label_model=community_label_model,
         openrouter_api_key=openrouter_api_key,
     )
+
+    # Try both -- a no-op for whichever summary filename isn't this
+    # directory's kind (full run vs. --targeted-validation), same reasoning
+    # as run_cross_validate_dll's own pair of refresh calls above.
+    export.refresh_revitlookup_section_in_file(output_dir / "summary.md", report, section_number=16)
+    export.refresh_revitlookup_section_in_file(output_dir / "validation_summary.md", report, section_number=11)
 
     return report
 

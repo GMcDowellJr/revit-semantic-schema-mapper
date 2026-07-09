@@ -6,6 +6,7 @@ import pytest
 
 from revit_schema_mapper import export, graph
 from revit_schema_mapper.export import _GRAPH_VIEWER_TEMPLATE_PATH
+from revit_schema_mapper.ground_truth import GroundTruthManifest, cross_validate_dll
 from revit_schema_mapper.models import (
     ApiPage,
     ClassRole,
@@ -270,6 +271,67 @@ def test_refresh_graph_section_replaces_stale_section_not_duplicates(tmp_path):
     assert text.count("## 14. Knowledge graph materialization") == 1
     assert "STALE CONTENT" not in text
     assert "# Title" in text
+
+
+def test_refresh_graph_section_preserves_sections_appended_after_it(tmp_path):
+    """Regression test: summary.md accumulates the graph section (14), then
+    later the DLL (15) and RevitLookup (16) cross-validation sections get
+    appended after it by their own, separately-timed refresh_*_section_in_file
+    calls. Refreshing the graph section (e.g. via --graph-only, or via
+    run_cross_validate_dll/run_cross_validate_revitlookup rebuilding the
+    graph) must not delete those later sections just because they physically
+    sit after the graph section's heading in the file.
+    """
+    summary_path = tmp_path / "summary.md"
+    summary_path.write_text(
+        "# Title\n\n"
+        "## 14. Knowledge graph materialization\n\nSTALE GRAPH CONTENT\n\n"
+        "## 15. DLL reflection cross-validation (Stage B)\n\nSTAGE B CONTENT\n\n"
+        "## 16. RevitLookup descriptor cross-validation (Stage C)\n\nSTAGE C CONTENT\n",
+        encoding="utf-8",
+    )
+    nodes = [_node("Autodesk.Revit.DB.View")]
+    edges = [_edge("ViewTemplateId", EdgeType.CONTROLLED_BY_TEMPLATE, ConfidenceLabel.ELEMENTID_WITH_STRONG_NAME, "Autodesk.Revit.DB.View")]
+    for e in edges:
+        e.source_type = "Autodesk.Revit.DB.View"
+    result = graph.build_graph(nodes, edges)
+
+    export.refresh_graph_section_in_file(summary_path, result, section_number=14)
+
+    text = summary_path.read_text()
+    assert text.count("## 14. Knowledge graph materialization") == 1
+    assert "STALE GRAPH CONTENT" not in text
+    # The whole point: sections written after the graph section must survive
+    # a graph-section-only refresh.
+    assert "## 15. DLL reflection cross-validation (Stage B)" in text
+    assert "STAGE B CONTENT" in text
+    assert "## 16. RevitLookup descriptor cross-validation (Stage C)" in text
+    assert "STAGE C CONTENT" in text
+
+
+def test_refresh_ground_truth_section_preserves_revitlookup_section_appended_after_it(tmp_path):
+    """Same regression as the graph-section case above, but for
+    refresh_ground_truth_section_in_file specifically: re-running
+    --cross-validate-dll after --cross-validate-revitlookup already appended
+    its own section 16 must not delete that section.
+    """
+    summary_path = tmp_path / "summary.md"
+    summary_path.write_text(
+        "# Title\n\n"
+        "## 15. DLL reflection cross-validation (Stage B)\n\nSTALE STAGE B CONTENT\n\n"
+        "## 16. RevitLookup descriptor cross-validation (Stage C)\n\nSTAGE C CONTENT\n",
+        encoding="utf-8",
+    )
+    manifest = GroundTruthManifest(revit_version="2024", generated_at="", namespace_prefix="Autodesk.Revit.DB", assemblies_scanned=[], types=[])
+    report = cross_validate_dll([], [], manifest)
+
+    export.refresh_ground_truth_section_in_file(summary_path, report, section_number=15)
+
+    text = summary_path.read_text()
+    assert text.count("## 15. DLL reflection cross-validation (Stage B)") == 1
+    assert "STALE STAGE B CONTENT" not in text
+    assert "## 16. RevitLookup descriptor cross-validation (Stage C)" in text
+    assert "STAGE C CONTENT" in text
 
 
 def test_refresh_graph_section_is_noop_when_file_missing(tmp_path):

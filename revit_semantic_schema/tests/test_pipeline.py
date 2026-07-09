@@ -1205,6 +1205,66 @@ def test_run_cross_validate_dll_persists_dll_fields_and_writes_report(tmp_path):
     assert graph_json["nodes"][0]["dll_type_verified"] is True
 
 
+def test_run_cross_validate_dll_does_not_delete_its_own_just_appended_section(tmp_path):
+    """Regression test: run_cross_validate_dll appends its own Stage B
+    section to summary.md, then internally calls run_graph_only to rebuild
+    the graph -- which refreshes the *graph* section (14). Before
+    export._replace_section_span, refreshing a section truncated everything
+    physically after its own heading, so if summary.md already had a graph
+    section (e.g. from the full crawl that produced this output directory),
+    the graph section's own refresh would delete the Stage B section this
+    same call had just appended after it.
+    """
+    nodes = [_node_candidate("Autodesk.Revit.DB.View", [])]
+    edges = [_edge_candidate("Autodesk.Revit.DB.View", "Autodesk.Revit.DB.ViewSheet", EdgeType.PLACED_ON_SHEET, ConfidenceLabel.DIRECT_RETURN_TYPE)]
+    export.write_node_candidates(tmp_path, nodes)
+    export.write_edge_candidates(tmp_path, edges)
+    # Simulates a summary.md already written by a prior full crawl/--graph-only
+    # run -- a real graph section already present, no Stage B/C sections yet.
+    (tmp_path / "summary.md").write_text(
+        "# Old summary\n\n## 14. Knowledge graph materialization\n\nOLD GRAPH CONTENT\n",
+        encoding="utf-8",
+    )
+
+    manifest_path = tmp_path / "ground_truth_manifest_2024.json"
+    manifest_path.write_text(
+        json.dumps(
+            {
+                "revit_version": "2024",
+                "generated_at": "",
+                "namespace_prefix": "Autodesk.Revit.DB",
+                "assemblies_scanned": [],
+                "types": [
+                    {
+                        "full_type_name": "Autodesk.Revit.DB.View",
+                        "assembly": "RevitAPI",
+                        "kind": "class",
+                        "is_abstract": False,
+                        "base_type": None,
+                        "inheritance_chain": [],
+                        "implemented_interfaces": [],
+                        "members": [
+                            {"name": "SomeMember", "kind": "property", "declaring_type": "Autodesk.Revit.DB.View", "return_type": "ViewSheet"}
+                        ],
+                        "enum_members": [],
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    run_cross_validate_dll(tmp_path, manifest_path, revit_version="2024")
+
+    summary_text = (tmp_path / "summary.md").read_text()
+    assert "OLD GRAPH CONTENT" not in summary_text  # graph section was genuinely refreshed
+    assert summary_text.count("## 14. Knowledge graph materialization") == 1
+    # The whole point: the Stage B section this same call appended must
+    # survive the graph rebuild's own section refresh.
+    assert summary_text.count("## 15. DLL reflection cross-validation (Stage B)") == 1
+    assert summary_text.index("## 14.") < summary_text.index("## 15.")
+
+
 def test_run_cross_validate_revitlookup_persists_revitlookup_fields_and_writes_report(tmp_path):
     """--cross-validate-revitlookup's whole point is to layer on top of an
     existing crawl's output -- only reading revitlookup_reference.json plus
