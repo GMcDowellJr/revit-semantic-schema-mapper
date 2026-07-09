@@ -438,9 +438,22 @@ def classify_member(member: MemberInfo, source_type: str, known_type_short_names
         if bare_return == source_type.rsplit(".", 1)[-1]:
             return None
 
+    # Checked ahead of is_direct_db_object, not nested under it: a typed ID
+    # struct's own type is the evidence (see _TYPED_ID_TARGETS's docstring),
+    # so this must not depend on known_type_short_names/KNOWN_REFERENCE_TYPES
+    # -- a scoped/targeted crawl (docs/edge_taxonomy_v0.md's
+    # DEFAULT_TARGET_CLASSES) can easily parse a member returning WorksetId
+    # (e.g. Element.WorksetId) without also crawling WorksetId's own type
+    # page, in which case is_direct_db_object would be False and this rule
+    # would silently never fire, falling back to a much weaker
+    # name_only_candidate guess (kept out of graph_core.json's CORE tier)
+    # instead of the type-system-backed evidence this rule exists to use.
+    is_typed_id = bare_return in _TYPED_ID_TARGETS
+
     is_direct_db_object = (
         not is_elementid
         and not is_elementid_collection
+        and not is_typed_id
         and bare_return not in PRIMITIVE_TYPES
         and (bare_return in KNOWN_REFERENCE_TYPES or bare_return in known_type_short_names)
     )
@@ -448,21 +461,22 @@ def classify_member(member: MemberInfo, source_type: str, known_type_short_names
     name_match = _match_name_keyword(member.name)
     docs_hint = _find_docs_hint(member.summary) or _find_docs_hint(member.remarks)
 
-    if not (is_elementid or is_elementid_collection or is_direct_db_object or is_unresolved_generic_collection or name_match):
+    if not (is_typed_id or is_elementid or is_elementid_collection or is_direct_db_object or is_unresolved_generic_collection or name_match):
         return None
 
     evidence: list[str] = []
     parser_notes: list[str] = []
 
-    if is_direct_db_object:
+    if is_typed_id:
+        target_short_name, edge_type = _TYPED_ID_TARGETS[bare_return]
+        candidate_target_type = target_short_name
         confidence = ConfidenceLabel.DIRECT_RETURN_TYPE
-        if bare_return in _TYPED_ID_TARGETS:
-            target_short_name, edge_type = _TYPED_ID_TARGETS[bare_return]
-            candidate_target_type = target_short_name
-            evidence.append(
-                f"return type '{return_type}' is a typed identifier that unambiguously names its own "
-                f"target ('{target_short_name}') through the type system alone"
-            )
+        evidence.append(
+            f"return type '{return_type}' is a typed identifier that unambiguously names its own "
+            f"target ('{target_short_name}') through the type system alone"
+        )
+    elif is_direct_db_object:
+        confidence = ConfidenceLabel.DIRECT_RETURN_TYPE
         # A name-keyword match whose own target_hint names a *different*
         # concrete type than what this member actually, verifiably returns
         # is a coincidental name collision, not real relationship evidence
@@ -477,7 +491,7 @@ def classify_member(member: MemberInfo, source_type: str, known_type_short_names
         # edge_type/target_type pair. No conflict (target_hint is None, or
         # equals bare_return, or there's no name_match at all) keeps the
         # existing behavior unchanged.
-        elif name_match and name_match[1] is not None and name_match[1] != bare_return:
+        if name_match and name_match[1] is not None and name_match[1] != bare_return:
             edge_type = EdgeType.UNKNOWN_DB_OBJECT_REFERENCE
             candidate_target_type = bare_return
             evidence.append(

@@ -66,7 +66,10 @@ signal in this order:
    `_TYPED_ID_TARGETS` (currently just `WorksetId -> Workset`/`OWNED_BY_WORKSET`) is the deliberate
    opposite exception: a handful of typed identifier structs (unlike bare `ElementId`) name their
    own target through the type system alone, no member name needed, so they bypass the conflict
-   check above entirely.
+   check above entirely. This check runs *ahead of* `is_direct_db_object`, not nested under it --
+   it must not depend on `known_type_short_names`/`KNOWN_REFERENCE_TYPES`, since a scoped/targeted
+   crawl (`DEFAULT_TARGET_CLASSES`) can parse a member returning `WorksetId` (e.g.
+   `Element.WorksetId`) without also crawling `WorksetId`'s own type page.
 2. **Return type is `ElementId`** → edge type from name-keyword match (confidence
    `elementid_with_strong_name`) or `UNKNOWN_ELEMENTID_REFERENCE` (confidence
    `unknown_reference`) if no keyword matches.

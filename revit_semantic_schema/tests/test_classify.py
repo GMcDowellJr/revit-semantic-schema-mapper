@@ -480,6 +480,26 @@ def test_workset_id_is_classified_as_owned_by_workset():
     assert method_candidate.candidate_target_type == "Autodesk.Revit.DB.Workset"
 
 
+def test_workset_id_rule_fires_even_when_worksetid_itself_was_not_crawled():
+    """Regression test (PR review finding): _TYPED_ID_TARGETS must not be
+    gated behind is_direct_db_object's known_type_short_names/
+    KNOWN_REFERENCE_TYPES check. DEFAULT_TARGET_CLASSES (a scoped/targeted
+    crawl) parses Element.WorksetId without necessarily also crawling
+    WorksetId's own type page -- known_type_short_names deliberately omits
+    'WorksetId' here to simulate that. Before the fix, is_direct_db_object
+    was False in this case, so the typed-ID rule (nested under it) never
+    fired, and the member fell through to a much weaker name_only_candidate
+    guess -- kept out of graph_core.json's CORE tier even though the type
+    itself is unambiguous evidence."""
+    member = _member("WorksetId", "WorksetId", declaring_type="Autodesk.Revit.DB.Element")
+    candidate = classify_member(member, source_type="Autodesk.Revit.DB.Element", known_type_short_names={"Element"})
+
+    assert candidate is not None
+    assert candidate.candidate_edge_type is EdgeType.OWNED_BY_WORKSET
+    assert candidate.candidate_target_type == "Autodesk.Revit.DB.Workset"
+    assert candidate.edge_confidence is ConfidenceLabel.DIRECT_RETURN_TYPE
+
+
 def test_factory_method_produces_no_edge():
     """Regression test: a 'Create*' method constructs a brand-new object --
     it isn't a relationship of source_type, even though it's declared on
