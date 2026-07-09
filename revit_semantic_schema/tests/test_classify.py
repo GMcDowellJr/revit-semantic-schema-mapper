@@ -337,6 +337,66 @@ def test_view_id_property_name_is_classified_as_references():
     assert candidate2.candidate_target_type == "Autodesk.Revit.DB.View"
 
 
+def test_bare_view_property_name_is_classified_as_references():
+    """Evidence from a real crawl's candidate_edges.json: 6
+    UNKNOWN_DB_OBJECT_REFERENCE edges across 6 distinct source types, all
+    named exactly 'View' (Control.View, Dimension.View, Options.View,
+    SpatialElementTag.View, Events.ViewPrintedEventArgs.View,
+    Events.ViewPrintingEventArgs.View), all already direct_return_type
+    confidence, zero counterexamples."""
+    member = _member("View", "View", declaring_type="Autodesk.Revit.DB.Control")
+    candidate = classify_member(member, source_type="Autodesk.Revit.DB.Control", known_type_short_names={"View"})
+
+    assert candidate is not None
+    assert candidate.candidate_edge_type is EdgeType.REFERENCES
+    assert candidate.edge_confidence is ConfidenceLabel.DIRECT_RETURN_TYPE
+    assert candidate.candidate_target_type == "Autodesk.Revit.DB.View"
+
+
+def test_bare_view_reference_keeps_direct_return_type_confidence_in_scoped_crawl():
+    """Regression test: a scoped/targeted crawl that never independently
+    crawls View's own type page must not silently degrade this to
+    name_only_candidate -- same shape as
+    test_document_reference_keeps_direct_return_type_confidence_in_scoped_crawl."""
+    member = _member("View", "View", declaring_type="Autodesk.Revit.DB.Dimension")
+    candidate = classify_member(member, source_type="Autodesk.Revit.DB.Dimension", known_type_short_names=set())
+
+    assert candidate is not None
+    assert candidate.candidate_edge_type is EdgeType.REFERENCES
+    assert candidate.edge_confidence is ConfidenceLabel.DIRECT_RETURN_TYPE
+    assert candidate.candidate_target_type == "Autodesk.Revit.DB.View"
+
+
+def test_location_property_name_is_classified_as_references():
+    """Evidence from a real crawl's candidate_edges.json: 7
+    UNKNOWN_DB_OBJECT_REFERENCE edges across 7 distinct source types, all
+    named exactly 'Location' (AssemblyInstance/Element/FamilyInstance/Group/
+    ModelText/SpatialElement/SpatialElementTag.Location) -- Element is the
+    base declaring type, the rest are overrides of it; AssemblyInstance's
+    docs describe it as 'the physical location of the assembly instance' --
+    zero counterexamples."""
+    member = _member("Location", "Location", declaring_type="Autodesk.Revit.DB.AssemblyInstance")
+    candidate = classify_member(member, source_type="Autodesk.Revit.DB.AssemblyInstance", known_type_short_names={"Location"})
+
+    assert candidate is not None
+    assert candidate.candidate_edge_type is EdgeType.REFERENCES
+    assert candidate.edge_confidence is ConfidenceLabel.DIRECT_RETURN_TYPE
+    assert candidate.candidate_target_type == "Autodesk.Revit.DB.Location"
+
+
+def test_location_reference_keeps_direct_return_type_confidence_in_scoped_crawl():
+    """Regression test: same shape as
+    test_bare_view_reference_keeps_direct_return_type_confidence_in_scoped_crawl,
+    for the Location rule."""
+    member = _member("Location", "Location", declaring_type="Autodesk.Revit.DB.Element")
+    candidate = classify_member(member, source_type="Autodesk.Revit.DB.Element", known_type_short_names=set())
+
+    assert candidate is not None
+    assert candidate.candidate_edge_type is EdgeType.REFERENCES
+    assert candidate.edge_confidence is ConfidenceLabel.DIRECT_RETURN_TYPE
+    assert candidate.candidate_target_type == "Autodesk.Revit.DB.Location"
+
+
 def test_demoted_value_type_does_not_fall_through_to_name_only_candidate():
     """Regression test (PR review finding): demoting FailureDefinitionId
     into PRIMITIVE_TYPES stopped it from producing a direct-return edge,

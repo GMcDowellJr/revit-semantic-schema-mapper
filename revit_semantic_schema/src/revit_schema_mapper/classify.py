@@ -261,6 +261,24 @@ _NAME_KEYWORD_RULES: list[tuple[re.Pattern[str], EdgeType, str | None]] = [
     # ElevationMarker.GetViewId), zero counterexamples -- same evidence shape
     # as the Document/GetDocument rule above.
     (re.compile(r"^(Get)?ViewId$", re.IGNORECASE), EdgeType.REFERENCES, "View"),
+    # Exact match. Evidence from a real crawl's candidate_edges.json: 6
+    # UNKNOWN_DB_OBJECT_REFERENCE edges across 6 distinct source types, all
+    # named exactly "View" (Control.View, Dimension.View, Options.View,
+    # SpatialElementTag.View, Events.ViewPrintedEventArgs.View,
+    # Events.ViewPrintingEventArgs.View), all already direct_return_type
+    # confidence (View is always a crawled type), zero counterexamples --
+    # this rule only upgrades the edge_type from the generic unknown bucket
+    # to REFERENCES, same as the Document/ViewId rules above.
+    (re.compile(r"^View$", re.IGNORECASE), EdgeType.REFERENCES, "View"),
+    # Exact match. Evidence from a real crawl's candidate_edges.json: 7
+    # UNKNOWN_DB_OBJECT_REFERENCE edges across 7 distinct source types, all
+    # named exactly "Location" (AssemblyInstance/Element/FamilyInstance/
+    # Group/ModelText/SpatialElement/SpatialElementTag.Location) -- Element
+    # is the base declaring type, the others are all overrides of it, per
+    # AssemblyInstance's docs ("used to find the physical location of the
+    # assembly instance") -- zero counterexamples, same evidence shape as
+    # the View rule above.
+    (re.compile(r"^Location$", re.IGNORECASE), EdgeType.REFERENCES, "Location"),
     # Evidence from a real 2024 crawl's unknown_pareto.py breakdown: 7 edges
     # across 4 distinct source types (FamilyInstance.Room/.FromRoom/.ToRoom,
     # Document.GetRoomAtPoint), 3 of 7 independently corroborated by
