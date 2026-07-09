@@ -21,6 +21,7 @@ from .pipeline import (
     DEFAULT_KNOWN_EDGE_CHECKS,
     DEFAULT_TARGET_CLASSES,
     run_cross_validate_dll,
+    run_cross_validate_revitlookup,
     run_discovery,
     run_graph_only,
     run_pipeline,
@@ -85,6 +86,18 @@ def main(argv: list[str] | None = None) -> int:
         "A, run on a Windows machine with Revit installed). Writes ground_truth_report.json and a "
         "refreshed summary section in place -- no crawling, fetching, or live Revit/DLL access of "
         "any kind. Requires a previous run's output to already exist in --output-dir.",
+    )
+    parser.add_argument(
+        "--cross-validate-revitlookup",
+        metavar="REFERENCE_PATH",
+        default=None,
+        help="Stage C of DLL reflection cross-validation (docs/dll_reflection_v0.md): cross-check "
+        "this --output-dir's existing candidate_edges.json against a revitlookup_reference.json "
+        "produced separately by `python -m revit_schema_mapper.revitlookup` (mining RevitLookup's "
+        "own public C# descriptor source, no Revit/RevitLookup/DLL access). Writes "
+        "revitlookup_cross_validation_report.json and a refreshed summary section in place. Can "
+        "run before, after, or without --cross-validate-dll -- the two never touch each other's "
+        "fields. Requires a previous run's output to already exist in --output-dir.",
     )
     parser.add_argument(
         "--include-doc-text",
@@ -166,6 +179,21 @@ def main(argv: list[str] | None = None) -> int:
         print(f"dll_only types:     {len(report.dll_only_types)}")
         print(f"Edges:              {len(report.edge_results)} ({edge_counts})")
         print(f"Outputs written to: {output_dir / 'ground_truth_report.json'} (node_type_candidates.json/candidate_edges.json updated in place)")
+        return 0
+
+    if args.cross_validate_revitlookup:
+        if not (output_dir / "candidate_edges.json").exists():
+            print(f"error: {output_dir} has no candidate_edges.json to cross-validate -- run a real crawl first", file=sys.stderr)
+            return 1
+        reference_path = Path(args.cross_validate_revitlookup)
+        if not reference_path.exists():
+            print(f"error: revitlookup reference not found: {reference_path}", file=sys.stderr)
+            return 1
+        report = run_cross_validate_revitlookup(output_dir, reference_path)
+        referenced = sum(1 for r in report.edge_results if r.referenced)
+        print(f"Edges checked:      {len(report.edge_results)} ({referenced} referenced by RevitLookup)")
+        print(f"Covered types:      {len(report.covered_short_type_names)}")
+        print(f"Outputs written to: {output_dir / 'revitlookup_cross_validation_report.json'} (candidate_edges.json updated in place)")
         return 0
 
     config = CrawlConfig(

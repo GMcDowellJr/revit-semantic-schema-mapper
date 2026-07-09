@@ -22,6 +22,7 @@ from revit_schema_mapper.pipeline import (
     _build_known_edge_report,
     _crawl_and_parse,
     run_cross_validate_dll,
+    run_cross_validate_revitlookup,
     run_discovery,
     run_graph_only,
     run_pipeline,
@@ -1110,6 +1111,58 @@ def test_run_cross_validate_dll_persists_dll_fields_and_writes_report(tmp_path):
     assert "STALE" not in summary_text
     assert "# Old summary" in summary_text
     assert summary_text.count("## 15. DLL reflection cross-validation (Stage B)") == 1
+
+
+def test_run_cross_validate_revitlookup_persists_revitlookup_fields_and_writes_report(tmp_path):
+    """--cross-validate-revitlookup's whole point is to layer on top of an
+    existing crawl's output -- only reading revitlookup_reference.json plus
+    this directory's candidate_edges.json, and writing back the mutated
+    revitlookup_* fields plus a revitlookup_cross_validation_report.json and
+    a refreshed summary section. Never touches node_type_candidates.json
+    (Stage C only adds edge-level fields) or the dll_* fields Stage B owns.
+    """
+    edges = [_edge_candidate("Autodesk.Revit.DB.Element", "Autodesk.Revit.DB.BoundingBoxXYZ", EdgeType.REFERENCES, ConfidenceLabel.DIRECT_RETURN_TYPE)]
+    edges[0].member_name = "CanBeHidden"
+    export.write_edge_candidates(tmp_path, edges)
+    (tmp_path / "summary.md").write_text("# Old summary\n\n## 16. RevitLookup descriptor cross-validation (Stage C)\n\nSTALE\n", encoding="utf-8")
+
+    reference_path = tmp_path / "revitlookup_reference_2024.json"
+    reference_path.write_text(
+        json.dumps(
+            {
+                "revitlookup_tag": "2024.0.13",
+                "descriptor_map": [{"target_type_short_name": "Element", "descriptor_class": "ElementDescriptor", "section": "IDisposables"}],
+                "descriptors": [
+                    {
+                        "descriptor_class": "ElementDescriptor",
+                        "resolved_members": [
+                            {"member_name": "CanBeHidden", "name_source": "nameof", "requires_document_context": True, "has_multiple_variants": False}
+                        ],
+                        "synthetic_extensions": [],
+                        "parser_notes": [],
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    report = run_cross_validate_revitlookup(tmp_path, reference_path)
+
+    assert report.revitlookup_tag == "2024.0.13"
+    assert report.edge_results[0].referenced is True
+
+    persisted_edges = export.read_edge_candidates(tmp_path)
+    assert persisted_edges[0].revitlookup_referenced is True
+    assert persisted_edges[0].revitlookup_requires_document_context is True
+
+    report_json = json.loads((tmp_path / "revitlookup_cross_validation_report.json").read_text())
+    assert report_json["revitlookup_tag"] == "2024.0.13"
+
+    summary_text = (tmp_path / "summary.md").read_text()
+    assert "STALE" not in summary_text
+    assert "# Old summary" in summary_text
+    assert summary_text.count("## 16. RevitLookup descriptor cross-validation (Stage C)") == 1
 
 
 def test_known_edge_report_genuinely_missing_member_is_not_confused_with_cross_type_match():

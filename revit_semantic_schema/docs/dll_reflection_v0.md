@@ -1,10 +1,15 @@
 # DLL reflection v0 (design)
 
-**Status: design only, nothing implemented yet.** This documents the next major step for
-the project: cross-validating the docs-derived *candidate* schema (`node_type_candidates.json`
-/ `candidate_edges.json`) against **ground truth** read directly from the compiled
-`Autodesk.Revit.DB` assemblies via .NET reflection, instead of trusting revitapidocs.com's
-HTML alone.
+**Status: all three stages implemented.** Stage A (`reflect_revit_api.ps1`), Stage B
+(`ground_truth.cross_validate_dll`, wired into `__main__.py` as `--cross-validate-dll`), and
+Stage C (`revitlookup.py`'s mining, plus `ground_truth.cross_validate_revitlookup`, wired into
+`__main__.py` as `--cross-validate-revitlookup`) all exist and are tested. This document
+remains the design record and the source of truth for *why* each stage works the way it does —
+see "Workflow once built" below for the actual commands. This documents the project's
+cross-validation of the docs-derived *candidate* schema (`node_type_candidates.json` /
+`candidate_edges.json`) against **ground truth** read directly from the compiled
+`Autodesk.Revit.DB` assemblies via .NET reflection (Stage A/B) and from RevitLookup's own
+public descriptor source (Stage C), instead of trusting revitapidocs.com's HTML alone.
 
 ## Why this matters
 
@@ -55,9 +60,15 @@ Stage B (this repo, any machine, no Revit required)
     -> ground_truth_report.json + a new summary.md section
 
 Stage C (optional, this repo, any machine, no Revit required)
-  mine lookup-foundation/RevitLookup's own C# source (public, MIT-licensed) for descriptor
-  coverage and guard-condition patterns -> revitlookup_reference.json, feeding two more
-  EdgeCandidate fields alongside the dll_* ones from Stage B (see "Stage C" below)
+  python -m revit_schema_mapper.revitlookup --source-dir <checkout> --tag 2024.0.13
+                                             --out revitlookup_reference_2024.json
+    -> mines lookup-foundation/RevitLookup's own C# source (public, MIT-licensed) for
+       descriptor coverage and guard-condition patterns
+
+  python -m revit_schema_mapper --version 2024 --cross-validate-revitlookup revitlookup_reference_2024.json
+    -> revitlookup_cross_validation_report.json + a new summary.md section, feeding two more
+       EdgeCandidate fields (revitlookup_referenced/revitlookup_requires_document_context)
+       alongside the dll_* ones from Stage B (see "Stage C" below)
 ```
 
 Stage A produces a portable JSON file; Stage B never touches a Windows machine or a real DLL
@@ -372,16 +383,30 @@ empty) when a file references `IDescriptorResolver`/`IDescriptorExtension` but t
 couldn't find/parse the expected method shape — the same "explicit, checkable fact instead of a
 silent assumption" this design's earlier open question called for.
 
-Not yet built: a CLI-driven local-checkout workflow beyond the standalone
+Mining itself is still only reachable via the standalone
 `python -m revit_schema_mapper.revitlookup --source-dir <checkout> --tag <tag> --out <path>`
-entry point (mirrors `reflect_revit_api.ps1`'s own "operate on a local directory" shape) —
-wiring this into `python -m revit_schema_mapper`'s own argument parser is left for later. (Stage
-B's own `--cross-validate-dll` flag, by contrast, *is* now wired into `__main__.py` — see
-"Workflow once built" below.) Also not yet built: anything that actually *combines*
-`revitlookup_reference.json` with `ground_truth_report.json`/`candidate_edges.json` into the
-`revitlookup_referenced`/`revitlookup_requires_document_context` `EdgeCandidate` fields
-`docs/dll_reflection_v0.md`'s Stage B section proposes — this stage only produces the reference
-file itself so far.
+entry point (mirrors `reflect_revit_api.ps1`'s own "operate on a local directory" shape) — not
+wired into `python -m revit_schema_mapper`'s own argument parser, since it needs a local
+RevitLookup checkout at a pinned tag, the same reason Stage A's own reflection script stays a
+separate step rather than something the main pipeline invokes itself.
+
+**Now built**: combining `revitlookup_reference.json` with `candidate_edges.json` into the
+`revitlookup_referenced`/`revitlookup_requires_document_context` `EdgeCandidate` fields this
+section originally only proposed — `ground_truth.cross_validate_revitlookup` (mutates those two
+fields in place, the same pattern Stage B's `cross_validate_dll` already uses for its own
+`dll_*` fields), wired into `__main__.py` as `--cross-validate-revitlookup REFERENCE_PATH`,
+writing `revitlookup_cross_validation_report.json` plus a refreshed summary section. Matching is
+by **short type name only** — `DescriptorMap.cs`'s own `target_type_short_name` is never
+namespace-qualified in RevitLookup's own source, unlike Stage B's manifest (which carries a real
+`full_type_name` and only falls back to short-name matching when it's unambiguous) — a known,
+documented limitation of the source data itself, not something the cross-validation pass can
+resolve on its own. `revitlookup_referenced` is deliberately never set to `False`: a member with
+no corroborating case in RevitLookup's source is exactly as unproven as one that was never
+checked, and setting `False` would risk a downstream consumer misreading absence as evidence
+against the edge. Can run before, after, or without `--cross-validate-dll` — the two never touch
+each other's fields, and neither mutates any node-level field (Stage C only ever adds edge-level
+corroboration, since RevitLookup's descriptor coverage says nothing new about a *type*'s own
+existence that `DescriptorMap.cs`'s own type list wouldn't already say via `descriptor_map`).
 
 ## Workflow once built
 
@@ -398,6 +423,16 @@ file itself so far.
 4. Read the new `summary.md` section — same "distinct sections, a low number in one doesn't
    imply a problem in the others" principle the targeted-validation crawl summary already
    follows for crawler/parser/classifier.
+5. (Optional, Stage C, independent of steps 1-4): on any machine, clone
+   `lookup-foundation/RevitLookup` and check out the tag matching the target Revit version
+   (e.g. `git checkout 2024.0.13`), then run
+   `python -m revit_schema_mapper.revitlookup --source-dir <checkout> --tag 2024.0.13 --out revitlookup_reference_2024.json`.
+6. Run `python -m revit_schema_mapper --version 2024 --cross-validate-revitlookup revitlookup_reference_2024.json`
+   against the same crawl's output dir (`pipeline.run_cross_validate_revitlookup`, wired into
+   `__main__.py`) — reads `candidate_edges.json`, writes
+   `revitlookup_cross_validation_report.json`, updates the candidate file in place with each
+   edge's `revitlookup_*` fields, and refreshes a `summary.md`/`validation_summary.md` section.
+   Can run before, after, or without steps 1-4.
 
 ## Open questions / risks to resolve before implementing
 
@@ -440,6 +475,13 @@ file itself so far.
   fact instead of a silent assumption" principle as the rest of this design. A `descriptors`
   entry with zero `resolved_members` should be distinguishable in the output from "genuinely no
   special-cased members" vs. "the parser didn't recognize this file's shape."
+
+**Now that Stages B and C both exist independently**, a further, still entirely open question is
+how to actually *combine* their two sets of fields (plus the base `edge_confidence`) into a
+single richer signal, rather than leaving them as parallel, uncorrelated annotations forever —
+see `docs/multi_source_corroboration_v0.md` for that design record (source asymmetry, version/
+provenance granularity, pipeline-ordering staleness risk, downstream-consumer shape, and whether
+docs-first is structural or just where the pipeline happened to start).
 
 ## Related project: Fingerprint, and a longer-horizon vision
 

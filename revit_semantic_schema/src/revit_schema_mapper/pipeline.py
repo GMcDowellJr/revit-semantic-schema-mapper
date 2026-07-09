@@ -26,8 +26,9 @@ from . import classify, export
 from .community import DEFAULT_OPENROUTER_MODEL
 from .crawl import ALLOWED_HOST, CrawlConfig, Crawler
 from .graph import GraphBuildResult, apply_communities, build_graph
-from .ground_truth import GroundTruthReport, cross_validate_dll, load_manifest
+from .ground_truth import GroundTruthReport, RevitLookupCrossValidationReport, cross_validate_dll, cross_validate_revitlookup, load_manifest
 from .models import ApiPage, EdgeCandidate, Kind, NodeCandidate
+from .revitlookup import load_revitlookup_reference
 from .parse import (
     extract_member_links,
     find_members_page_link,
@@ -154,6 +155,40 @@ def run_cross_validate_dll(output_dir: Path, manifest_path: Path) -> GroundTruth
     # as run_graph_only's own pair of refresh calls above.
     export.refresh_ground_truth_section_in_file(output_dir / "summary.md", report, section_number=15)
     export.refresh_ground_truth_section_in_file(output_dir / "validation_summary.md", report, section_number=10)
+
+    return report
+
+
+def run_cross_validate_revitlookup(output_dir: Path, reference_path: Path) -> RevitLookupCrossValidationReport:
+    """Stage C of docs/dll_reflection_v0.md: cross-checks an existing run's
+    already-written ``candidate_edges.json`` against ``revitlookup_reference.json``
+    (Stage C's own mining of RevitLookup's public descriptor source -- see
+    ``revitlookup.mine_revitlookup_source``). Like ``run_cross_validate_dll``,
+    this is a separate, explicit, opt-in pass layered on top of an existing
+    crawl -- no crawling, fetching, or live Revit/RevitLookup access of any
+    kind happens here, only reading two JSON files already on disk. Can run
+    before, after, or without ``run_cross_validate_dll`` -- the two never
+    touch each other's fields.
+
+    ``cross_validate_revitlookup`` mutates every edge candidate's
+    ``revitlookup_*`` fields in place (see models.py); those are persisted
+    back to ``candidate_edges.json`` so the annotation survives past this one
+    process, then ``revitlookup_cross_validation_report.json`` and a
+    refreshed summary section are written alongside it. Node candidates are
+    untouched -- Stage C only adds edge-level fields.
+    """
+    edge_candidates = export.read_edge_candidates(output_dir)
+    reference = load_revitlookup_reference(reference_path)
+
+    report = cross_validate_revitlookup(edge_candidates, reference)
+
+    export.write_edge_candidates(output_dir, edge_candidates)
+    export.write_revitlookup_cross_validation_report(output_dir, report)
+    # Try both -- a no-op for whichever summary filename isn't this
+    # directory's kind (full run vs. --targeted-validation), same reasoning
+    # as run_cross_validate_dll's own pair of refresh calls above.
+    export.refresh_revitlookup_section_in_file(output_dir / "summary.md", report, section_number=16)
+    export.refresh_revitlookup_section_in_file(output_dir / "validation_summary.md", report, section_number=11)
 
     return report
 

@@ -24,7 +24,7 @@ Run everything from `revit_semantic_schema/`:
 pip install -e ".[dev]"                 # pytest only; enough to run the whole pipeline
 pip install -e ".[fast]"                # adds requests + beautifulsoup4 (optional speedup)
 
-python -m pytest tests/                 # full test suite (196 tests, fixture HTML only, no network)
+python -m pytest tests/                 # full test suite (204 tests, fixture HTML only, no network)
 python -m pytest tests/test_classify.py -q                       # one file
 python -m pytest tests/test_classify.py::test_room_number_is_not_classified_as_a_relationship  # one test
 python -m pytest tests/ -k "inherited"  # by name substring
@@ -92,11 +92,15 @@ crawl.py     -> parse.py -> classify.py -> graph.py -> community.py -> semantic_
   `semantic_relationship_map.html` view — deliberately lossy in places for readability (see
   `test_classify_api_role_family_ambiguity_is_a_known_tradeoff`), not a replacement for
   `class_role`.
-- **`ground_truth.py`** — Stage B of DLL reflection cross-validation (`docs/dll_reflection_v0.md`):
-  loads a manifest produced by `reflect_revit_api.ps1` (Stage A, runs separately on a
-  Windows+Revit machine) and cross-checks it against candidates, in place, via
-  `--cross-validate-dll`. Purely optional secondary evidence — the docs-crawl pipeline must
-  always work standalone with no Revit install/DLL access.
+- **`ground_truth.py`** — Stages B and C of DLL reflection cross-validation
+  (`docs/dll_reflection_v0.md`): Stage B loads a manifest produced by `reflect_revit_api.ps1`
+  (Stage A, runs separately on a Windows+Revit machine) and cross-checks it against candidates,
+  in place, via `--cross-validate-dll`. Stage C loads a `revitlookup_reference_<version>.json`
+  (produced separately by `revitlookup.py`'s own mining) and cross-checks each edge candidate's
+  `revitlookup_referenced`/`revitlookup_requires_document_context` fields, in place, via
+  `--cross-validate-revitlookup`. Both are purely optional secondary evidence, independent of
+  each other — the docs-crawl pipeline must always work standalone with no Revit install/DLL/
+  RevitLookup access.
 - **`export.py`** — writes every `outputs/revit_<version>/*.json` file, `summary.md` (or
   `validation_summary.md` for a targeted run), `graph.html`, and
   `semantic_relationship_map.html`.
@@ -109,7 +113,9 @@ crawl.py     -> parse.py -> classify.py -> graph.py -> community.py -> semantic_
   codebase uses (tag/`#id`/`.class`/`:first-of-type`, descendant/child combinators) — not a
   general CSS implementation; read its module docstring before adding a new selector shape.
 - **`revitlookup.py`** — parses RevitLookup C# descriptor source (fixtures under
-  `tests/fixtures/revitlookup/`) as another independent evidence source.
+  `tests/fixtures/revitlookup/`) into `revitlookup_reference_<version>.json`, mined separately
+  via `python -m revit_schema_mapper.revitlookup`; `ground_truth.cross_validate_revitlookup`
+  (Stage C) consumes that file.
 
 Every dataclass lives in **`models.py`** and is JSON-round-trippable via `dataclasses.asdict`
 with no dependency on crawl/parse internals — that's what every `outputs/*.json` file actually
@@ -163,6 +169,10 @@ is on disk.
 - `revit_semantic_schema/docs/dll_reflection_v0.md` — design for the optional Stage
   A (`reflect_revit_api.ps1`, PowerShell, runs on Windows+Revit) / Stage B (`ground_truth.py`)
   cross-validation pass.
+- `revit_semantic_schema/docs/multi_source_corroboration_v0.md` — design-only record of open
+  questions for combining Stage B (DLL) and Stage C (RevitLookup) evidence with the base
+  docs-derived confidence, plus downstream-consumer (RDF/Neo4j) and possible-future-ontology
+  considerations. Nothing in it is implemented yet.
 - `revit_semantic_schema/docs/crawl_notes.md` — chronological log of every real-run finding,
   bug, and markup change confirmed so far; long, but the authoritative source for "has this
   actually been verified against the live site or a real Revit install."

@@ -206,6 +206,22 @@ class EdgeCandidate:
     # "not_found" / "signature_mismatch" / "signature_verified_declared" /
     # "signature_verified_inherited" -- always derived, never hand-set.
     dll_verified_status: Optional[str] = None
+    # Set by ground_truth.cross_validate_revitlookup (docs/dll_reflection_v0.md, Stage C) --
+    # a third, independent evidence source, orthogonal to both edge_confidence (docs alone)
+    # and the dll_* fields above (compiled-API signature match). True means this exact member
+    # has a corroborating case in a RevitLookup descriptor's Resolve()/RegisterExtensions
+    # switch (RevitLookup's authors judged it worth hand-written resolution logic) --
+    # deliberately never set to False: RevitLookup doesn't special-case every real member, so
+    # absence here proves nothing about the edge (see revitlookup.py's ResolvedMember
+    # docstring) and must never be read as a negative signal. Stays None when this pass hasn't
+    # run, when source_type has no RevitLookup descriptor at all, or when it does but this
+    # member has no corroborating case.
+    revitlookup_referenced: Optional[bool] = None
+    # Only meaningful when revitlookup_referenced is True: whether that corroborating case's
+    # body references a live-document accessor (RevitApi.Document/.ActiveView, a worksharing
+    # collector, etc.) -- the same "real, but incomplete without a live document" signal
+    # confidence_model_v0.md's needs_runtime_validation describes. None otherwise.
+    revitlookup_requires_document_context: Optional[bool] = None
 
 
 class ConfidenceTier(str, Enum):

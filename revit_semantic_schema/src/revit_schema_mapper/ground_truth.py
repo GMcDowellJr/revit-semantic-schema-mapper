@@ -24,6 +24,7 @@ from pathlib import Path
 from typing import Optional
 
 from .models import EdgeCandidate, NodeCandidate
+from .revitlookup import RevitLookupReference
 
 
 # -- manifest shape (Stage A's output contract) ------------------------------
@@ -553,4 +554,144 @@ def cross_validate_dll(
         type_results=type_results,
         edge_results=edge_results,
         dll_only_types=dll_only_types,
+    )
+
+
+# -- Stage C: cross-checking against RevitLookup's own descriptor source ------
+#
+# See docs/dll_reflection_v0.md's "Stage C" section and revitlookup.py's module docstring for
+# how revitlookup_reference.json is produced. This is a third, independent evidence source,
+# orthogonal to both edge_confidence (docs alone) and Stage B's dll_* fields (compiled-API
+# signature match) -- it can run before, after, or without either of those, and never mutates
+# their fields.
+
+
+@dataclass
+class RevitLookupEdgeResult:
+    source_type: str
+    member_name: str
+    # True only when this exact member has a corroborating case in a RevitLookup descriptor --
+    # never False, matching EdgeCandidate.revitlookup_referenced's own "positive-only signal"
+    # rule (see that field's docstring in models.py). A "not corroborated" edge is distinguished
+    # in this report by descriptor_class being set (RevitLookup does cover source_type, just not
+    # this member) vs. None (RevitLookup has no descriptor for source_type at all) -- but that
+    # distinction is for a human reading ground_truth_report.json's summary, not for the
+    # EdgeCandidate field itself, which stays None either way.
+    referenced: bool
+    requires_document_context: Optional[bool]
+    descriptor_class: Optional[str]
+    name_source: Optional[str]  # "nameof" | "string_literal" | None
+    note: str
+
+
+@dataclass
+class RevitLookupCrossValidationReport:
+    revitlookup_tag: str
+    edge_results: list[RevitLookupEdgeResult]
+    # Short type names (RevitLookup's DescriptorMap.cs never records a full namespace -- see
+    # cross_validate_revitlookup's own docstring) that have at least one descriptor at all,
+    # regardless of section (System/Internal/Media/... sections are included here too, same as
+    # revitlookup.parse_descriptor_map itself -- filtering to "real API types only" already
+    # happened implicitly, upstream, by this report only ever being built from this project's
+    # own docs-derived edge_candidates in the first place).
+    covered_short_type_names: list[str]
+
+
+def cross_validate_revitlookup(
+    edge_candidates: list[EdgeCandidate],
+    reference: RevitLookupReference,
+) -> RevitLookupCrossValidationReport:
+    """Cross-check ``edge_candidates`` against ``reference`` (Stage C's own
+    output, see ``revitlookup.mine_revitlookup_source``), mutating each
+    edge's ``revitlookup_*`` fields in place (see models.py) and returning a
+    ``RevitLookupCrossValidationReport`` with the full per-edge detail for
+    ``revitlookup_cross_validation_report.json``.
+
+    Matching is by **short type name only**: ``DescriptorMap.cs``'s own
+    ``target_type_short_name`` (see ``revitlookup.parse_descriptor_map``) is
+    never namespace-qualified in RevitLookup's own source, unlike Stage B's
+    manifest (which carries a real ``full_type_name`` and lets
+    ``_ManifestTypeResolver`` fall back to short-name matching only when
+    it's unambiguous). There's no equivalent safeguard available here --
+    two crawled types sharing a short name (e.g. ``Room`` vs.
+    ``Architecture.Room``) would both match the same RevitLookup descriptor.
+    A known, documented limitation of the *source* data this stage reads,
+    not something this function can resolve on its own.
+    """
+    descriptors_by_class = {d.descriptor_class: d for d in reference.descriptors}
+    short_name_to_classes: dict[str, list[str]] = {}
+    for entry in reference.descriptor_map:
+        short_name_to_classes.setdefault(entry.target_type_short_name, []).append(entry.descriptor_class)
+
+    edge_results: list[RevitLookupEdgeResult] = []
+
+    for edge in edge_candidates:
+        short_name = edge.source_type.rsplit(".", 1)[-1]
+        descriptor_classes = short_name_to_classes.get(short_name, [])
+        if not descriptor_classes:
+            # RevitLookup has no descriptor for this type at all -- no data, not a negative
+            # signal (see revitlookup.RevitLookupDescriptor's own module-level reasoning).
+            edge.revitlookup_referenced = None
+            edge.revitlookup_requires_document_context = None
+            continue
+
+        matched_member = None
+        matched_descriptor_class: Optional[str] = None
+        for descriptor_class in descriptor_classes:
+            descriptor = descriptors_by_class.get(descriptor_class)
+            if descriptor is None:
+                continue
+            if edge.member_name in descriptor.synthetic_extensions:
+                # Explicitly excluded per revitlookup.RevitLookupDescriptor.synthetic_extensions'
+                # own docstring: a name registered via RegisterExtensions doesn't exist on the
+                # real compiled type at all, so it must never count as corroboration here.
+                continue
+            for resolved in descriptor.resolved_members:
+                if resolved.member_name == edge.member_name:
+                    matched_member = resolved
+                    matched_descriptor_class = descriptor_class
+                    break
+            if matched_member is not None:
+                break
+
+        if matched_member is not None:
+            edge.revitlookup_referenced = True
+            edge.revitlookup_requires_document_context = matched_member.requires_document_context
+            edge_results.append(
+                RevitLookupEdgeResult(
+                    source_type=edge.source_type,
+                    member_name=edge.member_name,
+                    referenced=True,
+                    requires_document_context=matched_member.requires_document_context,
+                    descriptor_class=matched_descriptor_class,
+                    name_source=matched_member.name_source,
+                    note=f"corroborated by RevitLookup's {matched_descriptor_class} ({matched_member.name_source})",
+                )
+            )
+        else:
+            # Type is covered by RevitLookup, but this specific member has no corroborating
+            # case -- EdgeCandidate stays None (positive-only signal), but the report itself
+            # still records the distinction for a human reading the summary.
+            edge.revitlookup_referenced = None
+            edge.revitlookup_requires_document_context = None
+            edge_results.append(
+                RevitLookupEdgeResult(
+                    source_type=edge.source_type,
+                    member_name=edge.member_name,
+                    referenced=False,
+                    requires_document_context=None,
+                    descriptor_class=descriptor_classes[0],
+                    name_source=None,
+                    note=(
+                        f"{short_name} has a RevitLookup descriptor ({descriptor_classes[0]}), but "
+                        f"{edge.member_name} has no corroborating case in it -- RevitLookup doesn't "
+                        "special-case every real member, so this proves nothing about the edge"
+                    ),
+                )
+            )
+
+    return RevitLookupCrossValidationReport(
+        revitlookup_tag=reference.revitlookup_tag,
+        edge_results=edge_results,
+        covered_short_type_names=sorted(short_name_to_classes),
     )
