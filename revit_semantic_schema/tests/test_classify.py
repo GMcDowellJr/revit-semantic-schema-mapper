@@ -500,6 +500,49 @@ def test_workset_id_rule_fires_even_when_worksetid_itself_was_not_crawled():
     assert candidate.edge_confidence is ConfidenceLabel.DIRECT_RETURN_TYPE
 
 
+def test_keyword_rules_fire_in_scoped_crawls_even_when_their_own_target_type_is_uncrawled():
+    """Regression test (PR review finding): the same crawl-dependency bug
+    _TYPED_ID_TARGETS was fixed for also affected any ordinary keyword rule
+    whose target_hint happens to equal the actual return type -- e.g. a
+    scoped/targeted crawl that parses FamilyInstance/ExtensibleStorage.Entity
+    but never crawls Room's/Schema's own type page left known_type_short_names
+    without "Room"/"Schema", so is_direct_db_object was False and these
+    confirmed direct-return relationships fell back to a weak
+    name_only_candidate guess. Generalized fix: a keyword match whose own
+    hardcoded target_hint agrees exactly with the actual return type is
+    self-confirming evidence, independent of known_type_short_names, for
+    any rule -- not just a fixed whitelist."""
+    room_member = _member("Room", "Room", declaring_type="Autodesk.Revit.DB.FamilyInstance")
+    room_candidate = classify_member(room_member, source_type="Autodesk.Revit.DB.FamilyInstance", known_type_short_names={"FamilyInstance"})
+
+    assert room_candidate is not None
+    assert room_candidate.candidate_edge_type is EdgeType.REFERENCES
+    assert room_candidate.candidate_target_type == "Autodesk.Revit.DB.Room"
+    assert room_candidate.edge_confidence is ConfidenceLabel.DIRECT_RETURN_TYPE
+
+    schema_member = _member("Schema", "Schema", declaring_type="Autodesk.Revit.DB.ExtensibleStorage.Entity")
+    schema_candidate = classify_member(schema_member, source_type="Autodesk.Revit.DB.ExtensibleStorage.Entity", known_type_short_names={"Entity"})
+
+    assert schema_candidate is not None
+    assert schema_candidate.candidate_edge_type is EdgeType.REFERENCES
+    assert schema_candidate.candidate_target_type == "Autodesk.Revit.DB.Schema"
+    assert schema_candidate.edge_confidence is ConfidenceLabel.DIRECT_RETURN_TYPE
+
+
+def test_scoped_crawl_fix_does_not_weaken_the_conflict_fallback():
+    """Regression guard: name_match_confirms_return_type must only fire
+    when target_hint exactly equals the actual return type -- a real
+    conflict (e.g. a FilterRule-returning member whose name coincidentally
+    matches the 'Level' keyword) must still fall back to
+    UNKNOWN_DB_OBJECT_REFERENCE, not be waved through by the new check."""
+    member = _member("LevelOfDetailFilterRule", "FilterRule", declaring_type="Autodesk.Revit.DB.Whatever")
+    candidate = classify_member(member, source_type="Autodesk.Revit.DB.Whatever", known_type_short_names={"FilterRule"})
+
+    assert candidate is not None
+    assert candidate.candidate_edge_type is EdgeType.UNKNOWN_DB_OBJECT_REFERENCE
+    assert candidate.candidate_target_type == "Autodesk.Revit.DB.FilterRule"
+
+
 def test_factory_method_produces_no_edge():
     """Regression test: a 'Create*' method constructs a brand-new object --
     it isn't a relationship of source_type, even though it's declared on

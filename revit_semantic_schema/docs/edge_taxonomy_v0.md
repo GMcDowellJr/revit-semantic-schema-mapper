@@ -69,7 +69,14 @@ signal in this order:
    check above entirely. This check runs *ahead of* `is_direct_db_object`, not nested under it --
    it must not depend on `known_type_short_names`/`KNOWN_REFERENCE_TYPES`, since a scoped/targeted
    crawl (`DEFAULT_TARGET_CLASSES`) can parse a member returning `WorksetId` (e.g.
-   `Element.WorksetId`) without also crawling `WorksetId`'s own type page.
+   `Element.WorksetId`) without also crawling `WorksetId`'s own type page. The same
+   crawl-dependency gap affects *any* keyword rule whose `target_hint` happens to equal the
+   actual return type (e.g. the `Room`/`Schema` rules firing on `FamilyInstance.Room`/
+   `Entity.Schema` when a scoped crawl parsed `FamilyInstance`/`Entity` but not `Room`/`Schema`
+   themselves) -- `is_direct_db_object`'s gate also accepts `name_match`'s own `target_hint`
+   agreeing exactly with `bare_return` as sufficient evidence on its own, independent of
+   `known_type_short_names`/`KNOWN_REFERENCE_TYPES`, generalizing the same principle to every
+   keyword rule instead of a fixed whitelist.
 2. **Return type is `ElementId`** → edge type from name-keyword match (confidence
    `elementid_with_strong_name`) or `UNKNOWN_ELEMENTID_REFERENCE` (confidence
    `unknown_reference`) if no keyword matches.

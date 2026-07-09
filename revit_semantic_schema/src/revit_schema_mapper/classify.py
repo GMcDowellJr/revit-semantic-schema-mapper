@@ -449,16 +449,34 @@ def classify_member(member: MemberInfo, source_type: str, known_type_short_names
     # name_only_candidate guess (kept out of graph_core.json's CORE tier)
     # instead of the type-system-backed evidence this rule exists to use.
     is_typed_id = bare_return in _TYPED_ID_TARGETS
+    name_match = _match_name_keyword(member.name)
+
+    # A name-keyword match whose own hardcoded target_hint agrees *exactly*
+    # with the actual (compiler-verified) return type is self-confirming
+    # evidence, independent of whether the crawl happened to also discover
+    # that target's own type page -- the same principle as _TYPED_ID_TARGETS
+    # above, generalized to every keyword rule instead of a fixed whitelist.
+    # Regression case: a scoped/targeted crawl that parses FamilyInstance/
+    # ExtensibleStorage.Entity but never crawls Room's/Schema's own type
+    # page left known_type_short_names without "Room"/"Schema", so
+    # FamilyInstance.Room and Entity.Schema (both real, confirmed
+    # direct-return relationships -- the keyword rule wouldn't exist
+    # without that evidence) fell back to a weak name_only_candidate guess,
+    # kept out of graph_core.json's CORE tier for no good reason.
+    name_match_confirms_return_type = bool(name_match and name_match[1] is not None and name_match[1] == bare_return)
 
     is_direct_db_object = (
         not is_elementid
         and not is_elementid_collection
         and not is_typed_id
         and bare_return not in PRIMITIVE_TYPES
-        and (bare_return in KNOWN_REFERENCE_TYPES or bare_return in known_type_short_names)
+        and (
+            bare_return in KNOWN_REFERENCE_TYPES
+            or bare_return in known_type_short_names
+            or name_match_confirms_return_type
+        )
     )
 
-    name_match = _match_name_keyword(member.name)
     docs_hint = _find_docs_hint(member.summary) or _find_docs_hint(member.remarks)
 
     if not (is_typed_id or is_elementid or is_elementid_collection or is_direct_db_object or is_unresolved_generic_collection or name_match):
