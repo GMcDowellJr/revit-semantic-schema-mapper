@@ -52,6 +52,46 @@ _INLINE_TABLE_CLASS_PAGE_WITH_INHERITED_ROWS = """
 """
 
 
+_INLINE_TABLE_CLASS_PAGE_WITH_OVERLOADED_METHOD_ROW = """
+<html><body>
+<h1 id="PageHeader">RebarSpliceUtils Class</h1>
+<div id="TopicPathClassic"><a href="/2025/ns_db.htm">Autodesk.Revit.DB.Structure</a> Namespace</div>
+<div class="syntax"><pre class="typeSignature">public class RebarSpliceUtils</pre></div>
+<table class="members" id="memberList">
+<tr><th>Icon</th><th>Name</th><th>Description</th></tr>
+<tr data="public;declared;notNetfw;"><td><img></td><td><a href="splicerebar1.htm">SpliceRebar(Document, ElementId, RebarSpliceOptions, Line, ElementId)</a></td><td>Splices two rebars.</td></tr>
+<tr data="public;declared;notNetfw;"><td><img></td><td><a href="width.htm">Width</a></td><td>A plain, non-overloaded property.</td></tr>
+</table>
+</body></html>
+"""
+
+
+def test_parse_type_page_strips_overload_signature_from_inline_member_table():
+    """Regression test for a real Revit 2025 finding: a class page's own
+    inline member table (the lightweight-stub path used when a member's own
+    sub-page wasn't separately crawled) shows an overloaded method's Name
+    cell as Sandcastle's real disambiguation text verbatim, e.g.
+    "SpliceRebar(Document, ElementId, RebarSpliceOptions, Line, ElementId)".
+    Left unstripped, that whole string became MemberInfo.name (and
+    downstream, EdgeCandidate.member_name), which can never match a real
+    manifest member by name -- confirmed as part of Stage B's
+    MEMBER_NOT_FOUND results on that crawl, but the real bug was here,
+    upstream of Stage B. parse_member_page's per-member-sub-page path
+    already strips this via the page's own title; this inline-table path
+    needs the same treatment applied to the cell text instead.
+    """
+    page = parse_type_page(
+        _INLINE_TABLE_CLASS_PAGE_WITH_OVERLOADED_METHOD_ROW,
+        "https://www.revitapidocs.com/2025/class_rebarspliceutils.htm",
+        "2025",
+    )
+    by_name = {m.name: m for m in page.members}
+    assert "SpliceRebar" in by_name
+    assert by_name["SpliceRebar"].kind is MemberKind.METHOD
+    assert "SpliceRebar(" not in by_name
+    assert by_name["Width"].kind is MemberKind.PROPERTY
+
+
 def test_extract_member_links_preserves_inherited_ownership():
     links = extract_member_links(
         _INLINE_TABLE_CLASS_PAGE_WITH_INHERITED_ROWS,
@@ -397,3 +437,37 @@ def test_parse_member_page_overloaded_method_title():
     assert page.kind is Kind.METHOD
     assert page.type_name == "ChangeTypeId"
     assert page.members[0].name == "ChangeTypeId"
+
+
+def test_parse_member_page_constructor_has_no_return_type():
+    """Regression test for a real Revit 2025 finding: a constructor's syntax
+    block ("public AreaTagFilter ()") has nothing between the access
+    modifier and the constructor's own name for _MEMBER_SIG_RE's required
+    <return_type> group to leave empty, so it backtracks into capturing
+    "public" itself as return_type. That garbage return_type then flowed
+    into classify.classify_member and produced a bogus name_only_candidate
+    edge for every constructor in the crawl (98 of them) -- all correctly
+    caught by Stage B as MEMBER_NOT_FOUND, but the real bug was upstream
+    here. A constructor has no return type in C# at all, so return_type
+    must always come out None (which classify_member already treats as
+    "never build an edge").
+    """
+    html = """
+    <html><body>
+    <h4 id="api-title" class="truncate"> AreaTagFilter Constructor </h4>
+    <div id="mainBody">
+    <div class="syntax"><pre class="typeSignature">public AreaTagFilter ()</pre></div>
+    </div>
+    </body></html>
+    """
+    page = parse_member_page(
+        html,
+        "https://www.revitapidocs.com/2025/areatagfilter-constructor.htm",
+        "2025",
+        declaring_type="Autodesk.Revit.DB.AreaTagFilter",
+    )
+    assert page.kind is Kind.CONSTRUCTOR
+    member = page.members[0]
+    assert member.name == "AreaTagFilter"
+    assert member.return_type is None
+    assert any("discarding constructor" in note for note in page.parser_notes)

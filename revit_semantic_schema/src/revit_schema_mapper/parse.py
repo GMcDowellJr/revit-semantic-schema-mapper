@@ -433,17 +433,31 @@ def parse_type_page(html: str, url: str, version: str) -> ApiPage:
             if len(cells) < 2:
                 continue
             name_cell = _member_name_cell(cells)
-            member_name = name_cell.get_text(strip=True) if name_cell is not None else ""
+            cell_text = name_cell.get_text(strip=True) if name_cell is not None else ""
             description = cells[-1].get_text(" ", strip=True)
-            if not member_name:
+            if not cell_text:
                 continue
-            member_kind = MemberKind.METHOD if "(" in member_name else MemberKind.PROPERTY
+            member_kind = MemberKind.METHOD if "(" in cell_text else MemberKind.PROPERTY
+            # An overloaded method's Name cell on a class/struct page's own inline member
+            # table (as opposed to parse_member_page's per-member sub-page, which already
+            # goes through the same helper via its title) shows the real Sandcastle
+            # disambiguation text verbatim, e.g. "SpliceRebar(Document, ElementId,
+            # RebarSpliceOptions, Line, ElementId)" -- confirmed real leak on a Revit 2025
+            # crawl: left unstripped, this becomes both MemberInfo.name and (downstream)
+            # EdgeCandidate.member_name, which then can never match a manifest member by
+            # name in ground_truth.cross_validate_dll (Stage B correctly reported these as
+            # MEMBER_NOT_FOUND, but the real bug was here, upstream of Stage B entirely).
+            # _strip_trailing_overload_signature already handles exactly this shape (and
+            # a non-overloaded method's plain "Foo()" reduces to "Foo" the same way) --
+            # applied to member_kind detection's *input* text above, not its output, since
+            # a property's cell text never has parens to strip in the first place.
+            member_name = _strip_trailing_overload_signature(cell_text)
             members.append(
                 MemberInfo(
                     name=member_name,
                     kind=member_kind,
                     declaring_type=full_type_name,
-                    raw_signature=member_name,
+                    raw_signature=cell_text,
                     summary=description,
                     source_url=url,
                 )
@@ -500,6 +514,25 @@ def parse_member_page(html: str, url: str, version: str, declaring_type: str) ->
         notes.extend(sig_notes)
     else:
         notes.append("no syntax block found; return_type/parameters unavailable")
+
+    if kind is Kind.CONSTRUCTOR:
+        # A constructor has no return type in C# at all -- "public AreaTagFilter ()" has
+        # nothing between the access modifier and the constructor's own name for
+        # _MEMBER_SIG_RE's <return_type> group to correctly leave empty, since that group is
+        # required (one-or-more) and the leading access-modifier group is optional. Confirmed
+        # against a real Revit 2025 crawl: this makes _MEMBER_SIG_RE backtrack into treating
+        # the access modifier itself ("public"/"protected"/...) as return_type for every
+        # constructor page, which then flows into classify.classify_member and produces a
+        # bogus name_only_candidate EdgeCandidate (source_type == member_name, "public" is
+        # obviously not a real Autodesk.Revit.DB type) -- 98 such edges in that crawl, all
+        # later reporting Stage B's MEMBER_NOT_FOUND for the same reason. Discarding
+        # return_type here (not upstream in _parse_member_signature, which has no idea what
+        # kind of page it's parsing) is a fact about the C# language, not a heuristic, and
+        # relies on classify_member's own existing rule that a falsy return_type never
+        # produces an edge.
+        if return_type is not None:
+            notes.append(f"discarding constructor's parsed return_type {return_type!r}: constructors have no return type")
+        return_type = None
 
     member_kind = MemberKind.METHOD if kind is Kind.METHOD or "(" in raw_signature else MemberKind.PROPERTY
 

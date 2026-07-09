@@ -375,9 +375,9 @@ silent assumption" this design's earlier open question called for.
 Not yet built: a CLI-driven local-checkout workflow beyond the standalone
 `python -m revit_schema_mapper.revitlookup --source-dir <checkout> --tag <tag> --out <path>`
 entry point (mirrors `reflect_revit_api.ps1`'s own "operate on a local directory" shape) —
-wiring this into `python -m revit_schema_mapper`'s own argument parser is left for later, the
-same not-yet-integrated state Stage B's own `--cross-validate-dll` flag is still in (see
-"Workflow once built" below). Also not yet built: anything that actually *combines*
+wiring this into `python -m revit_schema_mapper`'s own argument parser is left for later. (Stage
+B's own `--cross-validate-dll` flag, by contrast, *is* now wired into `__main__.py` — see
+"Workflow once built" below.) Also not yet built: anything that actually *combines*
 `revitlookup_reference.json` with `ground_truth_report.json`/`candidate_edges.json` into the
 `revitlookup_referenced`/`revitlookup_requires_document_context` `EdgeCandidate` fields
 `docs/dll_reflection_v0.md`'s Stage B section proposes — this stage only produces the reference
@@ -391,7 +391,10 @@ file itself so far.
    convention as `outputs/revit_<version>/*.json`, per README → "Where the crawl output
    lives").
 3. Run `python -m revit_schema_mapper --version 2024 --cross-validate-dll ground_truth_manifest_2024.json`
-   (new CLI flag, not yet added to `__main__.py`) against an existing crawl's output dir.
+   against an existing crawl's output dir (`pipeline.run_cross_validate_dll`, wired into
+   `__main__.py`) — this reads that dir's `node_type_candidates.json`/`candidate_edges.json`,
+   writes `ground_truth_report.json`, updates both candidate files in place with each
+   candidate's `dll_*` fields, and refreshes a `summary.md`/`validation_summary.md` section.
 4. Read the new `summary.md` section — same "distinct sections, a low number in one doesn't
    imply a problem in the others" principle the targeted-validation crawl summary already
    follows for crawler/parser/classifier.

@@ -26,6 +26,7 @@ from . import classify, export
 from .community import DEFAULT_OPENROUTER_MODEL
 from .crawl import ALLOWED_HOST, CrawlConfig, Crawler
 from .graph import GraphBuildResult, apply_communities, build_graph
+from .ground_truth import GroundTruthReport, cross_validate_dll, load_manifest
 from .models import ApiPage, EdgeCandidate, Kind, NodeCandidate
 from .parse import (
     extract_member_links,
@@ -120,6 +121,41 @@ def run_graph_only(
     export.refresh_graph_section_in_file(output_dir / "validation_summary.md", result, section_number=9)
 
     return result
+
+
+def run_cross_validate_dll(output_dir: Path, manifest_path: Path) -> GroundTruthReport:
+    """Stage B of DLL reflection cross-validation (docs/dll_reflection_v0.md).
+
+    Cross-checks an existing run's already-written ``node_type_candidates.json``/
+    ``candidate_edges.json`` against ``ground_truth_manifest_<version>.json``
+    (Stage A's .NET reflection output, produced separately on a Windows
+    machine with Revit installed -- see ``reflect_revit_api.ps1``). Like
+    ``run_graph_only``, this is a separate, explicit, opt-in pass layered on
+    top of an existing crawl: no crawling, fetching, or live Revit/DLL access
+    of any kind happens here, only reading two JSON files already on disk.
+
+    ``cross_validate_dll`` mutates every candidate's ``dll_*`` fields in
+    place (see models.py); those are persisted back to the same two files so
+    the annotation survives past this one process, then
+    ``ground_truth_report.json`` and a refreshed summary section are written
+    alongside them.
+    """
+    node_candidates = export.read_node_candidates(output_dir)
+    edge_candidates = export.read_edge_candidates(output_dir)
+    manifest = load_manifest(manifest_path)
+
+    report = cross_validate_dll(node_candidates, edge_candidates, manifest)
+
+    export.write_node_candidates(output_dir, node_candidates)
+    export.write_edge_candidates(output_dir, edge_candidates)
+    export.write_ground_truth_report(output_dir, report)
+    # Try both -- a no-op for whichever summary filename isn't this
+    # directory's kind (full run vs. --targeted-validation), same reasoning
+    # as run_graph_only's own pair of refresh calls above.
+    export.refresh_ground_truth_section_in_file(output_dir / "summary.md", report, section_number=15)
+    export.refresh_ground_truth_section_in_file(output_dir / "validation_summary.md", report, section_number=10)
+
+    return report
 
 
 def _crawl_and_parse(
