@@ -566,8 +566,19 @@ def classify_member(member: MemberInfo, source_type: str, known_type_short_names
             return None
         # A method that returns its own declaring type is a fluent/builder
         # method returning `this` for chaining, not referencing another
-        # object of the same type -- see the comment above this block.
-        if bare_return == source_type.rsplit(".", 1)[-1]:
+        # object of the same type -- see the comment above this block. Also
+        # covers a static registry/lookup utility that returns a collection
+        # of its own declaring type (e.g. Schema.ListSchemas() -> IList
+        # <Schema>) -- same "not a relationship of source_type" reasoning,
+        # just wrapped in a collection instead of returned bare. Confirmed
+        # against real docs: Schema.ListSchemas is exactly the case the
+        # Schema keyword rule's own comment already calls out as a
+        # different, static-utility pattern to exclude, but the generic-
+        # collection form slipped through this check because bare_return
+        # for "IList<Schema>" is the whole collection type string, not
+        # "Schema" -- generic_inner_bare (computed above, before this
+        # block) is what actually holds "Schema" here.
+        if bare_return == source_type.rsplit(".", 1)[-1] or generic_inner_bare == source_type.rsplit(".", 1)[-1]:
             return None
 
     # Checked ahead of is_direct_db_object, not nested under it: a typed ID

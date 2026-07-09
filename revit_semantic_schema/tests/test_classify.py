@@ -710,6 +710,24 @@ def test_self_returning_method_produces_no_edge_regardless_of_name():
         assert candidate is None, f"{name} should not produce an edge"
 
 
+def test_collection_of_declaring_type_self_return_produces_no_edge():
+    """Regression test (Codex review): the self-returning-method suppression
+    above only compared bare_return (the whole collection type string, e.g.
+    'IList<Schema>') against source_type's short name, so a static registry/
+    lookup utility that returns a *collection* of its own declaring type
+    slipped through as a bogus self-referencing edge. Real docs example:
+    Schema.ListSchemas() -> IList<Schema> (a static utility method listing
+    all registered schemas), which the Schema keyword rule's own comment
+    already calls out as a different, static-utility pattern that should
+    not produce a Schema -> Schema relationship."""
+    member = _method_member("ListSchemas", "IList<Schema>", declaring_type="Autodesk.Revit.DB.ExtensibleStorage.Schema")
+    candidate = classify_member(
+        member, source_type="Autodesk.Revit.DB.ExtensibleStorage.Schema", known_type_short_names={"Schema"}
+    )
+
+    assert candidate is None
+
+
 def test_link_load_result_is_treated_as_a_value_object():
     """LinkLoadResult describes the outcome of a link load/reload operation
     -- an operation-status object, not a BIM relationship. Evidence, stable
