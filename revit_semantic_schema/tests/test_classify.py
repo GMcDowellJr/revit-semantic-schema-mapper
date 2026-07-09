@@ -802,6 +802,35 @@ def test_sketch_suffix_is_classified_as_depends_on():
         assert candidate.candidate_target_type == "Autodesk.Revit.DB.Sketch"
 
 
+def test_sketch_id_is_classified_as_depends_on():
+    """Regression test (Codex review): ElementId-returning properties named
+    'SketchId' (e.g. Toposolid.SketchId/FabricSheet.SketchId) are the same
+    real relationship as the direct-object 'Sketch$' rule above, just
+    returned via ElementId instead -- the original rule missed this because
+    the member name ends in 'Id', not 'Sketch'."""
+    member = _member("SketchId", "ElementId", declaring_type="Autodesk.Revit.DB.Toposolid")
+    candidate = classify_member(member, source_type="Autodesk.Revit.DB.Toposolid", known_type_short_names=set())
+
+    assert candidate is not None
+    assert candidate.candidate_edge_type is EdgeType.DEPENDS_ON
+    assert candidate.edge_confidence is ConfidenceLabel.ELEMENTID_WITH_STRONG_NAME
+    assert candidate.candidate_target_type == "Autodesk.Revit.DB.Sketch"
+
+
+def test_sketch_plane_id_is_not_matched_by_the_sketch_id_rule():
+    """Regression guard: the optional 'Id' suffix added to the 'Sketch$'
+    rule for SketchId must not also swallow SketchPlaneId --
+    'SketchPlaneId' ends in 'PlaneId', not 'SketchId', so it stays
+    unmatched by both Sketch rules (same honest-unknown fallback as
+    before this fix, not a regression this fix needs to solve)."""
+    member = _member("SketchPlaneId", "ElementId", declaring_type="Autodesk.Revit.DB.Toposolid")
+    candidate = classify_member(member, source_type="Autodesk.Revit.DB.Toposolid", known_type_short_names=set())
+
+    assert candidate is not None
+    assert candidate.candidate_edge_type is EdgeType.UNKNOWN_ELEMENTID_REFERENCE
+    assert candidate.candidate_target_type is None
+
+
 def test_sketch_plane_exact_match_is_classified_as_references_not_depends_on():
     """Evidence from a real 2024 crawl: 4 edges across 4 distinct source
     types (CurveByPoints.SketchPlane, CurveElement.SketchPlane,

@@ -315,8 +315,12 @@ _NAME_KEYWORD_RULES: list[tuple[re.Pattern[str], EdgeType, str | None]] = [
     # ViewDisplaySketchyLines graphics-style enum, nothing to do with
     # geometry sketches). Evidence from a real 2024 crawl: 10 edges, 5
     # distinct source types (Blend, Extrusion, Revolution, Sweep,
-    # SweptBlend), zero counterexamples.
-    (re.compile(r"Sketch$", re.IGNORECASE), EdgeType.DEPENDS_ON, "Sketch"),
+    # SweptBlend), zero counterexamples. The optional "Id" suffix covers the
+    # ElementId-returning form of the same relationship (e.g.
+    # Toposolid.SketchId/FabricSheet.SketchId) -- doesn't collide with the
+    # SketchPlane rule above since "SketchPlaneId" ends in "PlaneId", not
+    # "SketchId" ('SketchPlaneId'.endswith('SketchId') is False).
+    (re.compile(r"Sketch(Id)?$", re.IGNORECASE), EdgeType.DEPENDS_ON, "Sketch"),
     # "TypeId" added after the original "Type"/"GetTypeId" pair turned out to
     # miss the dominant real naming convention entirely: the same crawl's
     # UNKNOWN_ELEMENTID_REFERENCE "Type" cluster (9 edges, 9 distinct source
