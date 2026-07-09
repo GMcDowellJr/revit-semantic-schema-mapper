@@ -110,6 +110,24 @@ def load_manifest(path: Path) -> GroundTruthManifest:
     )
 
 
+def _dotted(full_type_name: str) -> str:
+    """.NET reflection's own ``Type.FullName`` spells a nested class with
+    ``+`` (``Outer+Inner``) -- confirmed real shape in a live Revit 2025
+    manifest (``Autodesk.Revit.DB.BuiltInFailures+AlignmentFailures`` and
+    171 similar entries, plus a handful of non-BuiltInFailures nested types
+    like ``SpecTypeId.Boolean``). The docs-derived crawl side (``ApiPage``/
+    ``NodeCandidate``/``EdgeCandidate.source_type``, and any docs-derived
+    return/parameter type string ``normalize_type_name`` below sees) always
+    uses ``.`` instead, matching how Sandcastle itself renders a nested
+    type's name on revitapidocs.com. Both sides must be compared in the same
+    form -- used both by ``_ManifestTypeResolver`` (type resolution) and by
+    ``normalize_type_name`` (signature comparison) below, since a member's
+    return/parameter type can itself be a nested type, not just its
+    declaring type.
+    """
+    return full_type_name.replace("+", ".")
+
+
 # -- signature normalization --------------------------------------------------
 #
 # Docs-scraped and reflection-derived type-name strings are never
@@ -210,6 +228,17 @@ def normalize_type_name(raw: Optional[str]) -> str:
     # Deliberately only around "<"/">", not a blanket whitespace strip: an out/ref parameter's
     # own space ("out ModelCurveArray") is meaningful and must survive this step.
     s = _ANGLE_BRACKET_SPACE_RE.sub(lambda m: m.group(1), s)
+    # Same CLR nested-type separator fix as _dotted()/_ManifestTypeResolver above (see that
+    # docstring), applied here too: a member whose return/parameter type is itself a nested
+    # Revit type reflects as "Outer+Inner" (e.g. "Autodesk.Revit.DB.SpecTypeId+Boolean"), while
+    # the docs side always uses "Outer.Inner" ("Autodesk.Revit.DB.SpecTypeId.Boolean"). Without
+    # this, only the docs form's leading namespace gets stripped by _NAMESPACE_SEGMENT_RE below
+    # (which never matches across a "+"), leaving "SpecTypeId+Boolean" on the reflection side vs.
+    # "Boolean" on the docs side -- a false SIGNATURE_MISMATCH on every edge involving a nested
+    # type, not just the type-resolution false negatives _ManifestTypeResolver already fixed.
+    # Must run before namespace reduction so the now-dotted string reduces the same way on
+    # both sides.
+    s = _dotted(s)
     # Reduce every dotted, namespace-qualified identifier to its short name
     # -- the same short-name bridge already used for type/target resolution
     # elsewhere in this project (graph._Resolver), applied here to signature
@@ -246,21 +275,6 @@ def normalize_type_name(raw: Optional[str]) -> str:
 
 
 # -- type resolution (mirrors graph._Resolver's exact/short-name algorithm) --
-
-
-def _dotted(full_type_name: str) -> str:
-    """.NET reflection's own ``Type.FullName`` spells a nested class with
-    ``+`` (``Outer+Inner``) -- confirmed real shape in a live Revit 2025
-    manifest (``Autodesk.Revit.DB.BuiltInFailures+AlignmentFailures`` and
-    171 similar entries, plus a handful of non-BuiltInFailures nested types
-    like ``SpecTypeId.Boolean``). The docs-derived crawl side (``ApiPage``/
-    ``NodeCandidate``/``EdgeCandidate.source_type``) always uses ``.``
-    instead, matching how Sandcastle itself renders a nested type's name on
-    revitapidocs.com. Both sides must be compared in the same form, or every
-    nested manifest type falsely reports DOC_ONLY/dll_only despite actually
-    being present on both sides.
-    """
-    return full_type_name.replace("+", ".")
 
 
 class _ManifestTypeResolver:

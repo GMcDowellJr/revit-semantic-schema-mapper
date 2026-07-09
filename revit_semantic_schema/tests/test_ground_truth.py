@@ -133,6 +133,13 @@ def _edge(
         # pass-through of the existing namespace-reduction logic, not new special-casing.
         ("out Autodesk.Revit.DB.ModelCurveArray", "out ModelCurveArray"),
         ("out ModelCurveArray", "out ModelCurveArray"),
+        # A nested type as a return/parameter type (not just as a declaring type, which
+        # _ManifestTypeResolver already handles) -- reflection's Type.ToString()/FullName
+        # spells this "Outer+Inner", the docs side always "Outer.Inner". Both must normalize
+        # to the same short name, or every member returning/accepting a nested type (e.g.
+        # Autodesk.Revit.DB.SpecTypeId.Boolean) falsely reports SIGNATURE_MISMATCH.
+        ("Autodesk.Revit.DB.SpecTypeId+Boolean", "Boolean"),
+        ("Autodesk.Revit.DB.SpecTypeId.Boolean", "Boolean"),
     ],
 )
 def test_normalize_type_name(raw, expected):
