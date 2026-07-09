@@ -111,6 +111,7 @@ PRIMITIVE_TYPES = {
     "GeometryObject",
     "Face",
     "CurveArrArray",
+    "CurveArray",  # legacy pre-CurveLoop geometry container, same category
     "Polyloop",
 }
 
@@ -382,7 +383,29 @@ def classify_member(member: MemberInfo, source_type: str, known_type_short_names
     parser_notes: list[str] = []
 
     if is_direct_db_object:
-        edge_type = name_match[0] if name_match else EdgeType.UNKNOWN_DB_OBJECT_REFERENCE
+        # A name-keyword match whose own target_hint names a *different*
+        # concrete type than what this member actually, verifiably returns
+        # is a coincidental name collision, not real relationship evidence
+        # -- e.g. a BuiltInFailures.* field matching the "Level" keyword
+        # while actually returning FailureDefinitionId. direct_return_type
+        # is documented (docs/confidence_model_v0.md) as "the strongest
+        # static signal available from docs alone: the compiler itself
+        # guarantees the relationship's target type" -- that guarantee is
+        # exactly what a conflicting target_hint contradicts, so the
+        # (weaker, heuristic) name match loses and this falls back to the
+        # honest unknown bucket instead of asserting a type-incoherent
+        # edge_type/target_type pair. No conflict (target_hint is None, or
+        # equals bare_return, or there's no name_match at all) keeps the
+        # existing behavior unchanged.
+        if name_match and name_match[1] is not None and name_match[1] != bare_return:
+            edge_type = EdgeType.UNKNOWN_DB_OBJECT_REFERENCE
+            evidence.append(
+                f"member name '{member.name}' matches keyword pattern /{name_match[2]}/ implying target "
+                f"'{name_match[1]}', but the actual return type '{bare_return}' conflicts -- treating the "
+                "name match as a coincidental collision rather than relationship evidence"
+            )
+        else:
+            edge_type = name_match[0] if name_match else EdgeType.UNKNOWN_DB_OBJECT_REFERENCE
         candidate_target_type = bare_return
         confidence = ConfidenceLabel.DIRECT_RETURN_TYPE
         evidence.append(f"return type '{return_type}' directly names a Revit DB object type")

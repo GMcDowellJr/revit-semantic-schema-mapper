@@ -384,3 +384,61 @@ def test_bare_scalar_primitive_still_allows_name_only_candidate():
 
     assert candidate is not None
     assert candidate.edge_confidence is ConfidenceLabel.NAME_ONLY_CANDIDATE
+
+
+def test_curve_array_is_treated_as_a_value_object():
+    """CurveArray is the legacy pre-CurveLoop geometry container -- same
+    'value type, not reference-bearing' category as the already-demoted
+    Curve/CurveLoop/CurveArrArray."""
+    member = _member("GetProfile", "CurveArray", declaring_type="Autodesk.Revit.DB.Element")
+    candidate = classify_member(member, source_type="Autodesk.Revit.DB.Element", known_type_short_names={"CurveArray"})
+
+    assert candidate is None
+
+
+def test_direct_return_type_with_conflicting_name_keyword_falls_back_to_unknown():
+    """Regression test: a real (non-demoted) DB object type whose member
+    name coincidentally matches a keyword implying a *different* concrete
+    target must not produce a type-incoherent edge (e.g. an ASSIGNED_TO_LEVEL
+    edge whose target is actually FilterRule, not Level). direct_return_type
+    is documented as the strongest static signal available -- the compiler
+    guarantees the actual return type -- so a conflicting name-based guess
+    must lose and fall back to the honest UNKNOWN_DB_OBJECT_REFERENCE bucket
+    instead. This was silently producing wrong specific edges before: a real
+    2024 crawl's ASSIGNED_TO_LEVEL/HOSTED_BY/USES_MATERIAL/etc. counts each
+    dropped 20-70% once this fallback was added, meaning a meaningful
+    fraction of those "confident" buckets were actually this kind of
+    coincidental name collision."""
+    member = _member("LevelOfDetailFilterRule", "FilterRule", declaring_type="Autodesk.Revit.DB.Whatever")
+    candidate = classify_member(member, source_type="Autodesk.Revit.DB.Whatever", known_type_short_names={"FilterRule"})
+
+    assert candidate is not None
+    assert candidate.candidate_edge_type is EdgeType.UNKNOWN_DB_OBJECT_REFERENCE
+    assert candidate.candidate_target_type == "Autodesk.Revit.DB.FilterRule"
+    assert candidate.edge_confidence is ConfidenceLabel.DIRECT_RETURN_TYPE
+
+
+def test_direct_return_type_with_no_target_hint_keyword_is_unaffected():
+    """A name-keyword match whose target_hint is None (a relationship
+    category without one fixed target type, e.g. HOSTED_BY/TAGS_ELEMENT/
+    MEMBER_OF_GROUP/DEPENDS_ON) has nothing to conflict with -- the actual
+    return type is a perfectly valid target for that category, and this
+    case must keep working exactly as before."""
+    member = _member("GetHostedElement", "Wall", declaring_type="Autodesk.Revit.DB.Whatever")
+    candidate = classify_member(member, source_type="Autodesk.Revit.DB.Whatever", known_type_short_names={"Wall"})
+
+    assert candidate is not None
+    assert candidate.candidate_edge_type is EdgeType.HOSTED_BY
+    assert candidate.candidate_target_type == "Autodesk.Revit.DB.Wall"
+
+
+def test_direct_return_type_with_matching_target_hint_is_unaffected():
+    """When the name-matched target_hint and the actual return type agree
+    (the common, intended case -- e.g. FamilyInstance.Symbol -> FamilySymbol),
+    behavior must be unchanged."""
+    member = _member("Symbol", "FamilySymbol", declaring_type="Autodesk.Revit.DB.FamilyInstance")
+    candidate = classify_member(member, source_type="Autodesk.Revit.DB.FamilyInstance", known_type_short_names={"FamilySymbol"})
+
+    assert candidate is not None
+    assert candidate.candidate_edge_type is EdgeType.INSTANCE_OF
+    assert candidate.candidate_target_type == "Autodesk.Revit.DB.FamilySymbol"

@@ -39,7 +39,13 @@ signal in this order:
 
 1. **Return type is itself a Revit DB object type** (not `ElementId`, not a primitive) →
    `direct_return_type` confidence; edge type comes from a name-keyword match if any, else
-   `UNKNOWN_DB_OBJECT_REFERENCE`.
+   `UNKNOWN_DB_OBJECT_REFERENCE`. If a name-keyword match's own target type disagrees with the
+   actual (compiler-verified) return type -- a coincidental name collision, e.g. a
+   `BuiltInFailures.*` field matching the `Level` keyword while actually returning
+   `FailureDefinitionId` -- the match is discarded and this falls back to
+   `UNKNOWN_DB_OBJECT_REFERENCE` rather than asserting a type-incoherent edge. Confirmed against
+   a real 2024 crawl: several previously-populous relationship buckets (`ASSIGNED_TO_LEVEL`,
+   `HOSTED_BY`, `USES_MATERIAL`, ...) each dropped 20-70% once this fallback was added.
 2. **Return type is `ElementId`** → edge type from name-keyword match (confidence
    `elementid_with_strong_name`) or `UNKNOWN_ELEMENTID_REFERENCE` (confidence
    `unknown_reference`) if no keyword matches.
