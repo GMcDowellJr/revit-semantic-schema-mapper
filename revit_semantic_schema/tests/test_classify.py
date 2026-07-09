@@ -530,3 +530,25 @@ def test_self_referential_property_is_not_treated_as_a_fluent_setter():
 
     assert candidate is not None
     assert candidate.candidate_edge_type is EdgeType.MEMBER_OF_GROUP
+
+
+def test_room_keyword_is_classified_as_references():
+    """Evidence from a real 2024 crawl: 7 edges across 4 distinct source
+    types (FamilyInstance.Room/.FromRoom/.ToRoom, Document.GetRoomAtPoint),
+    3 of 7 independently corroborated by RevitLookup, zero apparent
+    counterexamples -- same evidence shape as the existing Document/ViewId
+    REFERENCES rules."""
+    for name in ("Room", "FromRoom", "ToRoom"):
+        member = _member(name, "Room", declaring_type="Autodesk.Revit.DB.FamilyInstance")
+        candidate = classify_member(member, source_type="Autodesk.Revit.DB.FamilyInstance", known_type_short_names={"Room"})
+
+        assert candidate is not None, f"{name} should produce an edge"
+        assert candidate.candidate_edge_type is EdgeType.REFERENCES
+        assert candidate.candidate_target_type == "Autodesk.Revit.DB.Room"
+
+    method_member = _method_member("GetRoomAtPoint", "Room", declaring_type="Autodesk.Revit.DB.Document")
+    method_candidate = classify_member(method_member, source_type="Autodesk.Revit.DB.Document", known_type_short_names={"Room"})
+
+    assert method_candidate is not None
+    assert method_candidate.candidate_edge_type is EdgeType.REFERENCES
+    assert method_candidate.candidate_target_type == "Autodesk.Revit.DB.Room"

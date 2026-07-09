@@ -211,6 +211,12 @@ _NAME_KEYWORD_RULES: list[tuple[re.Pattern[str], EdgeType, str | None]] = [
     # ElevationMarker.GetViewId), zero counterexamples -- same evidence shape
     # as the Document/GetDocument rule above.
     (re.compile(r"^(Get)?ViewId$", re.IGNORECASE), EdgeType.REFERENCES, "View"),
+    # Evidence from a real 2024 crawl's unknown_pareto.py breakdown: 7 edges
+    # across 4 distinct source types (FamilyInstance.Room/.FromRoom/.ToRoom,
+    # Document.GetRoomAtPoint), 3 of 7 independently corroborated by
+    # RevitLookup, zero apparent counterexamples -- same evidence shape as
+    # the Document/ViewId rules above.
+    (re.compile(r"Room", re.IGNORECASE), EdgeType.REFERENCES, "Room"),
     # "TypeId" added after the original "Type"/"GetTypeId" pair turned out to
     # miss the dominant real naming convention entirely: the same crawl's
     # UNKNOWN_ELEMENTID_REFERENCE "Type" cluster (9 edges, 9 distinct source
