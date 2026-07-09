@@ -77,9 +77,18 @@ signal in this order:
    agreeing exactly with `bare_return` as sufficient evidence on its own, independent of
    `known_type_short_names`/`KNOWN_REFERENCE_TYPES`, generalizing the same principle to every
    keyword rule instead of a fixed whitelist.
-2. **Return type is `ElementId`** → edge type from name-keyword match (confidence
-   `elementid_with_strong_name`) or `UNKNOWN_ELEMENTID_REFERENCE` (confidence
-   `unknown_reference`) if no keyword matches.
+2. **Return type is `ElementId` or `LinkElementId`** (`_ELEMENTID_LIKE_TYPES`) → edge type from
+   name-keyword match (confidence `elementid_with_strong_name`) or `UNKNOWN_ELEMENTID_REFERENCE`
+   (confidence `unknown_reference`) if no keyword matches. `LinkElementId` is a general-purpose ID
+   wrapper -- the same structural role as bare `ElementId`, used wherever a reference might cross
+   into a linked document -- not a fixed-target typed ID like `WorksetId` (its
+   `GetRodAttachedElementId`/`NumberedElementId`/`GetSourceElementIds` siblings have different
+   real targets, confirmed by reading their actual docs prose). Confirmed real case:
+   `NumberSystem.PlacementLevelId` returns `LinkElementId` and its docs literally say "The id of
+   the base level of stairs..." -- a real `ASSIGNED_TO_LEVEL` relationship that rule 1's
+   target_hint-vs-return-type conflict check was incorrectly rejecting, since that check assumes
+   the return type itself should equal the target (right for a real DB object, wrong for an ID
+   wrapper whose own type name is never going to equal any target name).
 3. **Return type is a collection of `ElementId`** → analogous to (2), with
    `elementid_collection_with_strong_name` / `RETURNS_ELEMENT_IDS`.
 4. **Return type is a generic collection whose element type isn't statically confirmed**

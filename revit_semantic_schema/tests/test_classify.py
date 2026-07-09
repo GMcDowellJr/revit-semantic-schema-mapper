@@ -753,3 +753,54 @@ def test_get_sketchy_lines_is_not_matched_by_either_sketch_rule():
     assert candidate is not None
     assert candidate.candidate_edge_type is EdgeType.UNKNOWN_DB_OBJECT_REFERENCE
     assert candidate.candidate_target_type == "Autodesk.Revit.DB.ViewDisplaySketchyLines"
+
+
+def test_link_element_id_with_strong_name_uses_elementid_treatment():
+    """Regression test: LinkElementId is a general-purpose ID wrapper, the
+    same structural role as bare ElementId (Revit uses it wherever a
+    reference might cross into a linked document) -- not a fixed-target
+    typed ID like WorksetId, since its siblings
+    (GetRodAttachedElementId/NumberedElementId/GetSourceElementIds) have
+    different real targets. Evidence: NumberSystem.PlacementLevelId returns
+    LinkElementId and its docs literally say "The id of the base level of
+    stairs..." -- a real ASSIGNED_TO_LEVEL relationship that the
+    direct-return-object path's target_hint-vs-return-type conflict check
+    was incorrectly rejecting (LinkElementId can never equal a target
+    name). Must get elementid_with_strong_name treatment, the same as bare
+    ElementId, not fall back to the direct-object conflict check."""
+    member = _member("PlacementLevelId", "LinkElementId", declaring_type="Autodesk.Revit.DB.NumberSystem")
+    candidate = classify_member(member, source_type="Autodesk.Revit.DB.NumberSystem", known_type_short_names={"LinkElementId"})
+
+    assert candidate is not None
+    assert candidate.candidate_edge_type is EdgeType.ASSIGNED_TO_LEVEL
+    assert candidate.candidate_target_type == "Autodesk.Revit.DB.Level"
+    assert candidate.edge_confidence is ConfidenceLabel.ELEMENTID_WITH_STRONG_NAME
+
+
+def test_link_element_id_with_no_name_hint_is_unknown_elementid_reference():
+    """Real LinkElementId cluster members whose names don't match any
+    keyword (Part.GetSourceElementIds's siblings NumberedElementId,
+    GetRodAttachedElementId -- confirmed heterogeneous by reading their
+    actual docs prose, deliberately left unmapped) must still fall back to
+    UNKNOWN_ELEMENTID_REFERENCE, exactly like a bare unmatched ElementId
+    does."""
+    member = _member("NumberedElementId", "LinkElementId", declaring_type="Autodesk.Revit.DB.NumberSystem")
+    candidate = classify_member(member, source_type="Autodesk.Revit.DB.NumberSystem", known_type_short_names={"LinkElementId"})
+
+    assert candidate is not None
+    assert candidate.candidate_edge_type is EdgeType.UNKNOWN_ELEMENTID_REFERENCE
+    assert candidate.candidate_target_type is None
+
+
+def test_collection_of_link_element_id_uses_elementid_collection_treatment():
+    """Part.GetSourceElementIds returns ICollection<LinkElementId> -- must
+    get the same elementid-collection treatment as ICollection<ElementId>
+    (RETURNS_ELEMENT_IDS when no name hint matches, as here), not fall
+    through to the unresolved-generic-collection/needs_runtime_validation
+    path."""
+    member = _method_member("GetSourceElementIds", "ICollection<LinkElementId>", declaring_type="Autodesk.Revit.DB.Part")
+    candidate = classify_member(member, source_type="Autodesk.Revit.DB.Part", known_type_short_names={"LinkElementId"})
+
+    assert candidate is not None
+    assert candidate.candidate_edge_type is EdgeType.RETURNS_ELEMENT_IDS
+    assert candidate.edge_confidence is ConfidenceLabel.UNKNOWN_REFERENCE

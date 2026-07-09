@@ -206,8 +206,24 @@ _FACTORY_METHOD_NAME_RE = re.compile(r"^Create(?!d)")
 # reference) stays unaffected -- see
 # test_self_referential_property_is_not_treated_as_a_fluent_setter.
 
+# LinkElementId is a general-purpose ID wrapper, structurally the same role
+# as bare ElementId -- Revit uses it wherever a reference might cross into a
+# linked document -- not a fixed-target typed ID like WorksetId (its
+# GetRodAttachedElementId/NumberedElementId/GetSourceElementIds siblings
+# have different real targets, confirmed by reading their actual docs
+# prose). Evidence: NumberSystem.PlacementLevelId returns LinkElementId and
+# its docs literally say "The id of the base level of stairs..." -- a real
+# ASSIGNED_TO_LEVEL relationship that the direct-return-object path's
+# target_hint-vs-return-type conflict check was incorrectly rejecting,
+# because that check assumes the return type itself should equal the
+# target (right for a real DB object, wrong for an ID wrapper whose own
+# type name is never going to equal any target name). Trusting the
+# keyword-matched name here (elementid_with_strong_name), the same way
+# bare ElementId already works, is the correct treatment.
+_ELEMENTID_LIKE_TYPES = {"ElementId", "LinkElementId"}
+
 _ELEMENTID_COLLECTION_RE = re.compile(
-    r"^(?:ICollection|IList|ISet|IEnumerable|List|HashSet)\s*<\s*ElementId\s*>$"
+    r"^(?:ICollection|IList|ISet|IEnumerable|List|HashSet)\s*<\s*(?:ElementId|LinkElementId)\s*>$"
 )
 _GENERIC_ELEMENTID_COLLECTION_RE = re.compile(
     r"^(?:ICollection|IList|ISet|IEnumerable|List|HashSet)\s*<\s*([\w.]+)\s*>$"
@@ -441,7 +457,7 @@ def classify_member(member: MemberInfo, source_type: str, known_type_short_names
         return None
     return_type = member.return_type.strip()
 
-    is_elementid = return_type == "ElementId"
+    is_elementid = return_type in _ELEMENTID_LIKE_TYPES
     collection_match = _ELEMENTID_COLLECTION_RE.match(return_type)
     is_elementid_collection = bool(collection_match)
     generic_match = _GENERIC_ELEMENTID_COLLECTION_RE.match(return_type)
@@ -569,7 +585,7 @@ def classify_member(member: MemberInfo, source_type: str, known_type_short_names
             edge_type = EdgeType.UNKNOWN_ELEMENTID_REFERENCE
             confidence = ConfidenceLabel.UNKNOWN_REFERENCE
             candidate_target_type = None
-            evidence.append("return type is ElementId but member name gives no strong hint of the target type")
+            evidence.append(f"return type is {return_type!r}, an ID wrapper, but member name gives no strong hint of the target type")
     elif is_elementid_collection:
         if name_match:
             edge_type, target_hint, pattern = name_match
@@ -580,7 +596,7 @@ def classify_member(member: MemberInfo, source_type: str, known_type_short_names
             edge_type = EdgeType.RETURNS_ELEMENT_IDS
             confidence = ConfidenceLabel.UNKNOWN_REFERENCE
             candidate_target_type = None
-            evidence.append(f"return type '{return_type}' is a collection of ElementId with no strong name hint")
+            evidence.append(f"return type '{return_type}' is a collection of ID wrappers with no strong name hint")
     elif is_unresolved_generic_collection:
         edge_type = name_match[0] if name_match else EdgeType.UNKNOWN_DB_OBJECT_REFERENCE
         confidence = ConfidenceLabel.NEEDS_RUNTIME_VALIDATION
