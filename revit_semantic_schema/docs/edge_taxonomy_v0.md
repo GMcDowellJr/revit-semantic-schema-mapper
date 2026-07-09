@@ -37,6 +37,18 @@ at the evidence more closely first, not to guess.
 For a given property/method, `classify.classify_member` picks the most specific applicable
 signal in this order:
 
+0. **Two "not a relationship at all" shapes are suppressed before anything else runs**, both
+   `MemberKind.METHOD`-only: a **factory method** (name matches `^Create(?!d)` -- the negative
+   lookahead excludes `Created*`, a real past-tense property convention like
+   `Element.CreatedPhaseId` that the `Phase` keyword rule legitimately matches) constructs a
+   brand-new object and says nothing about a relationship *of* `source_type`; a **fluent/builder
+   setter** (name matches `^Set`, return type equals `source_type` itself) returns `this` for
+   chaining, not a reference to another object of the same type. Both produce no candidate at
+   all. Evidence from a real 2024 crawl:
+   `ParameterFilterRuleFactory.CreateBeginsWithRule -> FilterRule`,
+   `ConnectorElement.CreateCableTrayConnector -> ConnectorElement`,
+   `OverrideGraphicSettings.SetCutBackgroundPatternColor -> OverrideGraphicSettings` (and four
+   `Set*` siblings on the same type).
 1. **Return type is itself a Revit DB object type** (not `ElementId`, not a primitive) →
    `direct_return_type` confidence; edge type comes from a name-keyword match if any, else
    `UNKNOWN_DB_OBJECT_REFERENCE`. If a name-keyword match's own target type disagrees with the
@@ -46,6 +58,10 @@ signal in this order:
    `UNKNOWN_DB_OBJECT_REFERENCE` rather than asserting a type-incoherent edge. Confirmed against
    a real 2024 crawl: several previously-populous relationship buckets (`ASSIGNED_TO_LEVEL`,
    `HOSTED_BY`, `USES_MATERIAL`, ...) each dropped 20-70% once this fallback was added.
+   `_TYPED_ID_TARGETS` (currently just `WorksetId -> Workset`/`OWNED_BY_WORKSET`) is the deliberate
+   opposite exception: a handful of typed identifier structs (unlike bare `ElementId`) name their
+   own target through the type system alone, no member name needed, so they bypass the conflict
+   check above entirely.
 2. **Return type is `ElementId`** → edge type from name-keyword match (confidence
    `elementid_with_strong_name`) or `UNKNOWN_ELEMENTID_REFERENCE` (confidence
    `unknown_reference`) if no keyword matches.

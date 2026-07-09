@@ -442,3 +442,91 @@ def test_direct_return_type_with_matching_target_hint_is_unaffected():
     assert candidate is not None
     assert candidate.candidate_edge_type is EdgeType.INSTANCE_OF
     assert candidate.candidate_target_type == "Autodesk.Revit.DB.FamilySymbol"
+
+
+def _method_member(name, return_type, declaring_type="Autodesk.Revit.DB.Whatever"):
+    return MemberInfo(
+        name=name,
+        kind=MemberKind.METHOD,
+        declaring_type=declaring_type,
+        raw_signature=f"public {return_type} {name}()",
+        return_type=return_type,
+        source_url="https://www.revitapidocs.com/2027/fake.htm",
+    )
+
+
+def test_workset_id_is_classified_as_owned_by_workset():
+    """Regression test: WorksetId is a typed identifier (like ElementId,
+    but purpose-built for worksets) whose own type unambiguously names its
+    target -- no member-name matching needed. Evidence from a real 2024
+    crawl: 11 edges, 10 distinct source types, all named exactly
+    'WorksetId'/'GetWorksetId'. Before this rule, these fell through the
+    new direct-return conflict check (return type 'WorksetId' != target
+    'Workset') into UNKNOWN_DB_OBJECT_REFERENCE -- correct in the general
+    case, but WorksetId is a deliberate, blessed exception."""
+    member = _member("WorksetId", "WorksetId", declaring_type="Autodesk.Revit.DB.Element")
+    candidate = classify_member(member, source_type="Autodesk.Revit.DB.Element", known_type_short_names={"WorksetId"})
+
+    assert candidate is not None
+    assert candidate.candidate_edge_type is EdgeType.OWNED_BY_WORKSET
+    assert candidate.candidate_target_type == "Autodesk.Revit.DB.Workset"
+    assert candidate.edge_confidence is ConfidenceLabel.DIRECT_RETURN_TYPE
+
+    method_member = _method_member("GetWorksetId", "WorksetId", declaring_type="Autodesk.Revit.DB.Document")
+    method_candidate = classify_member(method_member, source_type="Autodesk.Revit.DB.Document", known_type_short_names={"WorksetId"})
+
+    assert method_candidate is not None
+    assert method_candidate.candidate_edge_type is EdgeType.OWNED_BY_WORKSET
+    assert method_candidate.candidate_target_type == "Autodesk.Revit.DB.Workset"
+
+
+def test_factory_method_produces_no_edge():
+    """Regression test: a 'Create*' method constructs a brand-new object --
+    it isn't a relationship of source_type, even though it's declared on
+    it (usually a factory/utility class). Evidence from a real 2024 crawl:
+    ParameterFilterRuleFactory.CreateBeginsWithRule -> FilterRule,
+    ConnectorElement.CreateCableTrayConnector -> ConnectorElement,
+    AssemblyViewUtils.CreatePartList -> ViewSchedule."""
+    member = _method_member("CreateBeginsWithRule", "FilterRule", declaring_type="Autodesk.Revit.DB.ParameterFilterRuleFactory")
+    candidate = classify_member(member, source_type="Autodesk.Revit.DB.ParameterFilterRuleFactory", known_type_short_names={"FilterRule"})
+
+    assert candidate is None
+
+
+def test_created_phase_id_property_is_not_treated_as_a_factory_method():
+    """Regression guard: the factory-method suppression's negative
+    lookahead must not catch 'Created*' (a real past-tense property naming
+    convention, e.g. Element.CreatedPhaseId) just because it starts with
+    the same six letters as 'Create'."""
+    member = _member("CreatedPhaseId", "ElementId", declaring_type="Autodesk.Revit.DB.Element")
+    candidate = classify_member(member, source_type="Autodesk.Revit.DB.Element", known_type_short_names=set())
+
+    assert candidate is not None
+    assert candidate.candidate_edge_type is EdgeType.ASSIGNED_TO_PHASE
+    assert candidate.candidate_target_type == "Autodesk.Revit.DB.Phase"
+
+
+def test_fluent_setter_returning_own_type_produces_no_edge():
+    """Regression test: a 'Set*' method that returns its own declaring type
+    is a fluent/builder setter returning `this` for chaining, not a
+    relationship to another object of the same type. Evidence from a real
+    2024 crawl: OverrideGraphicSettings.SetCutBackgroundPatternColor (and four
+    sibling Set* methods), all -> the same OverrideGraphicSettings type."""
+    member = _method_member(
+        "SetCutBackgroundPatternColor", "OverrideGraphicSettings", declaring_type="Autodesk.Revit.DB.OverrideGraphicSettings"
+    )
+    candidate = classify_member(member, source_type="Autodesk.Revit.DB.OverrideGraphicSettings", known_type_short_names={"OverrideGraphicSettings"})
+
+    assert candidate is None
+
+
+def test_self_referential_property_is_not_treated_as_a_fluent_setter():
+    """Regression guard: the fluent-setter suppression must only apply to
+    'Set*'-named METHODs, not PROPERTYs -- a genuine self-referential
+    relationship (e.g. a Group's parent Group) must not be suppressed just
+    because its return type happens to equal its own declaring type."""
+    member = _member("ParentGroup", "Group", declaring_type="Autodesk.Revit.DB.Group")
+    candidate = classify_member(member, source_type="Autodesk.Revit.DB.Group", known_type_short_names={"Group"})
+
+    assert candidate is not None
+    assert candidate.candidate_edge_type is EdgeType.MEMBER_OF_GROUP

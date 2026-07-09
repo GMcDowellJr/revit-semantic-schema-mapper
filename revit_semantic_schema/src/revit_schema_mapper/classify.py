@@ -140,6 +140,38 @@ _TRUE_SCALAR_PRIMITIVES = {
 # misleading) edge type instead of an honest UNKNOWN_*.
 _STRUCTURALLY_INCOMPATIBLE_VALUE_TYPES = PRIMITIVE_TYPES - _TRUE_SCALAR_PRIMITIVES
 
+# Typed identifier structs that, unlike bare ElementId, unambiguously name
+# their own target through the type system alone -- no member-name
+# disambiguation needed. Evidence from a real 2024 crawl's
+# unknown_pareto.py breakdown: WorksetId, 11 edges, 10 distinct source
+# types, all named exactly "WorksetId"/"GetWorksetId" (e.g. Element.WorksetId,
+# Document.GetWorksetId), zero counterexamples. This is a deliberate,
+# blessed exception to classify_member's direct-return conflict check right
+# below: the return type (WorksetId) and the target (Workset) are
+# intentionally different types by design, not a coincidental collision.
+_TYPED_ID_TARGETS: dict[str, tuple[str, EdgeType]] = {
+    "WorksetId": ("Workset", EdgeType.OWNED_BY_WORKSET),
+}
+
+# A "Create*" method constructs and returns a brand-new object -- it says
+# nothing about a relationship *of* source_type, even though it's declared
+# on it (usually a factory/utility class). The negative lookahead excludes
+# "Created*" (a real past-tense property naming convention, e.g.
+# Element.CreatedPhaseId, which the ASSIGNED_TO_PHASE keyword rule already
+# legitimately matches -- this must not suppress that). Evidence: real
+# 2024 crawl examples include ParameterFilterRuleFactory.CreateBeginsWithRule
+# -> FilterRule, ConnectorElement.CreateCableTrayConnector -> ConnectorElement,
+# AssemblyViewUtils.CreatePartList -> ViewSchedule.
+_FACTORY_METHOD_NAME_RE = re.compile(r"^Create(?!d)")
+
+# A "Set*" method that returns its own declaring type is a fluent/builder
+# setter returning `this` for chaining, not a relationship to another
+# object. Evidence: OverrideGraphicSettings.SetCutBackgroundPatternColor/
+# SetCutBackgroundPatternId/SetCutBackgroundPatternVisible/
+# SetCutForegroundPatternColor/SetCutForegroundPatternId, all -> the same
+# OverrideGraphicSettings type they're declared on.
+_FLUENT_SETTER_NAME_RE = re.compile(r"^Set", re.IGNORECASE)
+
 _ELEMENTID_COLLECTION_RE = re.compile(
     r"^(?:ICollection|IList|ISet|IEnumerable|List|HashSet)\s*<\s*ElementId\s*>$"
 )
@@ -366,6 +398,18 @@ def classify_member(member: MemberInfo, source_type: str, known_type_short_names
     if bare_return in _STRUCTURALLY_INCOMPATIBLE_VALUE_TYPES or generic_inner_bare in _STRUCTURALLY_INCOMPATIBLE_VALUE_TYPES:
         return None
 
+    if member.kind is MemberKind.METHOD:
+        # A factory method constructs a brand-new object; it isn't a
+        # relationship of source_type regardless of what it returns -- see
+        # _FACTORY_METHOD_NAME_RE's docstring.
+        if _FACTORY_METHOD_NAME_RE.match(member.name):
+            return None
+        # A fluent/builder setter that returns its own declaring type is
+        # returning `this` for chaining, not referencing another object of
+        # the same type -- see _FLUENT_SETTER_NAME_RE's docstring.
+        if _FLUENT_SETTER_NAME_RE.match(member.name) and bare_return == source_type.rsplit(".", 1)[-1]:
+            return None
+
     is_direct_db_object = (
         not is_elementid
         and not is_elementid_collection
@@ -383,6 +427,14 @@ def classify_member(member: MemberInfo, source_type: str, known_type_short_names
     parser_notes: list[str] = []
 
     if is_direct_db_object:
+        confidence = ConfidenceLabel.DIRECT_RETURN_TYPE
+        if bare_return in _TYPED_ID_TARGETS:
+            target_short_name, edge_type = _TYPED_ID_TARGETS[bare_return]
+            candidate_target_type = target_short_name
+            evidence.append(
+                f"return type '{return_type}' is a typed identifier that unambiguously names its own "
+                f"target ('{target_short_name}') through the type system alone"
+            )
         # A name-keyword match whose own target_hint names a *different*
         # concrete type than what this member actually, verifiably returns
         # is a coincidental name collision, not real relationship evidence
@@ -397,8 +449,9 @@ def classify_member(member: MemberInfo, source_type: str, known_type_short_names
         # edge_type/target_type pair. No conflict (target_hint is None, or
         # equals bare_return, or there's no name_match at all) keeps the
         # existing behavior unchanged.
-        if name_match and name_match[1] is not None and name_match[1] != bare_return:
+        elif name_match and name_match[1] is not None and name_match[1] != bare_return:
             edge_type = EdgeType.UNKNOWN_DB_OBJECT_REFERENCE
+            candidate_target_type = bare_return
             evidence.append(
                 f"member name '{member.name}' matches keyword pattern /{name_match[2]}/ implying target "
                 f"'{name_match[1]}', but the actual return type '{bare_return}' conflicts -- treating the "
@@ -406,8 +459,7 @@ def classify_member(member: MemberInfo, source_type: str, known_type_short_names
             )
         else:
             edge_type = name_match[0] if name_match else EdgeType.UNKNOWN_DB_OBJECT_REFERENCE
-        candidate_target_type = bare_return
-        confidence = ConfidenceLabel.DIRECT_RETURN_TYPE
+            candidate_target_type = bare_return
         evidence.append(f"return type '{return_type}' directly names a Revit DB object type")
     elif is_elementid:
         if name_match:
