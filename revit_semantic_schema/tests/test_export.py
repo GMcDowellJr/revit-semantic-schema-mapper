@@ -206,6 +206,34 @@ def test_write_graph_core_metadata_reflects_only_filtered_edges(tmp_path):
     assert core["edges"][0]["edge_type"] == "INSTANCE_OF"
 
 
+def test_write_graph_metadata_includes_corroboration_counts(tmp_path):
+    """graph.json's metadata should surface Stage B/C coverage the same way
+    it already surfaces target_resolution_counts/confidence_tier_counts --
+    otherwise a downstream consumer has to scan every edge just to learn
+    whether cross-validation ran at all.
+    """
+    nodes = [_node("Autodesk.Revit.DB.FamilyInstance"), _node("Autodesk.Revit.DB.FamilySymbol")]
+    checked = _edge("Symbol", EdgeType.INSTANCE_OF, ConfidenceLabel.DIRECT_RETURN_TYPE, "Autodesk.Revit.DB.FamilySymbol")
+    checked.source_type = "Autodesk.Revit.DB.FamilyInstance"
+    checked.dll_verified_status = "signature_verified_declared"
+    checked.revitlookup_referenced = True
+    unchecked = _edge("GetMaterialIds", EdgeType.USES_MATERIAL, ConfidenceLabel.NAME_ONLY_CANDIDATE, "Autodesk.Revit.DB.Material")
+    unchecked.source_type = "Autodesk.Revit.DB.FamilyInstance"
+
+    result = graph.build_graph(nodes, [checked, unchecked])
+    export.write_graph(tmp_path, result, revit_version="2024")
+
+    full = json.loads((tmp_path / "graph.json").read_text())
+    assert full["metadata"]["dll_verified_status_counts"] == {
+        "signature_verified_declared": 1,
+        "not_checked": 1,
+    }
+    assert full["metadata"]["revitlookup_referenced_counts"] == {
+        "referenced": 1,
+        "not_checked": 1,
+    }
+
+
 def test_read_node_candidates_round_trips_through_write(tmp_path):
     nodes = [_node("Autodesk.Revit.DB.View")]
     export.write_node_candidates(tmp_path, nodes)

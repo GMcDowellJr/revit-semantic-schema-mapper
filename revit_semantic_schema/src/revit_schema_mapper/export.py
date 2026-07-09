@@ -240,9 +240,15 @@ def _graph_metadata(nodes: list, edges: list, *, revit_version: str) -> dict:
     """
     resolution_counts: dict[str, int] = {}
     tier_counts: dict[str, int] = {}
+    dll_verified_status_counts: dict[str, int] = {}
+    revitlookup_referenced_counts: dict[str, int] = {}
     for e in edges:
         resolution_counts[e.target_resolution.value] = resolution_counts.get(e.target_resolution.value, 0) + 1
         tier_counts[e.confidence_tier.value] = tier_counts.get(e.confidence_tier.value, 0) + 1
+        dll_status = e.dll_verified_status or "not_checked"
+        dll_verified_status_counts[dll_status] = dll_verified_status_counts.get(dll_status, 0) + 1
+        rlu_status = "referenced" if e.revitlookup_referenced else "not_checked"
+        revitlookup_referenced_counts[rlu_status] = revitlookup_referenced_counts.get(rlu_status, 0) + 1
 
     return {
         "revit_version": revit_version,
@@ -251,6 +257,13 @@ def _graph_metadata(nodes: list, edges: list, *, revit_version: str) -> dict:
         "external_node_count": sum(1 for n in nodes if n.external),
         "target_resolution_counts": resolution_counts,
         "confidence_tier_counts": tier_counts,
+        # "not_checked" covers both "Stage B/C never ran" and "ran but this
+        # specific edge wasn't in the manifest/descriptor" -- see
+        # EdgeCandidate.dll_verified_status/revitlookup_referenced for the
+        # distinction; ground_truth_report.json / revitlookup_cross_validation_report.json
+        # are the place to look for that finer breakdown.
+        "dll_verified_status_counts": dll_verified_status_counts,
+        "revitlookup_referenced_counts": revitlookup_referenced_counts,
     }
 
 
@@ -353,6 +366,21 @@ def _graph_section(result: GraphBuildResult | None, *, section_number: int) -> l
     lines.append("- Target resolution: " + ", ".join(f"{k}={v}" for k, v in sorted(result.target_resolution_counts.items())))
     lines.append("- Confidence tier breakdown: " + ", ".join(f"{k}={v}" for k, v in sorted(tier_counts.items())))
     lines.append(f"- `graph_core.json` (confidence_tier=core only): {len(core_nodes)} nodes, {len(core_edges)} edges")
+    dll_status_counts: dict[str, int] = {}
+    rlu_counts: dict[str, int] = {}
+    for e in result.edges:
+        dll_status = e.dll_verified_status or "not_checked"
+        dll_status_counts[dll_status] = dll_status_counts.get(dll_status, 0) + 1
+        rlu_status = "referenced" if e.revitlookup_referenced else "not_checked"
+        rlu_counts[rlu_status] = rlu_counts.get(rlu_status, 0) + 1
+    lines.append(
+        "- DLL reflection cross-validation (Stage B, docs/dll_reflection_v0.md): "
+        + ", ".join(f"{k}={v}" for k, v in sorted(dll_status_counts.items()))
+    )
+    lines.append(
+        "- RevitLookup cross-validation (Stage C, docs/dll_reflection_v0.md): "
+        + ", ".join(f"{k}={v}" for k, v in sorted(rlu_counts.items()))
+    )
     if result.communities:
         label_sources = {}
         for c in result.communities:

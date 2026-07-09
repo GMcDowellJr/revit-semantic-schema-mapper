@@ -252,6 +252,39 @@ def test_filter_core_keeps_core_edges_that_do_have_a_target():
     assert {n.id for n in core_nodes} == {"Autodesk.Revit.DB.FamilyInstance", "Autodesk.Revit.DB.FamilySymbol"}
 
 
+def test_build_graph_carries_dll_and_revitlookup_fields_onto_graph_edge_and_node():
+    """Stage B (docs/dll_reflection_v0.md cross_validate_dll) and Stage C
+    (cross_validate_revitlookup) annotate EdgeCandidate/NodeCandidate in
+    place, but until graph.py explicitly copies those fields onto
+    GraphEdge/GraphNode, graph.json/graph_core.json silently drop them --
+    a downstream consumer reading only the materialized graph would never
+    see cross-validation evidence that candidate_edges.json/
+    node_type_candidates.json already carry.
+    """
+    node = _node("Autodesk.Revit.DB.FamilyInstance")
+    node.dll_type_verified = True
+
+    edge = _edge("Autodesk.Revit.DB.FamilyInstance", "Autodesk.Revit.DB.FamilySymbol", EdgeType.INSTANCE_OF, ConfidenceLabel.DIRECT_RETURN_TYPE)
+    edge.dll_signature_verified = True
+    edge.dll_relationship_scope = "declared"
+    edge.dll_semantic_verified = None
+    edge.dll_verified_status = "signature_verified_declared"
+    edge.revitlookup_referenced = True
+    edge.revitlookup_requires_document_context = False
+
+    result = graph.build_graph([node], [edge])
+
+    graph_node = next(n for n in result.nodes if n.id == "Autodesk.Revit.DB.FamilyInstance")
+    assert graph_node.dll_type_verified is True
+
+    graph_edge = result.edges[0]
+    assert graph_edge.dll_signature_verified is True
+    assert graph_edge.dll_relationship_scope == "declared"
+    assert graph_edge.dll_verified_status == "signature_verified_declared"
+    assert graph_edge.revitlookup_referenced is True
+    assert graph_edge.revitlookup_requires_document_context is False
+
+
 def test_missing_source_does_not_fall_back_to_an_unrelated_same_named_node():
     """If Autodesk.Revit.DB.Architecture.Room's own class page failed to
     crawl (so it's absent from node_candidates), but some unrelated type
