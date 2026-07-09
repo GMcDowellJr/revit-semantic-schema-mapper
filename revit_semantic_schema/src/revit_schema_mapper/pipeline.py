@@ -124,7 +124,15 @@ def run_graph_only(
     return result
 
 
-def run_cross_validate_dll(output_dir: Path, manifest_path: Path) -> GroundTruthReport:
+def run_cross_validate_dll(
+    output_dir: Path,
+    manifest_path: Path,
+    *,
+    revit_version: str,
+    label_communities_llm: bool = False,
+    community_label_model: str = DEFAULT_OPENROUTER_MODEL,
+    openrouter_api_key: str | None = None,
+) -> GroundTruthReport:
     """Stage B of DLL reflection cross-validation (docs/dll_reflection_v0.md).
 
     Cross-checks an existing run's already-written ``node_type_candidates.json``/
@@ -139,7 +147,13 @@ def run_cross_validate_dll(output_dir: Path, manifest_path: Path) -> GroundTruth
     place (see models.py); those are persisted back to the same two files so
     the annotation survives past this one process, then
     ``ground_truth_report.json`` and a refreshed summary section are written
-    alongside them.
+    alongside them. Finally, ``run_graph_only`` is called to rebuild
+    ``graph.json``/``graph_core.json``/``graph.html``/
+    ``semantic_relationship_map.html`` from those freshly-annotated
+    candidates -- without this, an existing graph.json would keep its old
+    ``dll_*``-less edges (and stale ``dll_verified_status_counts``/etc. in
+    its metadata) until someone remembered to separately run
+    ``--graph-only``, silently going stale the moment this pass finishes.
     """
     node_candidates = export.read_node_candidates(output_dir)
     edge_candidates = export.read_edge_candidates(output_dir)
@@ -156,10 +170,26 @@ def run_cross_validate_dll(output_dir: Path, manifest_path: Path) -> GroundTruth
     export.refresh_ground_truth_section_in_file(output_dir / "summary.md", report, section_number=15)
     export.refresh_ground_truth_section_in_file(output_dir / "validation_summary.md", report, section_number=10)
 
+    run_graph_only(
+        output_dir,
+        revit_version,
+        label_communities_llm=label_communities_llm,
+        community_label_model=community_label_model,
+        openrouter_api_key=openrouter_api_key,
+    )
+
     return report
 
 
-def run_cross_validate_revitlookup(output_dir: Path, reference_path: Path) -> RevitLookupCrossValidationReport:
+def run_cross_validate_revitlookup(
+    output_dir: Path,
+    reference_path: Path,
+    *,
+    revit_version: str,
+    label_communities_llm: bool = False,
+    community_label_model: str = DEFAULT_OPENROUTER_MODEL,
+    openrouter_api_key: str | None = None,
+) -> RevitLookupCrossValidationReport:
     """Stage C of docs/dll_reflection_v0.md: cross-checks an existing run's
     already-written ``candidate_edges.json`` against ``revitlookup_reference.json``
     (Stage C's own mining of RevitLookup's public descriptor source -- see
@@ -175,7 +205,10 @@ def run_cross_validate_revitlookup(output_dir: Path, reference_path: Path) -> Re
     back to ``candidate_edges.json`` so the annotation survives past this one
     process, then ``revitlookup_cross_validation_report.json`` and a
     refreshed summary section are written alongside it. Node candidates are
-    untouched -- Stage C only adds edge-level fields.
+    untouched -- Stage C only adds edge-level fields. Finally,
+    ``run_graph_only`` is called to rebuild the graph outputs from the
+    freshly-annotated candidates -- see ``run_cross_validate_dll``'s
+    docstring for why skipping this would leave graph.json stale.
     """
     edge_candidates = export.read_edge_candidates(output_dir)
     reference = load_revitlookup_reference(reference_path)
@@ -189,6 +222,14 @@ def run_cross_validate_revitlookup(output_dir: Path, reference_path: Path) -> Re
     # as run_cross_validate_dll's own pair of refresh calls above.
     export.refresh_revitlookup_section_in_file(output_dir / "summary.md", report, section_number=16)
     export.refresh_revitlookup_section_in_file(output_dir / "validation_summary.md", report, section_number=11)
+
+    run_graph_only(
+        output_dir,
+        revit_version,
+        label_communities_llm=label_communities_llm,
+        community_label_model=community_label_model,
+        openrouter_api_key=openrouter_api_key,
+    )
 
     return report
 

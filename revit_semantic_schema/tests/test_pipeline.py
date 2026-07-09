@@ -1177,7 +1177,7 @@ def test_run_cross_validate_dll_persists_dll_fields_and_writes_report(tmp_path):
         encoding="utf-8",
     )
 
-    report = run_cross_validate_dll(tmp_path, manifest_path)
+    report = run_cross_validate_dll(tmp_path, manifest_path, revit_version="2024")
 
     assert report.type_results[0].status.value == "confirmed"
     assert report.edge_results[0].status.value == "signature_confirmed"
@@ -1196,17 +1196,29 @@ def test_run_cross_validate_dll_persists_dll_fields_and_writes_report(tmp_path):
     assert "# Old summary" in summary_text
     assert summary_text.count("## 15. DLL reflection cross-validation (Stage B)") == 1
 
+    # The whole point: graph.json/graph_core.json must be rebuilt from the
+    # freshly dll_*-annotated candidates in the same call, not left stale
+    # until someone separately remembers to run --graph-only.
+    graph_json = json.loads((tmp_path / "graph.json").read_text())
+    assert graph_json["metadata"]["dll_verified_status_counts"] == {"signature_verified_declared": 1}
+    assert graph_json["edges"][0]["dll_signature_verified"] is True
+    assert graph_json["nodes"][0]["dll_type_verified"] is True
+
 
 def test_run_cross_validate_revitlookup_persists_revitlookup_fields_and_writes_report(tmp_path):
     """--cross-validate-revitlookup's whole point is to layer on top of an
     existing crawl's output -- only reading revitlookup_reference.json plus
     this directory's candidate_edges.json, and writing back the mutated
     revitlookup_* fields plus a revitlookup_cross_validation_report.json and
-    a refreshed summary section. Never touches node_type_candidates.json
-    (Stage C only adds edge-level fields) or the dll_* fields Stage B owns.
+    a refreshed summary section. cross_validate_revitlookup itself never
+    touches node_type_candidates.json (Stage C only adds edge-level fields)
+    or the dll_* fields Stage B owns -- but node_type_candidates.json must
+    still exist on disk for the graph rebuild this now triggers (build_graph
+    needs both files), the same precondition --graph-only already has.
     """
     edges = [_edge_candidate("Autodesk.Revit.DB.Element", "Autodesk.Revit.DB.BoundingBoxXYZ", EdgeType.REFERENCES, ConfidenceLabel.DIRECT_RETURN_TYPE)]
     edges[0].member_name = "CanBeHidden"
+    export.write_node_candidates(tmp_path, [_node_candidate("Autodesk.Revit.DB.Element", [])])
     export.write_edge_candidates(tmp_path, edges)
     (tmp_path / "summary.md").write_text("# Old summary\n\n## 16. RevitLookup descriptor cross-validation (Stage C)\n\nSTALE\n", encoding="utf-8")
 
@@ -1231,7 +1243,7 @@ def test_run_cross_validate_revitlookup_persists_revitlookup_fields_and_writes_r
         encoding="utf-8",
     )
 
-    report = run_cross_validate_revitlookup(tmp_path, reference_path)
+    report = run_cross_validate_revitlookup(tmp_path, reference_path, revit_version="2024")
 
     assert report.revitlookup_tag == "2024.0.13"
     assert report.edge_results[0].referenced is True
@@ -1247,6 +1259,13 @@ def test_run_cross_validate_revitlookup_persists_revitlookup_fields_and_writes_r
     assert "STALE" not in summary_text
     assert "# Old summary" in summary_text
     assert summary_text.count("## 16. RevitLookup descriptor cross-validation (Stage C)") == 1
+
+    # The whole point: graph.json must be rebuilt from the freshly
+    # revitlookup_*-annotated candidates in the same call.
+    graph_json = json.loads((tmp_path / "graph.json").read_text())
+    assert graph_json["metadata"]["revitlookup_referenced_counts"] == {"referenced": 1}
+    assert graph_json["edges"][0]["revitlookup_referenced"] is True
+    assert graph_json["edges"][0]["revitlookup_requires_document_context"] is True
 
 
 def test_known_edge_report_genuinely_missing_member_is_not_confused_with_cross_type_match():

@@ -82,17 +82,20 @@ updates, not necessarily 1:1 with a Revit build number). Reconciling these — o
 recording all three per candidate — is a prerequisite for any provenance claim stronger than
 "as of some point in this Revit year."
 
-### 4. Pipeline ordering / staleness risk
+### 4. Pipeline ordering / staleness risk (resolved)
 
-`graph.json`/`graph_core.json` are only rebuilt by a full run or `--graph-only`. Both
-cross-validation passes mutate `candidate_edges.json` in place but never trigger a graph
-rebuild. So today: crawl → build graph → run `--cross-validate-dll` → run
-`--cross-validate-revitlookup` leaves `graph.json` silently stale relative to
-`candidate_edges.json`, with nothing that warns about it. This is already slightly misleading
-(the `dll_*`/`revitlookup_*` fields exist on the candidate file but not on the exported graph
-edges at all yet), and becomes a real correctness bug once a corroboration axis is meant to live
-on `GraphEdge` — at that point "did you re-run `--graph-only` after both cross-validation passes"
-becomes load-bearing, not just cosmetic.
+`GraphNode`/`GraphEdge` now carry `dll_type_verified`/`dll_signature_verified`/
+`dll_relationship_scope`/`dll_semantic_verified`/`dll_verified_status`/`revitlookup_referenced`/
+`revitlookup_requires_document_context` (`graph.build_graph` copies them straight through from
+`NodeCandidate`/`EdgeCandidate`, no reinterpretation), and `graph.json`/`graph_core.json`
+metadata reports `dll_verified_status_counts`/`revitlookup_referenced_counts` alongside the
+existing `target_resolution_counts`/`confidence_tier_counts`. `run_cross_validate_dll` and
+`run_cross_validate_revitlookup` (`pipeline.py`) both now call `run_graph_only` immediately
+after persisting the mutated candidates, so `graph.json`/`graph_core.json`/`graph.html`/
+`semantic_relationship_map.html` are rebuilt from the freshly-annotated candidates in the same
+call — a separate `--graph-only` run is no longer required (and no longer silently corrects
+staleness the caller wouldn't otherwise notice). `confidence_tier` itself still isn't affected
+by corroboration — see #5 below, still open.
 
 ### 5. `confidence_tier` / core-subgraph interaction with corroboration
 
