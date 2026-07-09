@@ -476,6 +476,13 @@ existence that `DescriptorMap.cs`'s own type list wouldn't already say via `desc
   entry with zero `resolved_members` should be distinguishable in the output from "genuinely no
   special-cased members" vs. "the parser didn't recognize this file's shape."
 
+**Now that Stages B and C both exist independently**, a further, still entirely open question is
+how to actually *combine* their two sets of fields (plus the base `edge_confidence`) into a
+single richer signal, rather than leaving them as parallel, uncorrelated annotations forever —
+see `docs/multi_source_corroboration_v0.md` for that design record (source asymmetry, version/
+provenance granularity, pipeline-ordering staleness risk, downstream-consumer shape, and whether
+docs-first is structural or just where the pipeline happened to start).
+
 ## Related project: Fingerprint, and a longer-horizon vision
 
 A prior review pass surfaced claims about a separate `Fingerprint` project (not in this

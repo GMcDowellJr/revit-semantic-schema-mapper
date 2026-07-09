@@ -169,6 +169,10 @@ is on disk.
 - `revit_semantic_schema/docs/dll_reflection_v0.md` — design for the optional Stage
   A (`reflect_revit_api.ps1`, PowerShell, runs on Windows+Revit) / Stage B (`ground_truth.py`)
   cross-validation pass.
+- `revit_semantic_schema/docs/multi_source_corroboration_v0.md` — design-only record of open
+  questions for combining Stage B (DLL) and Stage C (RevitLookup) evidence with the base
+  docs-derived confidence, plus downstream-consumer (RDF/Neo4j) and possible-future-ontology
+  considerations. Nothing in it is implemented yet.
 - `revit_semantic_schema/docs/crawl_notes.md` — chronological log of every real-run finding,
   bug, and markup change confirmed so far; long, but the authoritative source for "has this
   actually been verified against the live site or a real Revit install."
