@@ -33,6 +33,7 @@ from revit_schema_mapper.ground_truth import (
     ManifestType,
     TypeVerificationStatus,
     cross_validate_dll,
+    cross_validate_revitlookup,
     load_manifest,
     normalize_type_name,
 )
@@ -45,6 +46,12 @@ from revit_schema_mapper.models import (
     Kind,
     MemberKind,
     NodeCandidate,
+)
+from revit_schema_mapper.revitlookup import (
+    DescriptorMapEntry,
+    ResolvedMember,
+    RevitLookupDescriptor,
+    RevitLookupReference,
 )
 
 _FIXTURE_PATH = Path(__file__).parent / "fixtures" / "ground_truth_manifest_2024.json"
@@ -453,3 +460,112 @@ def test_dll_semantic_verified_is_never_set(manifest):
     cross_validate_dll([node], [edge], manifest)
 
     assert edge.dll_semantic_verified is None
+
+
+# -- cross_validate_revitlookup (Stage C) -------------------------------------
+
+
+def _revitlookup_reference() -> RevitLookupReference:
+    """A small, hand-built reference mirroring the real 2024.0.13 shapes
+    confirmed in tests/fixtures/revitlookup/ (see test_revitlookup.py) -- one
+    descriptor with a "nameof" and a "string_literal" resolved member (one
+    document-scoped, one not) plus a synthetic extension, matching
+    ElementDescriptor.cs/HostObjectDescriptor.cs's own real content.
+    """
+    return RevitLookupReference(
+        revitlookup_tag="2024.0.13",
+        descriptor_map=[
+            DescriptorMapEntry(target_type_short_name="Element", descriptor_class="ElementDescriptor", section="IDisposables"),
+            DescriptorMapEntry(target_type_short_name="HostObject", descriptor_class="HostObjectDescriptor", section="APIObjects"),
+        ],
+        descriptors=[
+            RevitLookupDescriptor(
+                descriptor_class="ElementDescriptor",
+                resolved_members=[
+                    ResolvedMember(
+                        member_name="CanBeHidden",
+                        name_source="nameof",
+                        requires_document_context=True,
+                        has_multiple_variants=False,
+                    ),
+                    ResolvedMember(
+                        member_name="BoundingBox",
+                        name_source="string_literal",
+                        requires_document_context=False,
+                        has_multiple_variants=False,
+                    ),
+                ],
+                synthetic_extensions=["GetJoinedElements"],
+            ),
+            RevitLookupDescriptor(
+                descriptor_class="HostObjectDescriptor",
+                resolved_members=[],
+                synthetic_extensions=["GetBottomFaces", "GetTopFaces", "GetSideFaces"],
+            ),
+        ],
+    )
+
+
+def test_revitlookup_referenced_true_for_nameof_corroborated_member():
+    edge = _edge("Autodesk.Revit.DB.Element", "CanBeHidden", "System.Boolean")
+    report = cross_validate_revitlookup([edge], _revitlookup_reference())
+
+    assert edge.revitlookup_referenced is True
+    assert edge.revitlookup_requires_document_context is True
+    assert report.edge_results[0].referenced is True
+    assert report.edge_results[0].name_source == "nameof"
+    assert report.edge_results[0].descriptor_class == "ElementDescriptor"
+
+
+def test_revitlookup_referenced_true_for_string_literal_member_without_document_context():
+    edge = _edge("Autodesk.Revit.DB.Element", "BoundingBox", "Autodesk.Revit.DB.BoundingBoxXYZ")
+    report = cross_validate_revitlookup([edge], _revitlookup_reference())
+
+    assert edge.revitlookup_referenced is True
+    assert edge.revitlookup_requires_document_context is False
+    assert report.edge_results[0].name_source == "string_literal"
+
+
+def test_revitlookup_referenced_stays_none_for_covered_type_uncorroborated_member():
+    """RevitLookup has an ElementDescriptor, but it never special-cased
+    Element.Id -- absence must never flip revitlookup_referenced to False,
+    only leave it None (see EdgeCandidate.revitlookup_referenced's own
+    docstring on why this is a positive-only signal).
+    """
+    edge = _edge("Autodesk.Revit.DB.Element", "Id", "Autodesk.Revit.DB.ElementId")
+    report = cross_validate_revitlookup([edge], _revitlookup_reference())
+
+    assert edge.revitlookup_referenced is None
+    assert edge.revitlookup_requires_document_context is None
+    # The report still records the distinction for a human reading the summary.
+    assert report.edge_results[0].referenced is False
+    assert report.edge_results[0].descriptor_class == "ElementDescriptor"
+
+
+def test_revitlookup_referenced_stays_none_for_type_with_no_descriptor_at_all():
+    edge = _edge("Autodesk.Revit.DB.Wall", "Width", "System.Double")
+    report = cross_validate_revitlookup([edge], _revitlookup_reference())
+
+    assert edge.revitlookup_referenced is None
+    # No descriptor exists for Wall at all -- not even a "not referenced" entry.
+    assert report.edge_results == []
+
+
+def test_revitlookup_synthetic_extension_is_never_treated_as_corroboration():
+    """HostObjectDescriptor's GetJoinedElements-style extensions are UI
+    convenience wrappers around a separate extension-method class, not real
+    members of the target type -- must never count as a positive signal, per
+    revitlookup.RevitLookupDescriptor.synthetic_extensions' own docstring.
+    """
+    edge = _edge("Autodesk.Revit.DB.Element", "GetJoinedElements", "Autodesk.Revit.DB.ICollection")
+    report = cross_validate_revitlookup([edge], _revitlookup_reference())
+
+    assert edge.revitlookup_referenced is None
+    assert report.edge_results[0].referenced is False
+
+
+def test_revitlookup_covered_short_type_names_lists_every_descriptor_map_entry():
+    report = cross_validate_revitlookup([], _revitlookup_reference())
+
+    assert report.covered_short_type_names == ["Element", "HostObject"]
+    assert report.revitlookup_tag == "2024.0.13"

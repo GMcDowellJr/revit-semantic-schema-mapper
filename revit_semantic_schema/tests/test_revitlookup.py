@@ -10,10 +10,13 @@ shape found on RevitLookup's current ``develop`` branch, which now targets a
 later Revit version.
 """
 
+import dataclasses
+import json
 import subprocess
 from pathlib import Path
 
 from revit_schema_mapper.revitlookup import (
+    load_revitlookup_reference,
     mine_revitlookup_source,
     parse_descriptor_file,
     parse_descriptor_map,
@@ -305,6 +308,31 @@ def test_mine_revitlookup_source_reports_no_descriptor_map_found(tmp_path):
     reference = mine_revitlookup_source(tmp_path, revitlookup_tag="2024.0.13")
     assert reference.descriptor_map == []
     assert reference.descriptors == []
+
+
+# -- load_revitlookup_reference (inverse of _main's own JSON writer) -----------
+
+
+def test_load_revitlookup_reference_round_trips_a_mined_reference(tmp_path):
+    """ground_truth.cross_validate_revitlookup (Stage C's consumer) never
+    calls mine_revitlookup_source directly -- it reads back whatever
+    _main already wrote to disk, so the round trip through JSON must
+    preserve every field this module's own dataclasses carry.
+    """
+    nested = tmp_path / "source" / "RevitLookup" / "Core" / "ComponentModel"
+    nested.mkdir(parents=True)
+    (nested / "DescriptorMap.cs").write_text(_read("DescriptorMap.cs"), encoding="utf-8")
+    descriptors_dir = nested / "Descriptors"
+    descriptors_dir.mkdir()
+    (descriptors_dir / "ElementDescriptor.cs").write_text(_read("ElementDescriptor.cs"), encoding="utf-8")
+    mined = mine_revitlookup_source(tmp_path, revitlookup_tag="2024.0.13")
+
+    out_path = tmp_path / "revitlookup_reference_2024.json"
+    out_path.write_text(json.dumps(dataclasses.asdict(mined), indent=2), encoding="utf-8")
+
+    loaded = load_revitlookup_reference(out_path)
+
+    assert loaded == mined
 
 
 # -- verify_tag_match -------------------------------------------------------------

@@ -29,6 +29,7 @@ consumer expects, not silently re-pointed at whatever's newest.
 
 from __future__ import annotations
 
+import json
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -393,6 +394,47 @@ def _find_first(root: Path, filename: str) -> Optional[Path]:
     return next(root.rglob(filename), None)
 
 
+def load_revitlookup_reference(path: Path) -> RevitLookupReference:
+    """Inverse of ``mine_revitlookup_source``'s own ``_main`` writer -- loads
+    a ``revitlookup_reference_<version>.json`` back into a
+    ``RevitLookupReference`` for ``ground_truth.cross_validate_revitlookup``
+    to consume. Always written by this module's own ``_main`` (pure Python,
+    ``Path.write_text``), never by anything on Windows/PowerShell, so unlike
+    ``ground_truth.load_manifest`` there's no real BOM risk to guard against.
+    """
+    raw = json.loads(Path(path).read_text(encoding="utf-8"))
+    descriptor_map = [
+        DescriptorMapEntry(
+            target_type_short_name=e["target_type_short_name"],
+            descriptor_class=e["descriptor_class"],
+            section=e["section"],
+        )
+        for e in raw.get("descriptor_map", [])
+    ]
+    descriptors = [
+        RevitLookupDescriptor(
+            descriptor_class=d["descriptor_class"],
+            resolved_members=[
+                ResolvedMember(
+                    member_name=m["member_name"],
+                    name_source=m["name_source"],
+                    requires_document_context=m["requires_document_context"],
+                    has_multiple_variants=m["has_multiple_variants"],
+                )
+                for m in d.get("resolved_members", [])
+            ],
+            synthetic_extensions=d.get("synthetic_extensions", []),
+            parser_notes=d.get("parser_notes", []),
+        )
+        for d in raw.get("descriptors", [])
+    ]
+    return RevitLookupReference(
+        revitlookup_tag=raw["revitlookup_tag"],
+        descriptor_map=descriptor_map,
+        descriptors=descriptors,
+    )
+
+
 # -- CLI ------------------------------------------------------------------------
 #
 # A standalone entry point, not wired into `python -m revit_schema_mapper`'s own
@@ -478,7 +520,6 @@ def verify_tag_match(source_dir: Path, claimed_tag: str) -> Optional[str]:
 def _main() -> None:
     import argparse
     import dataclasses
-    import json
 
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--source-dir", required=True, help="Local checkout of RevitLookup, already at --tag")

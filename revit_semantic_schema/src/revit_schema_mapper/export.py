@@ -10,7 +10,7 @@ from pathlib import Path
 
 from . import semantic_roles
 from .graph import GraphBuildResult, filter_core
-from .ground_truth import GroundTruthReport
+from .ground_truth import GroundTruthReport, RevitLookupCrossValidationReport
 from .models import (
     ApiPage,
     ClassRole,
@@ -120,6 +120,10 @@ def read_edge_candidates(output_dir: Path) -> list[EdgeCandidate]:
             dll_relationship_scope=r.get("dll_relationship_scope"),
             dll_semantic_verified=r.get("dll_semantic_verified"),
             dll_verified_status=r.get("dll_verified_status"),
+            # Round-tripped -- set by ground_truth.cross_validate_revitlookup (Stage C), same
+            # "survive past this one process" reasoning as the dll_* fields above.
+            revitlookup_referenced=r.get("revitlookup_referenced"),
+            revitlookup_requires_document_context=r.get("revitlookup_requires_document_context"),
         )
         for r in raw
     ]
@@ -493,6 +497,79 @@ def refresh_ground_truth_section_in_file(path: Path, report: GroundTruthReport, 
     if match:
         text = text[: match.start()]
     section = _ground_truth_section(report, section_number=section_number)
+    if not section:
+        return
+    path.write_text(text.rstrip("\n") + "\n\n" + "\n".join(section) + "\n", encoding="utf-8")
+
+
+def write_revitlookup_cross_validation_report(output_dir: Path, report: RevitLookupCrossValidationReport) -> None:
+    _write_json(output_dir / "revitlookup_cross_validation_report.json", report)
+
+
+def _revitlookup_section(report: RevitLookupCrossValidationReport | None, *, section_number: int, top_n: int = 10) -> list[str]:
+    """Stage C of docs/dll_reflection_v0.md -- cross-checking the docs-derived edge candidates
+    against ``revitlookup_reference.json`` (Stage C's own mining of RevitLookup's descriptor
+    source). ``report`` is ``None`` until ``--cross-validate-revitlookup`` is actually run
+    against this output directory, in which case this contributes nothing rather than a
+    misleading all-zero section -- same pattern as ``_ground_truth_section`` above.
+    """
+    if report is None:
+        return []
+
+    lines = [f"## {section_number}. RevitLookup descriptor cross-validation (Stage C)", ""]
+    lines.append(
+        f"Cross-checked against `revitlookup_reference.json` (RevitLookup tag `{report.revitlookup_tag}`) -- "
+        "see docs/dll_reflection_v0.md. A third, independent evidence source: `referenced=True` "
+        "is a positive-only corroboration signal, orthogonal to both `edge_confidence` (docs "
+        "alone) and Stage B's `dll_*` fields (compiled-API signature match). Absence is never "
+        "evidence an edge is wrong -- RevitLookup doesn't hand-write resolution logic for every "
+        "real member."
+    )
+    lines.append("")
+
+    total_edges = len(report.edge_results) or 1
+    referenced = [r for r in report.edge_results if r.referenced]
+    covered_not_referenced = [r for r in report.edge_results if not r.referenced]
+    requires_context = [r for r in referenced if r.requires_document_context]
+    lines.append("### Edge corroboration")
+    lines.append(f"- referenced (positive corroboration found): {len(referenced)} ({100 * len(referenced) / total_edges:.1f}%)")
+    lines.append(
+        f"- covered, not referenced (type has a descriptor, this member doesn't): "
+        f"{len(covered_not_referenced)} ({100 * len(covered_not_referenced) / total_edges:.1f}%)"
+    )
+    lines.append(f"- of referenced edges, requires_document_context: {len(requires_context)}")
+    lines.append(f"- covered short type names (at least one RevitLookup descriptor): {len(report.covered_short_type_names)}")
+    lines.append("")
+
+    lines.append(f"### Sample referenced edges -- {len(referenced)} total")
+    if referenced:
+        for r in referenced[:top_n]:
+            lines.append(f"- `{r.source_type}.{r.member_name}`: {r.note}")
+        if len(referenced) > top_n:
+            lines.append(f"- ...and {len(referenced) - top_n} more")
+    else:
+        lines.append("- (none)")
+    lines.append("")
+
+    return lines
+
+
+_REVITLOOKUP_SECTION_HEADING_RE = re.compile(r"^## \d+\. RevitLookup descriptor cross-validation \(Stage C\)\s*$", re.MULTILINE)
+
+
+def refresh_revitlookup_section_in_file(path: Path, report: RevitLookupCrossValidationReport, *, section_number: int) -> None:
+    """Replace (or append, if absent) the 'RevitLookup descriptor cross-validation' section of
+    an already-written ``summary.md``/``validation_summary.md`` with one reflecting ``report``
+    -- same in-place-refresh pattern as ``refresh_ground_truth_section_in_file``. A no-op if
+    ``path`` doesn't exist.
+    """
+    if not path.exists():
+        return
+    text = path.read_text(encoding="utf-8")
+    match = _REVITLOOKUP_SECTION_HEADING_RE.search(text)
+    if match:
+        text = text[: match.start()]
+    section = _revitlookup_section(report, section_number=section_number)
     if not section:
         return
     path.write_text(text.rstrip("\n") + "\n\n" + "\n".join(section) + "\n", encoding="utf-8")
