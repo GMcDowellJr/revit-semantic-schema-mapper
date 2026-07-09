@@ -911,3 +911,105 @@ def test_collection_of_link_element_id_uses_elementid_collection_treatment():
     assert candidate is not None
     assert candidate.candidate_edge_type is EdgeType.RETURNS_ELEMENT_IDS
     assert candidate.edge_confidence is ConfidenceLabel.UNKNOWN_REFERENCE
+
+
+def test_connector_manager_exact_match_is_classified_as_references():
+    """Evidence from the unknown_pareto.py breakdown of live 2024/2025/2026
+    crawls: a stable 6-edge/6-distinct-source-type cluster every year
+    (Connector/FabricationPart/MEPCurve/MEPModel/MEPSystem.ConnectorManager,
+    plus one more not captured by the tool's 5-example cap), all named
+    exactly 'ConnectorManager', no counterexample observed in any of the 15
+    sampled examples across the three years."""
+    member = _member("ConnectorManager", "ConnectorManager", declaring_type="Autodesk.Revit.DB.MEPCurve")
+    candidate = classify_member(member, source_type="Autodesk.Revit.DB.MEPCurve", known_type_short_names={"ConnectorManager"})
+
+    assert candidate is not None
+    assert candidate.candidate_edge_type is EdgeType.REFERENCES
+    assert candidate.edge_confidence is ConfidenceLabel.DIRECT_RETURN_TYPE
+    assert candidate.candidate_target_type == "Autodesk.Revit.DB.ConnectorManager"
+
+
+def test_thermal_properties_exact_match_is_classified_as_references():
+    """Evidence from the same three-year pareto breakdown: a complete (all
+    5 examples captured, cluster count == 5) cluster every year
+    (BuildingPadType/CeilingType/FloorType/RoofType/WallType.ThermalProperties),
+    zero counterexamples."""
+    member = _member("ThermalProperties", "ThermalProperties", declaring_type="Autodesk.Revit.DB.WallType")
+    candidate = classify_member(member, source_type="Autodesk.Revit.DB.WallType", known_type_short_names={"ThermalProperties"})
+
+    assert candidate is not None
+    assert candidate.candidate_edge_type is EdgeType.REFERENCES
+    assert candidate.edge_confidence is ConfidenceLabel.DIRECT_RETURN_TYPE
+    assert candidate.candidate_target_type == "Autodesk.Revit.DB.ThermalProperties"
+
+
+def test_rounding_manager_suffix_covers_both_rebar_and_fabric_targets():
+    """Evidence from the same breakdown: two complete clusters, stable every
+    year -- Rebar/RebarBarType/RebarContainer/RebarInSystem
+    .GetReinforcementRoundingManager + ReinforcementSettings
+    .GetRebarRoundingManager (target RebarRoundingManager) and
+    FabricArea/FabricSheet/FabricSheetType.GetReinforcementRoundingManager +
+    ReinforcementSettings.GetFabricRoundingManager (target
+    FabricRoundingManager). One naming pattern, two distinct real target
+    types, so target_hint is None and the direct-return path uses the
+    (type-system-verified) return type itself for each."""
+    rebar_member = _method_member(
+        "GetReinforcementRoundingManager", "RebarRoundingManager", declaring_type="Autodesk.Revit.DB.Structure.Rebar"
+    )
+    rebar_candidate = classify_member(
+        rebar_member, source_type="Autodesk.Revit.DB.Structure.Rebar", known_type_short_names={"RebarRoundingManager"}
+    )
+    assert rebar_candidate is not None
+    assert rebar_candidate.candidate_edge_type is EdgeType.REFERENCES
+    assert rebar_candidate.candidate_target_type == "Autodesk.Revit.DB.RebarRoundingManager"
+
+    fabric_member = _method_member(
+        "GetFabricRoundingManager", "FabricRoundingManager", declaring_type="Autodesk.Revit.DB.Structure.ReinforcementSettings"
+    )
+    fabric_candidate = classify_member(
+        fabric_member,
+        source_type="Autodesk.Revit.DB.Structure.ReinforcementSettings",
+        known_type_short_names={"FabricRoundingManager"},
+    )
+    assert fabric_candidate is not None
+    assert fabric_candidate.candidate_edge_type is EdgeType.REFERENCES
+    assert fabric_candidate.candidate_target_type == "Autodesk.Revit.DB.FabricRoundingManager"
+
+
+def test_subcategory_exact_match_is_classified_as_references_not_has_category():
+    """Regression test: 'Subcategory' contains 'Category' as a substring, so
+    without a more specific rule checked first, CurveByPoints/ModelCurve/
+    SymbolicCurve.Subcategory (all really return GraphicsStyle -- Revit
+    represents a subcategory as a GraphicsStyle object, confirmed by the
+    return type) would hit the target_hint-vs-return-type conflict check
+    against the generic 'Category' keyword rule and fall back to
+    UNKNOWN_DB_OBJECT_REFERENCE. Evidence from the three-year pareto
+    breakdown: a complete 3-edge/3-distinct-source-type cluster every year,
+    zero counterexamples."""
+    member = _member("Subcategory", "GraphicsStyle", declaring_type="Autodesk.Revit.DB.ModelCurve")
+    candidate = classify_member(member, source_type="Autodesk.Revit.DB.ModelCurve", known_type_short_names={"GraphicsStyle"})
+
+    assert candidate is not None
+    assert candidate.candidate_edge_type is EdgeType.REFERENCES
+    assert candidate.candidate_target_type == "Autodesk.Revit.DB.GraphicsStyle"
+
+
+def test_graphics_style_keyword_covers_direct_object_and_elementid_forms():
+    """Evidence from the same breakdown: a complete 4-edge/4-distinct-source
+    direct-return cluster (Category.GetGraphicsStyle self-confirming, same
+    shape as GetDocument/SketchPlane) plus a complete 3-edge/3-distinct-
+    source 'GraphicsStyleId' ElementId cluster
+    (GeometryObject/SolidOptions/TessellatedShapeBuilder.GraphicsStyleId),
+    both stable every year, zero counterexamples."""
+    direct_member = _method_member("GetGraphicsStyle", "GraphicsStyle", declaring_type="Autodesk.Revit.DB.Category")
+    direct_candidate = classify_member(direct_member, source_type="Autodesk.Revit.DB.Category", known_type_short_names={"GraphicsStyle"})
+    assert direct_candidate is not None
+    assert direct_candidate.candidate_edge_type is EdgeType.REFERENCES
+    assert direct_candidate.candidate_target_type == "Autodesk.Revit.DB.GraphicsStyle"
+
+    elementid_member = _member("GraphicsStyleId", "ElementId", declaring_type="Autodesk.Revit.DB.GeometryObject")
+    elementid_candidate = classify_member(elementid_member, source_type="Autodesk.Revit.DB.GeometryObject", known_type_short_names=set())
+    assert elementid_candidate is not None
+    assert elementid_candidate.candidate_edge_type is EdgeType.REFERENCES
+    assert elementid_candidate.edge_confidence is ConfidenceLabel.ELEMENTID_WITH_STRONG_NAME
+    assert elementid_candidate.candidate_target_type == "Autodesk.Revit.DB.GraphicsStyle"

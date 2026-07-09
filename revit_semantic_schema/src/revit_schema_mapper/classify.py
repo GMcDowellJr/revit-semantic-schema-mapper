@@ -327,6 +327,49 @@ _NAME_KEYWORD_RULES: list[tuple[re.Pattern[str], EdgeType, str | None]] = [
     # types) was 100% literally named "TypeId" (e.g. DirectShape.TypeId,
     # Subelement.TypeId) -- none matched the pre-existing pattern at all.
     (re.compile(r"^(Type|TypeId|GetTypeId)$", re.IGNORECASE), EdgeType.TYPE_OF, None),
+    # Exact match. Evidence from the unknown_pareto.py breakdown of live
+    # 2024/2025/2026 crawls: a stable 6-edge/6-distinct-source-type cluster
+    # every year (Connector/FabricationPart/MEPCurve/MEPModel/MEPSystem, plus
+    # one more not captured by the tool's 5-example cap), all named exactly
+    # "ConnectorManager", all returning the ConnectorManager type -- no
+    # counterexample observed in any of the 15 sampled examples across the
+    # three years.
+    (re.compile(r"^ConnectorManager$", re.IGNORECASE), EdgeType.REFERENCES, "ConnectorManager"),
+    # Exact match. Evidence from the same three-year pareto breakdown: a
+    # complete (all examples captured, cluster count == 5 == examples shown)
+    # 5-edge/5-distinct-source-type cluster every year
+    # (BuildingPadType/CeilingType/FloorType/RoofType/WallType), all named
+    # exactly "ThermalProperties", zero counterexamples.
+    (re.compile(r"^ThermalProperties$", re.IGNORECASE), EdgeType.REFERENCES, "ThermalProperties"),
+    # Ends-with, no target hint: this single naming pattern covers two
+    # distinct real target types (RebarRoundingManager, FabricRoundingManager)
+    # that differ only in which structural concept they round for, so the
+    # target must come from the (type-system-verified) return type itself,
+    # same as the direct-return-object path already does for every other
+    # rule with target_hint=None. Evidence from the same three-year pareto
+    # breakdown: two complete clusters, stable every year --
+    # Rebar/RebarBarType/RebarContainer/RebarInSystem.GetReinforcementRoundingManager
+    # + ReinforcementSettings.GetRebarRoundingManager (5 edges) and
+    # FabricArea/FabricSheet/FabricSheetType.GetReinforcementRoundingManager +
+    # ReinforcementSettings.GetFabricRoundingManager (4 edges), zero
+    # counterexamples.
+    (re.compile(r"RoundingManager$", re.IGNORECASE), EdgeType.REFERENCES, None),
+    # Exact match, checked ahead of the generic "Category" rule below on
+    # purpose: "Subcategory" contains "Category" as a substring, so without
+    # this more specific rule first, CurveByPoints/ModelCurve/SymbolicCurve
+    # .Subcategory (all really return GraphicsStyle, not Category -- Revit
+    # represents a subcategory as a GraphicsStyle object) hit the
+    # target_hint-vs-return-type conflict check and fall back to
+    # UNKNOWN_DB_OBJECT_REFERENCE instead of asserting the wrong target.
+    # Evidence from the three-year pareto breakdown: a complete 3-edge/
+    # 3-distinct-source-type cluster every year, zero counterexamples.
+    (re.compile(r"^Subcategory$", re.IGNORECASE), EdgeType.REFERENCES, "GraphicsStyle"),
+    # Evidence from the same breakdown: a complete 4-edge/4-distinct-source
+    # ("GetGraphicsStyle" self-confirming direct-return, same shape as
+    # GetDocument/SketchPlane) plus a complete 3-edge/3-distinct-source
+    # "GraphicsStyleId" ElementId cluster, both stable every year, zero
+    # counterexamples.
+    (re.compile(r"GraphicsStyle", re.IGNORECASE), EdgeType.REFERENCES, "GraphicsStyle"),
     (re.compile(r"Category", re.IGNORECASE), EdgeType.HAS_CATEGORY, "Category"),
     (re.compile(r"Parameter", re.IGNORECASE), EdgeType.HAS_PARAMETER, None),
     (re.compile(r"^GetAll", re.IGNORECASE), EdgeType.RETURNS_ELEMENT_IDS, None),

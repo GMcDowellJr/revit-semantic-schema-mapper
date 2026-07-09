@@ -1646,3 +1646,99 @@ Two further findings from this same round of automated PR review, both fixed:
    reference resolving to a same-named Framework file instead of surfacing as unresolved) rather
    than failing loudly. Fixed by only including `$runtimeDlls` there when
    `$PSVersionTable.PSEdition -eq 'Core'` is actually true.
+
+## Unknown-edge Pareto review across 2024/2025/2026 crawls (2026-07-09)
+
+Reviewed `unknown_pareto.py` output (`--json-out`/`--csv-out`) generated from real, full
+`candidate_edges.json` crawls for Revit 2024, 2025, and 2026, supplied as a zip of the six
+report files (no raw HTML this time -- see "previous effort" note below). Goal: find any
+remaining `UNKNOWN_DB_OBJECT_REFERENCE`/`UNKNOWN_ELEMENTID_REFERENCE`/`RETURNS_ELEMENT_IDS`
+clusters worth promoting to a specific edge type, the same exercise that produced the
+`Document`/`ViewId`/`View`/`Location`/`GetExternalResourceReference`/`Room`/`Schema`/
+`SketchPlane`/`TypeId` rules already in `classify.py`.
+
+**Headline finding: the easy wins are gone.** `unknown_edge_share` is ~62% in all three years
+(2024: 62.0%, 2025: 61.7%, 2026: 61.6%), and the cluster shape is a long, flat tail -- 554/235/197
+distinct clusters (2026) across the three buckets, median cluster size 2, largest single cluster
+only 45/1580 edges (2.9%). Unlike the earlier review pass (where a handful of clusters each
+carried dozens of edges), there's no more concentrated "Pareto head" left to exploit with cheap
+keyword rules. The cluster shape, counts, and even the specific example members are essentially
+identical across all three crawled years (see the top-15 tables in the review's working notes) --
+confirms the remaining bucket isn't a per-year fluke, it's a stable property of the API surface
+itself.
+
+**The "Reference" cluster is a trap, not a Pareto win -- do not add a bare-substring "Reference"
+keyword rule.** It's the single largest cluster in every year (43/45/45 edges, ~33 distinct
+source types) and superficially looks like the strongest remaining candidate: `Reference` is a
+real, well-known `Autodesk.Revit.DB` type, already correctly resolved as `candidate_target_type`
+by the direct-return-object path, so it looks like only the edge type needs upgrading to
+`REFERENCES` the same way `View`/`Location` were. It isn't safe, because (unlike `View`/
+`Location`, which are exact-name matches) a generic `Reference` *substring* match would need to
+fire on `ElementId`-typed members too to catch cases like `CurveByPointsUtils.GetFaceRegions`
+(no "Reference" in the name, but does return `Reference`) -- and the `ElementId`/
+`ElementId`-collection path has **no target-vs-return-type conflict check** (see
+`classify_member`'s `is_elementid`/`is_elementid_collection` branches), unlike the direct-object
+path. Real counterexamples found in the same three-year pareto data that a bare substring rule
+would have silently mis-targeted as `Reference`:
+- `IndependentTag.MultiReferenceAnnotationId` (`ElementId`) -- real target is
+  `MultiReferenceAnnotation`, not `Reference`.
+- `ReferenceableViewUtils.GetReferencedViewId` (`ElementId`) -- real target is `View`.
+- `Analysis.MassSurfaceData.ReferenceElementId` (`ElementId`) -- real target is a specific
+  element, not the `Reference` type.
+- `ExternalResourceUtils.GetAllExternalResourceReferences` / `TransmissionData
+  .GetAllExternalFileReferenceIds` (`ElementId` collections) -- real targets are
+  `ExternalResourceReference`/`ExternalFileReference`, distinct types already handled by their
+  own more specific rules.
+- `View.GetReferenceCallouts`/`.GetReferenceElevations`/`.GetReferenceSections` (`ElementId`
+  collections) -- real target is `View` (the callout/elevation/section views that reference this
+  view), nothing to do with the `Reference` class at all.
+
+Left as `UNKNOWN_DB_OBJECT_REFERENCE`/`UNKNOWN_ELEMENTID_REFERENCE` on purpose. If a future pass
+wants to recover the `Reference`-cluster edges, it needs per-member docs-text confirmation (Stage
+A/B/C evidence or actual HTML), not a blanket keyword.
+
+The similarly large `Element` cluster (20-21 edges DB-object, 7-8 ElementId) was left alone for
+the same reason underlying its rule's absence from `classify.py` already: `Element` is the base
+type for the entire object model, so "this member returns/references an `Element`" carries no
+specific relationship semantics by itself (the examples span host/owner/container/collector
+patterns with no unifying keyword) -- correctly, honestly unknown by design, not a gap.
+
+**What was safe to add**: five clusters passed the same bar the earlier rules were held to --
+exact- or narrow-keyword member-name match, self-confirming or conflict-checked target, and
+(critically) fully or near-fully sampled by `unknown_pareto.py`'s 5-example cap (cluster
+`count` <= 6, so the visible examples are the whole cluster, not a subset), identical across
+all three crawled years:
+
+| Rule | Edges/year | Note |
+|---|---|---|
+| `^ConnectorManager$` -> `REFERENCES`/`ConnectorManager` | 6 (5 of 6 sampled) | `Connector`/`FabricationPart`/`MEPCurve`/`MEPModel`/`MEPSystem.ConnectorManager` |
+| `^ThermalProperties$` -> `REFERENCES`/`ThermalProperties` | 5 (complete) | `BuildingPadType`/`CeilingType`/`FloorType`/`RoofType`/`WallType.ThermalProperties` |
+| `RoundingManager$` -> `REFERENCES`/`None` | 5 + 4 (both complete) | Two distinct real targets (`RebarRoundingManager`, `FabricRoundingManager`) from one naming pattern, disambiguated by the verified return type since `target_hint=None` |
+| `^Subcategory$` -> `REFERENCES`/`GraphicsStyle` | 3 (complete) | Checked ahead of the generic `Category` rule -- `"Subcategory"` contains `"Category"` as a substring and would otherwise conflict-check to `UNKNOWN_DB_OBJECT_REFERENCE` |
+| `GraphicsStyle` (substring) -> `REFERENCES`/`GraphicsStyle` | 4 + 3 (both complete) | Covers both `Category.GetGraphicsStyle` (direct-return) and the `GraphicsStyleId` `ElementId` form |
+
+Added to `_NAME_KEYWORD_RULES` in `classify.py` with matching regression tests in
+`test_classify.py` and an entry in `docs/edge_taxonomy_v0.md`'s `REFERENCES` row. Evidence is
+honestly weaker than the "zero counterexamples confirmed against full candidate_edges.json"
+standard the very first rules in this file met -- this pass only had `unknown_pareto.py`'s
+capped-at-5-examples-per-cluster JSON/CSV output, not the underlying edge list or page HTML, so
+"zero counterexamples" here means "zero counterexamples in the (mostly complete) sample," not an
+exhaustive check. Flagged per-rule above.
+
+Also noted as a data-quality gap, not something this pass fixed: the 2026 report has
+`revitlookup_referenced_count: 0` / `dll_member_not_found_count: 0` on every single cluster,
+while 2024 and 2025 both show real nonzero corroboration counts on a handful of clusters (e.g.
+`Reference`: rlu=2 in both 2024 and 2025). This means whatever produced the 2026
+`candidate_edges.json` ran without `--cross-validate-revitlookup` (or without a
+`revitlookup_reference_2026.json` to cross-validate against) -- worth confirming before treating
+a future 2026 pareto report's zero counts as a real "no corroboration exists" signal rather than
+"cross-validation wasn't run this time."
+
+Previous review passes required uploading cached `.htm` pages directly for docs-prose
+confirmation; this pass worked entirely from `unknown_pareto.py`'s JSON/CSV output (no raw HTML),
+which was sufficient for the exact-name/narrow-keyword additions above but is exactly what
+surfaced the `Reference`-cluster risk -- the pareto tool's per-cluster example cap (5) and lack of
+docs-summary text means it can suggest a plausible-looking rule that a full `candidate_edges.json`
+grep or the actual docs page would have ruled out immediately. Recommend keeping raw-HTML/full-
+JSON access available for any future pass that wants to go past this review's remaining ~950
+small (mostly 2-4 edge) clusters.
