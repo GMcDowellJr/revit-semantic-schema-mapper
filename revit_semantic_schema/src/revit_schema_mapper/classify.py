@@ -69,6 +69,12 @@ PRIMITIVE_TYPES = {
     "short",
     "XYZ",  # a value type, not reference-bearing
     "UV",
+    "Color",
+    "Plane",
+    "Transform",
+    "BoundingBoxXYZ",
+    "CurveLoop",
+    "Outline",
 }
 
 _ELEMENTID_COLLECTION_RE = re.compile(
@@ -269,7 +275,12 @@ def classify_member(member: MemberInfo, source_type: str, known_type_short_names
     collection_match = _ELEMENTID_COLLECTION_RE.match(return_type)
     is_elementid_collection = bool(collection_match)
     generic_match = _GENERIC_ELEMENTID_COLLECTION_RE.match(return_type)
-    is_unresolved_generic_collection = bool(generic_match) and not is_elementid_collection
+    generic_inner_bare = generic_match.group(1).rsplit(".", 1)[-1] if generic_match else None
+    is_unresolved_generic_collection = (
+        bool(generic_match)
+        and not is_elementid_collection
+        and generic_inner_bare not in PRIMITIVE_TYPES
+    )
 
     bare_return = return_type.rsplit(".", 1)[-1]
     is_direct_db_object = (

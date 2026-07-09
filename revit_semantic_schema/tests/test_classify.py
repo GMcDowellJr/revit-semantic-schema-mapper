@@ -208,3 +208,62 @@ def test_docs_semantic_hint_upgrades_name_only_candidate():
 
     assert candidate is not None
     assert candidate.edge_confidence is ConfidenceLabel.DOCS_SEMANTIC_HINT
+
+
+def test_generic_collection_of_strings_is_not_classified_as_a_db_reference():
+    """Regression test: a collection of a primitive type (IList<string>) was
+    previously falling into the unresolved-generic-collection branch, which
+    doesn't check its captured element type against PRIMITIVE_TYPES the way
+    the direct-return branch does -- the element type ('string') then got
+    unconditionally prefixed into a bogus 'Autodesk.Revit.DB.string' target,
+    a scalar value collection masquerading as a DB object relationship."""
+    member = _member("GetSequenceNames", "IList<string>", declaring_type="Autodesk.Revit.DB.Element")
+    candidate = classify_member(member, source_type="Autodesk.Revit.DB.Element", known_type_short_names=set())
+
+    assert candidate is None
+
+
+def test_generic_collection_of_doubles_is_not_classified_as_a_db_reference():
+    member = _member("GetSampleValues", "ICollection<double>", declaring_type="Autodesk.Revit.DB.Element")
+    candidate = classify_member(member, source_type="Autodesk.Revit.DB.Element", known_type_short_names=set())
+
+    assert candidate is None
+
+
+def test_generic_collection_of_strings_with_name_match_uses_name_hint_not_bogus_target():
+    """Even when a collection-of-primitives member's name matches a
+    relationship keyword, the primitive element type must never leak into
+    candidate_target_type -- the name-derived target hint (or None) is used
+    instead, same as the existing name_only_candidate path for scalar
+    returns."""
+    member = _member("GetMaterialNames", "IList<string>", declaring_type="Autodesk.Revit.DB.Element")
+    candidate = classify_member(member, source_type="Autodesk.Revit.DB.Element", known_type_short_names=set())
+
+    assert candidate is not None
+    assert candidate.candidate_edge_type is EdgeType.USES_MATERIAL
+    assert candidate.edge_confidence is ConfidenceLabel.NAME_ONLY_CANDIDATE
+    assert candidate.candidate_target_type == "Autodesk.Revit.DB.Material"
+
+
+def test_generic_collection_of_unresolved_db_type_still_needs_runtime_validation():
+    """Non-primitive, non-ElementId generic collections must keep their
+    existing needs_runtime_validation behavior -- only primitive element
+    types are demoted out of the DB-object-reference path."""
+    member = _member("GetCurveLoops", "IList<CurveLoopThing>", declaring_type="Autodesk.Revit.DB.Element")
+    candidate = classify_member(member, source_type="Autodesk.Revit.DB.Element", known_type_short_names=set())
+
+    assert candidate is not None
+    assert candidate.edge_confidence is ConfidenceLabel.NEEDS_RUNTIME_VALIDATION
+    assert candidate.candidate_target_type == "Autodesk.Revit.DB.CurveLoopThing"
+
+
+def test_color_plane_transform_are_treated_as_value_objects_not_relationships():
+    """Color/Plane/Transform/BoundingBoxXYZ/CurveLoop/Outline are geometry
+    and value types, not persistent DB objects -- same category as the
+    pre-existing XYZ/UV entries in PRIMITIVE_TYPES. A direct-return property
+    of one of these must not produce a DB-object-reference edge."""
+    for value_type in ("Color", "Plane", "Transform", "BoundingBoxXYZ", "CurveLoop", "Outline"):
+        member = _member("GetBoundingBox", value_type, declaring_type="Autodesk.Revit.DB.Element")
+        candidate = classify_member(member, source_type="Autodesk.Revit.DB.Element", known_type_short_names={value_type})
+
+        assert candidate is None, f"{value_type} should not produce an edge candidate"
