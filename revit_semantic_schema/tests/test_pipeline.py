@@ -302,6 +302,22 @@ def test_checkpoint_cooldown_starts_after_export_finishes_not_before(tmp_path, m
     cooldown time, letting the very next page-count boundary fire another
     full checkpoint immediately and collapsing back toward every-interval
     exports -- the exact overhead this rate limit exists to prevent.
+
+    Asserts on the *gap* between the first two checkpoint firings rather
+    than a total call count over the whole crawl: _run_crawl_loop now times
+    every page, cache hit or not (see cache_hit_duration_tracker), so a
+    short crawl no longer has a "nothing else ever advances the clock"
+    baseline to hang an exact call-count assertion on -- extra dummy pages
+    below exist purely to give the loop enough iterations for a second
+    checkpoint to fire at all, not because their content matters.
+
+    If last_checkpoint_time were wrongly captured *before* checkpoint()
+    (i.e. before the simulated 5.0s slow export), the second checkpoint
+    would fire as soon as checkpoint_min_interval_seconds elapses on its
+    own, missing the 5.0s "credit" the export should have bought -- shrinking
+    this gap by roughly that much. Confirmed directly against a deliberately
+    reintroduced version of that bug: gap ~9s (buggy) vs. ~15s (fixed) for
+    this exact config, comfortably on either side of the 12.0s cutoff below.
     """
 
     class FakeClock:
@@ -309,7 +325,7 @@ def test_checkpoint_cooldown_starts_after_export_finishes_not_before(tmp_path, m
             self.now = 0.0
 
         def monotonic(self):
-            self.now += 1.0  # every call simulates a small amount of wall-clock passing
+            self.now += 1.0  # every call simulates 1s of wall-clock passing
             return self.now
 
         def jump(self, seconds):
@@ -329,22 +345,31 @@ def test_checkpoint_cooldown_starts_after_export_finishes_not_before(tmp_path, m
 
     entries, _ = crawler.discover_via_namespace_json()
     by_url = {e["url"]: e for e in entries}
+    # Extra runway beyond the 3 real pages above -- content is irrelevant
+    # (sniff_kind will call these "unrecognized" and skip them), only their
+    # count as loop iterations matters, to give a second checkpoint room to
+    # fire within this test at all.
+    for i in range(10):
+        url = f"https://www.revitapidocs.com/2024/dummy-{i}.htm"
+        _prime_cache(crawler, url, "<html><body>dummy</body></html>")
+        by_url[url] = {"url": url, "link_text": "dummy", "discovered_via": "test"}
 
-    calls: list[int] = []
+    fire_times: list[float] = []
 
     def spy_checkpoint(pages, failed_urls, is_final=False):
-        calls.append(len(calls))
-        if len(calls) == 1:
+        fire_times.append(fake_clock.now)
+        if len(fire_times) == 1:
             fake_clock.jump(5.0)  # simulate a slow export exceeding checkpoint_min_interval_seconds
 
     _crawl_and_parse(
-        crawler, config, by_url, checkpoint=spy_checkpoint, checkpoint_interval=1, checkpoint_min_interval_seconds=2.0
+        crawler, config, by_url, checkpoint=spy_checkpoint, checkpoint_interval=1, checkpoint_min_interval_seconds=7.0
     )
 
-    # Only one checkpoint should fire during the loop: the page-count
-    # boundary immediately after the slow export must not re-fire just
-    # because the export's own duration was mistakenly counted as cooldown.
-    assert len(calls) == 1
+    assert len(fire_times) >= 2  # enough runway existed for a second checkpoint to fire
+    # threshold (7.0) + the slow export's own duration (5.0) = 12.0: the
+    # minimum gap possible if (and only if) the export's duration was
+    # correctly excluded from the cooldown clock.
+    assert fire_times[1] - fire_times[0] >= 12.0
 
 
 def test_progress_log_reports_recent_and_overall_rate(tmp_path, monkeypatch, caplog):
@@ -356,9 +381,10 @@ def test_progress_log_reports_recent_and_overall_rate(tmp_path, monkeypatch, cap
     single running average would lag behind how fast the crawl is actually
     going right now. See test_progress_rate_tracker_smooths_a_single_slow_interval
     for the windowing/smoothing behavior itself, isolated from a real crawl,
-    and test_fetch_floor_eta_reflects_uncached_queue_count for the ETA
-    (which is deliberately *not* derived from this rate -- see
-    _fetch_floor_eta_seconds's docstring for why).
+    and test_fetch_floor_eta_reflects_uncached_queue_count /
+    test_avg_cache_hit_seconds_prices_remaining_cached_pages for the two
+    components the ETA is actually built from (deliberately *not* this rate
+    -- see _fetch_floor_eta_seconds's docstring for why).
     """
 
     class FakeClock:
@@ -399,15 +425,31 @@ def test_progress_log_reports_recent_and_overall_rate(tmp_path, monkeypatch, cap
     assert "0 queued" in progress_lines[2]
 
     # All 3 URLs were pre-cached before the crawl even started (see
-    # _prime_cache calls above), so the fetch-floor ETA -- which only counts
-    # queued URLs *without* a cached copy on disk -- is 0 throughout,
-    # regardless of the (irrelevant to it) simulated rate above. No fetch
-    # was ever genuinely uncached either, so _FetchDurationTracker never
-    # recorded a real sample and reports its fallback: CrawlConfig's default
-    # throttle_seconds (2.0), unchanged by this config not overriding it.
+    # _prime_cache calls above), so "uncached" is 0 throughout and
+    # avg_fetch_seconds never gets a real sample -- it reports its fallback,
+    # CrawlConfig's default throttle_seconds (2.0), unchanged by this config
+    # not overriding it.
     for line in progress_lines:
         assert "(0 uncached)" in line
-        assert "ETA 0s (observed floor, ~2.00s/fetch)" in line
+
+    # avg_cache_hit_seconds *does* get real samples here, though (a cache
+    # hit still costs real time to parse -- see cache_hit_duration_tracker's
+    # comment in _run_crawl_loop, added after a real crawl reported a
+    # multi-minute ETA that read as "3s" because this used to be silently
+    # excluded). No page has finished yet when line 1 logs, so it still
+    # reports the pre-first-sample fallback of 0.0 and an ETA of 0.
+    assert "ETA 0s (observed floor, ~2.00s/fetch, ~0.000s/cache-hit)" in progress_lines[0]
+
+    # By line 2, page 1's full fetch+parse duration (1 simulated second under
+    # this fake clock) has been recorded as the only cache-hit sample so
+    # far, so the 1 still-queued (and still-cached) page prices out to
+    # 1 * 1.000s = 1s of ETA -- not 0, unlike the old behavior this is a
+    # regression test for.
+    assert "ETA 1s (observed floor, ~2.00s/fetch, ~1.000s/cache-hit)" in progress_lines[1]
+
+    # Line 3 has 0 pages left queued at all, so ETA is 0 regardless of the
+    # (now nonzero) measured cache-hit average.
+    assert "ETA 0s (observed floor, ~2.00s/fetch, ~1.000s/cache-hit)" in progress_lines[2]
 
 
 def test_progress_rate_tracker_smooths_a_single_slow_interval():
@@ -444,11 +486,16 @@ def test_progress_rate_tracker_smooths_a_single_slow_interval():
 def test_fetch_floor_eta_reflects_uncached_queue_count(tmp_path):
     """The fetch-floor ETA counts only queued URLs without a cached copy on
     disk (each of those costs a real network fetch -- see
-    _fetch_floor_eta_seconds's docstring) and ignores cached ones (a cache
-    hit is effectively free). Confirmed on a real run: this is what lets
-    the ETA react immediately to a resumed crawl exhausting its
+    _fetch_floor_eta_seconds's docstring). Confirmed on a real run: this is
+    what lets the ETA react immediately to a resumed crawl exhausting its
     already-cached pages and hitting the network for real, instead of
     lagging for several progress lines like an empirical rate average does.
+
+    This is only the network-bound half of _run_crawl_loop's actual ETA --
+    _fetch_floor_eta_seconds itself still treats a cached URL as contributing
+    nothing, but _run_crawl_loop adds a second term on top for the real
+    (nonzero) cost of processing what's already cached -- see
+    test_avg_cache_hit_seconds_prices_remaining_cached_pages below.
 
     ``avg_fetch_seconds`` here is an arbitrary observed value (2.3), not
     ``--throttle-seconds`` -- see test_fetch_duration_tracker_averages_only_genuine_fetches
@@ -469,6 +516,43 @@ def test_fetch_floor_eta_reflects_uncached_queue_count(tmp_path):
 
     assert not_cached == 4  # only the never-fetched URLs
     assert _fetch_floor_eta_seconds(not_cached, avg_fetch_seconds=2.3) == pytest.approx(4 * 2.3)
+
+
+def test_avg_cache_hit_seconds_prices_remaining_cached_pages():
+    """Regression test for a real observed bug: a crawl resumed almost
+    entirely from cache (25918 queued, 2 uncached) logged 'ETA 3s' even
+    though its own logged throughput (~15-21 pages/s) implied over 20
+    minutes of real remaining work. _fetch_floor_eta_seconds alone only
+    prices the handful of not-yet-cached URLs and silently treats the rest
+    of the queue as free -- true for the network round trip, but not for
+    the parsing that still has to happen for every cached page too.
+
+    The fix adds a second _FetchDurationTracker instance
+    (cache_hit_duration_tracker in _run_crawl_loop) measuring real
+    fetch+parse duration for cache hits, and sums both terms for the
+    logged ETA. This test exercises that exact arithmetic with the real
+    counts/rate from the run that surfaced the bug, without needing a full
+    crawl loop.
+    """
+    from revit_schema_mapper.pipeline import _FetchDurationTracker, _fetch_floor_eta_seconds
+
+    fetch_tracker = _FetchDurationTracker(window=50, fallback_seconds=1.5)
+    cache_hit_tracker = _FetchDurationTracker(window=50, fallback_seconds=0.0)
+    for _ in range(10):
+        cache_hit_tracker.record(1 / 18)  # ~18 cache-hit pages/s, in line with the observed 15-21 pages/s
+
+    not_cached_remaining = 2
+    cached_remaining = 25868
+
+    network_floor = _fetch_floor_eta_seconds(not_cached_remaining, fetch_tracker.average_seconds)
+    eta_seconds = network_floor + cached_remaining * cache_hit_tracker.average_seconds
+
+    # The old, misleading behavior: only the network-floor term, 2 * 1.5s.
+    assert network_floor == pytest.approx(3.0)
+    # The fixed behavior: dominated by the 25868 still-cached-but-unparsed
+    # pages, correctly landing in the tens-of-minutes range instead.
+    assert eta_seconds == pytest.approx(3.0 + 25868 / 18, rel=1e-6)
+    assert eta_seconds > 1000  # nowhere near the old, misleading "3s"
 
 
 def test_fetch_duration_tracker_uses_fallback_until_a_real_sample_recorded():
