@@ -159,6 +159,26 @@ _TYPED_ID_TARGETS: dict[str, tuple[str, EdgeType]] = {
     "WorksetId": ("Workset", EdgeType.OWNED_BY_WORKSET),
 }
 
+# Most _NAME_KEYWORD_RULES target_hint values (Level, Phase, Workset,
+# Material, ...) happen to live directly under Autodesk.Revit.DB, so the
+# final "Autodesk.Revit.DB.{target}" prefixing below is correct for them by
+# coincidence, not by design. Room and Schema don't: their real
+# fully-qualified names are Autodesk.Revit.DB.Architecture.Room and
+# Autodesk.Revit.DB.ExtensibleStorage.Schema (docs/edge_taxonomy_v0.md,
+# pipeline.DEFAULT_TARGET_CLASSES) -- blindly prefixing produced a bogus
+# "Autodesk.Revit.DB.Room"/"Autodesk.Revit.DB.Schema" node that doesn't
+# correspond to any real crawled type, wrong in candidate_edges.json even
+# before graph._Resolver gets a chance to (sometimes) paper over it via
+# short-name fallback. Applied only at the final candidate_target_type
+# normalization step, not to target_hint itself -- name_match_confirms_
+# return_type/the conflict check above compare target_hint against
+# bare_return, which is always a bare short name (Room/Schema), so target_hint
+# must stay a bare short name too; only the exported full name needs fixing.
+_NON_DB_NAMESPACE_TARGETS: dict[str, str] = {
+    "Room": "Autodesk.Revit.DB.Architecture.Room",
+    "Schema": "Autodesk.Revit.DB.ExtensibleStorage.Schema",
+}
+
 # A "Create*" method constructs and returns a brand-new object -- it says
 # nothing about a relationship *of* source_type, even though it's declared
 # on it (usually a factory/utility class). The negative lookahead excludes
@@ -563,7 +583,9 @@ def classify_member(member: MemberInfo, source_type: str, known_type_short_names
             confidence = ConfidenceLabel.DOCS_SEMANTIC_HINT
 
     if candidate_target_type and not candidate_target_type.startswith("Autodesk.Revit"):
-        candidate_target_type = f"Autodesk.Revit.DB.{candidate_target_type}"
+        candidate_target_type = _NON_DB_NAMESPACE_TARGETS.get(
+            candidate_target_type, f"Autodesk.Revit.DB.{candidate_target_type}"
+        )
 
     return EdgeCandidate(
         source_type=source_type,

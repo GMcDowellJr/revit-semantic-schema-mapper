@@ -517,7 +517,7 @@ def test_keyword_rules_fire_in_scoped_crawls_even_when_their_own_target_type_is_
 
     assert room_candidate is not None
     assert room_candidate.candidate_edge_type is EdgeType.REFERENCES
-    assert room_candidate.candidate_target_type == "Autodesk.Revit.DB.Room"
+    assert room_candidate.candidate_target_type == "Autodesk.Revit.DB.Architecture.Room"
     assert room_candidate.edge_confidence is ConfidenceLabel.DIRECT_RETURN_TYPE
 
     schema_member = _member("Schema", "Schema", declaring_type="Autodesk.Revit.DB.ExtensibleStorage.Entity")
@@ -525,7 +525,7 @@ def test_keyword_rules_fire_in_scoped_crawls_even_when_their_own_target_type_is_
 
     assert schema_candidate is not None
     assert schema_candidate.candidate_edge_type is EdgeType.REFERENCES
-    assert schema_candidate.candidate_target_type == "Autodesk.Revit.DB.Schema"
+    assert schema_candidate.candidate_target_type == "Autodesk.Revit.DB.ExtensibleStorage.Schema"
     assert schema_candidate.edge_confidence is ConfidenceLabel.DIRECT_RETURN_TYPE
 
 
@@ -607,14 +607,14 @@ def test_room_keyword_is_classified_as_references():
 
         assert candidate is not None, f"{name} should produce an edge"
         assert candidate.candidate_edge_type is EdgeType.REFERENCES
-        assert candidate.candidate_target_type == "Autodesk.Revit.DB.Room"
+        assert candidate.candidate_target_type == "Autodesk.Revit.DB.Architecture.Room"
 
     method_member = _method_member("GetRoomAtPoint", "Room", declaring_type="Autodesk.Revit.DB.Document")
     method_candidate = classify_member(method_member, source_type="Autodesk.Revit.DB.Document", known_type_short_names={"Room"})
 
     assert method_candidate is not None
     assert method_candidate.candidate_edge_type is EdgeType.REFERENCES
-    assert method_candidate.candidate_target_type == "Autodesk.Revit.DB.Room"
+    assert method_candidate.candidate_target_type == "Autodesk.Revit.DB.Architecture.Room"
 
 
 def test_self_returning_method_produces_no_edge_regardless_of_name():
@@ -655,14 +655,14 @@ def test_schema_property_is_classified_as_references():
 
     assert candidate is not None
     assert candidate.candidate_edge_type is EdgeType.REFERENCES
-    assert candidate.candidate_target_type == "Autodesk.Revit.DB.Schema"
+    assert candidate.candidate_target_type == "Autodesk.Revit.DB.ExtensibleStorage.Schema"
 
     sub_member = _member("SubSchema", "Schema", declaring_type="Autodesk.Revit.DB.ExtensibleStorage.Field")
     sub_candidate = classify_member(sub_member, source_type="Autodesk.Revit.DB.ExtensibleStorage.Field", known_type_short_names={"Schema"})
 
     assert sub_candidate is not None
     assert sub_candidate.candidate_edge_type is EdgeType.REFERENCES
-    assert sub_candidate.candidate_target_type == "Autodesk.Revit.DB.Schema"
+    assert sub_candidate.candidate_target_type == "Autodesk.Revit.DB.ExtensibleStorage.Schema"
 
 
 def test_list_schemas_utility_method_is_not_matched_by_schema_keyword():
@@ -678,3 +678,29 @@ def test_list_schemas_utility_method_is_not_matched_by_schema_keyword():
     candidate = classify_member(member, source_type="Autodesk.Revit.DB.ExtensibleStorage.Schema", known_type_short_names={"Schema"})
 
     assert candidate is None
+
+
+def test_room_and_schema_use_their_real_sub_namespace_not_a_bare_db_prefix():
+    """Regression test (PR review finding): most _NAME_KEYWORD_RULES target
+    hints (Level, Phase, Workset, Material, ...) happen to live directly
+    under Autodesk.Revit.DB, so classify_member's blind
+    "Autodesk.Revit.DB.{target}" prefixing was correct for them by
+    coincidence, not by design. Room's and Schema's real fully-qualified
+    names are Autodesk.Revit.DB.Architecture.Room and
+    Autodesk.Revit.DB.ExtensibleStorage.Schema (pipeline.DEFAULT_TARGET_CLASSES) --
+    before this fix, candidate_target_type was the bogus
+    "Autodesk.Revit.DB.Room"/"Autodesk.Revit.DB.Schema", which doesn't
+    correspond to any real crawled type, wrong in candidate_edges.json even
+    before graph._Resolver gets a chance to (sometimes) paper over it via
+    short-name fallback."""
+    room_member = _member("Room", "Room", declaring_type="Autodesk.Revit.DB.FamilyInstance")
+    room_candidate = classify_member(room_member, source_type="Autodesk.Revit.DB.FamilyInstance", known_type_short_names={"Room"})
+
+    assert room_candidate is not None
+    assert room_candidate.candidate_target_type == "Autodesk.Revit.DB.Architecture.Room"
+
+    schema_member = _member("Schema", "Schema", declaring_type="Autodesk.Revit.DB.ExtensibleStorage.Entity")
+    schema_candidate = classify_member(schema_member, source_type="Autodesk.Revit.DB.ExtensibleStorage.Entity", known_type_short_names={"Schema"})
+
+    assert schema_candidate is not None
+    assert schema_candidate.candidate_target_type == "Autodesk.Revit.DB.ExtensibleStorage.Schema"
