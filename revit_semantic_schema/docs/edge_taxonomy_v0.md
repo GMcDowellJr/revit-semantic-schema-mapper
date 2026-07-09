@@ -27,7 +27,7 @@ at the evidence more closely first, not to guess.
 | `MEMBER_OF_GROUP` | Source belongs to a `Group` | `Element.GroupId -> Group` |
 | `MEMBER_OF_ASSEMBLY` | Source belongs to an `AssemblyInstance` | `Element.AssemblyInstanceId` |
 | `DEPENDS_ON` | Source structurally depends on another element | `Element.GetDependentElements(...)` |
-| `REFERENCES` | Generic reference that doesn't fit a more specific type but has a resolvable target concept not yet worth its own edge type | `Element.Document`/`FailuresAccessor.GetDocument() -> Document` (confirmed against a live 2024 crawl: 19 edges, 19 distinct source types, zero counterexamples); `BIMExportOptions.ViewId`/`ElevationMarker.GetViewId() -> View` (same crawl: 12 edges, 12 distinct source types, zero counterexamples); `FamilyInstance.Room`/`.FromRoom`/`.ToRoom`/`Document.GetRoomAtPoint() -> Room` (same crawl: 7 edges, 4 distinct source types, 3 of 7 independently corroborated by RevitLookup) |
+| `REFERENCES` | Generic reference that doesn't fit a more specific type but has a resolvable target concept not yet worth its own edge type | `Element.Document`/`FailuresAccessor.GetDocument() -> Document` (confirmed against a live 2024 crawl: 19 edges, 19 distinct source types, zero counterexamples); `BIMExportOptions.ViewId`/`ElevationMarker.GetViewId() -> View` (same crawl: 12 edges, 12 distinct source types, zero counterexamples); `FamilyInstance.Room`/`.FromRoom`/`.ToRoom`/`Document.GetRoomAtPoint() -> Room` (same crawl: 7 edges, 4 distinct source types, 3 of 7 independently corroborated by RevitLookup); `Entity.Schema`/`Field.Schema`/`Field.SubSchema -> Schema` (exact-match keyword, not a bare substring -- `Schema.ListSchemas`/`.Lookup` are a different, static-utility pattern that a substring match would have incorrectly swept up too) |
 | `RETURNS_ELEMENT_IDS` | Bulk/collection accessor of `ElementId`s with no specific relationship semantics identified | `FilteredElementCollector`-style `GetAll...()` |
 | `UNKNOWN_ELEMENTID_REFERENCE` | Returns `ElementId`, but the member name gives no reliable hint of the target type or relationship | `Element.Id` |
 | `UNKNOWN_DB_OBJECT_REFERENCE` | Returns a concrete Revit DB object type, but no keyword/docs evidence identifies a specific relationship semantics for it | a property returning a DB type not covered by a more specific rule |
@@ -41,14 +41,19 @@ signal in this order:
    `MemberKind.METHOD`-only: a **factory method** (name matches `^Create(?!d)` -- the negative
    lookahead excludes `Created*`, a real past-tense property convention like
    `Element.CreatedPhaseId` that the `Phase` keyword rule legitimately matches) constructs a
-   brand-new object and says nothing about a relationship *of* `source_type`; a **fluent/builder
-   setter** (name matches `^Set`, return type equals `source_type` itself) returns `this` for
-   chaining, not a reference to another object of the same type. Both produce no candidate at
-   all. Evidence from a real 2024 crawl:
+   brand-new object and says nothing about a relationship *of* `source_type`; a **self-returning
+   method** (return type equals `source_type` itself, any name) returns `this` for chaining, not
+   a reference to another object of the same type. Both produce no candidate at all. Evidence
+   from a real 2024/2025/2026 crawl:
    `ParameterFilterRuleFactory.CreateBeginsWithRule -> FilterRule`,
    `ConnectorElement.CreateCableTrayConnector -> ConnectorElement`,
    `OverrideGraphicSettings.SetCutBackgroundPatternColor -> OverrideGraphicSettings` (and four
-   `Set*` siblings on the same type).
+   `Set*` siblings on the same type); `FilteredElementCollector.OfCategory`/`.Excluding`/
+   `.IntersectWith`/`.ContainedInDesignOption`/`.OfCategoryId -> FilteredElementCollector` (the
+   self-return check originally required a `Set*` name prefix, but this cluster's entire
+   query-builder API uses other verb prefixes for the identical pattern -- 12/12 edges, zero
+   counterexamples -- so the name-prefix requirement was dropped entirely, gated only on
+   `MemberKind.METHOD`).
 1. **Return type is itself a Revit DB object type** (not `ElementId`, not a primitive) →
    `direct_return_type` confidence; edge type comes from a name-keyword match if any, else
    `UNKNOWN_DB_OBJECT_REFERENCE`. If a name-keyword match's own target type disagrees with the

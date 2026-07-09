@@ -100,6 +100,12 @@ PRIMITIVE_TYPES = {
     "FormatOptions",
     "FailureMessage",
     "FailureResolutionType",
+    # LinkLoadResult describes the outcome of a link load/reload operation
+    # (success/failure/warnings) -- an operation-status object, not a BIM
+    # relationship. Evidence, stable across a real 2024/2025/2026 crawl: 11
+    # edges, 5 distinct source types, e.g. CADLinkType.LoadFrom/.Reload,
+    # LinkLoadContent.GetLinkLoadResult.
+    "LinkLoadResult",
     # Geometry/value types beyond the CurveLoop/BoundingBoxXYZ/etc. set
     # above -- same "value type, not reference-bearing" reasoning, also
     # confirmed present in the same crawl (smaller counts, e.g. Curve: 65
@@ -164,13 +170,21 @@ _TYPED_ID_TARGETS: dict[str, tuple[str, EdgeType]] = {
 # AssemblyViewUtils.CreatePartList -> ViewSchedule.
 _FACTORY_METHOD_NAME_RE = re.compile(r"^Create(?!d)")
 
-# A "Set*" method that returns its own declaring type is a fluent/builder
-# setter returning `this` for chaining, not a relationship to another
-# object. Evidence: OverrideGraphicSettings.SetCutBackgroundPatternColor/
-# SetCutBackgroundPatternId/SetCutBackgroundPatternVisible/
-# SetCutForegroundPatternColor/SetCutForegroundPatternId, all -> the same
-# OverrideGraphicSettings type they're declared on.
-_FLUENT_SETTER_NAME_RE = re.compile(r"^Set", re.IGNORECASE)
+# A METHOD that returns its own declaring type is, in every real case found
+# across a real 2024/2025/2026 crawl, a fluent/builder method returning
+# `this` for chaining -- not a relationship to another object of the same
+# type. Originally scoped to just a "Set*" name prefix (evidence:
+# OverrideGraphicSettings.SetCutBackgroundPatternColor and four Set*
+# siblings, all -> the same OverrideGraphicSettings type), but
+# FilteredElementCollector's entire query-builder API turned out to use
+# other verb prefixes for the exact same pattern -- ContainedInDesignOption/
+# Excluding/IntersectWith/OfCategory/OfCategoryId, all -> the same
+# FilteredElementCollector type, 12/12 edges in that cluster, zero
+# counterexamples -- so the name-prefix requirement was dropped entirely.
+# Still gated to MemberKind.METHOD (not PROPERTY), so a genuine
+# self-referential property relationship (e.g. a parent-of-same-type
+# reference) stays unaffected -- see
+# test_self_referential_property_is_not_treated_as_a_fluent_setter.
 
 _ELEMENTID_COLLECTION_RE = re.compile(
     r"^(?:ICollection|IList|ISet|IEnumerable|List|HashSet)\s*<\s*ElementId\s*>$"
@@ -217,6 +231,14 @@ _NAME_KEYWORD_RULES: list[tuple[re.Pattern[str], EdgeType, str | None]] = [
     # RevitLookup, zero apparent counterexamples -- same evidence shape as
     # the Document/ViewId rules above.
     (re.compile(r"Room", re.IGNORECASE), EdgeType.REFERENCES, "Room"),
+    # Exact match (not a bare substring) deliberately, unlike most rules
+    # above: the "Schema" cluster in a real 2024/2025/2026 crawl was mixed --
+    # Entity.Schema/Field.Schema/Field.SubSchema are a genuine "this
+    # object's structure is defined by this Schema" relationship, but
+    # Schema.ListSchemas/Schema.Lookup are static registry/lookup utility
+    # methods with different semantics that a bare "Schema" substring match
+    # would have incorrectly swept up too (ListSchemas contains "Schema").
+    (re.compile(r"^(Sub)?Schema$", re.IGNORECASE), EdgeType.REFERENCES, "Schema"),
     # "TypeId" added after the original "Type"/"GetTypeId" pair turned out to
     # miss the dominant real naming convention entirely: the same crawl's
     # UNKNOWN_ELEMENTID_REFERENCE "Type" cluster (9 edges, 9 distinct source
@@ -410,10 +432,10 @@ def classify_member(member: MemberInfo, source_type: str, known_type_short_names
         # _FACTORY_METHOD_NAME_RE's docstring.
         if _FACTORY_METHOD_NAME_RE.match(member.name):
             return None
-        # A fluent/builder setter that returns its own declaring type is
-        # returning `this` for chaining, not referencing another object of
-        # the same type -- see _FLUENT_SETTER_NAME_RE's docstring.
-        if _FLUENT_SETTER_NAME_RE.match(member.name) and bare_return == source_type.rsplit(".", 1)[-1]:
+        # A method that returns its own declaring type is a fluent/builder
+        # method returning `this` for chaining, not referencing another
+        # object of the same type -- see the comment above this block.
+        if bare_return == source_type.rsplit(".", 1)[-1]:
             return None
 
     is_direct_db_object = (

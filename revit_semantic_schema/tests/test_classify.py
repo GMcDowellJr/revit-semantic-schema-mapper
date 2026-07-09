@@ -552,3 +552,66 @@ def test_room_keyword_is_classified_as_references():
     assert method_candidate is not None
     assert method_candidate.candidate_edge_type is EdgeType.REFERENCES
     assert method_candidate.candidate_target_type == "Autodesk.Revit.DB.Room"
+
+
+def test_self_returning_method_produces_no_edge_regardless_of_name():
+    """Regression test: the fluent/builder-method suppression was
+    originally scoped to a 'Set*' name prefix, but a real 2024/2025/2026
+    crawl showed FilteredElementCollector's entire query-builder API uses
+    other verb prefixes for the exact same self-returning-method pattern
+    (12/12 edges in that cluster, zero counterexamples) -- the name-prefix
+    requirement was dropped, keeping only the MemberKind.METHOD +
+    self-return check."""
+    for name in ("ContainedInDesignOption", "Excluding", "IntersectWith", "OfCategory", "OfCategoryId"):
+        member = _method_member(name, "FilteredElementCollector", declaring_type="Autodesk.Revit.DB.FilteredElementCollector")
+        candidate = classify_member(member, source_type="Autodesk.Revit.DB.FilteredElementCollector", known_type_short_names={"FilteredElementCollector"})
+
+        assert candidate is None, f"{name} should not produce an edge"
+
+
+def test_link_load_result_is_treated_as_a_value_object():
+    """LinkLoadResult describes the outcome of a link load/reload operation
+    -- an operation-status object, not a BIM relationship. Evidence, stable
+    across a real 2024/2025/2026 crawl: CADLinkType.LoadFrom/.Reload,
+    LinkLoadContent.GetLinkLoadResult."""
+    member = _method_member("Reload", "LinkLoadResult", declaring_type="Autodesk.Revit.DB.CADLinkType")
+    candidate = classify_member(member, source_type="Autodesk.Revit.DB.CADLinkType", known_type_short_names={"LinkLoadResult"})
+
+    assert candidate is None
+
+
+def test_schema_property_is_classified_as_references():
+    """Entity.Schema/Field.Schema/Field.SubSchema are a genuine 'this
+    object's structure is defined by this Schema' relationship -- but the
+    rule uses an exact match, not a bare substring, because
+    Schema.ListSchemas/Schema.Lookup (static registry/lookup utilities on
+    Schema itself) are a different pattern that a bare 'Schema' substring
+    would have incorrectly swept up too."""
+    member = _member("Schema", "Schema", declaring_type="Autodesk.Revit.DB.ExtensibleStorage.Entity")
+    candidate = classify_member(member, source_type="Autodesk.Revit.DB.ExtensibleStorage.Entity", known_type_short_names={"Schema"})
+
+    assert candidate is not None
+    assert candidate.candidate_edge_type is EdgeType.REFERENCES
+    assert candidate.candidate_target_type == "Autodesk.Revit.DB.Schema"
+
+    sub_member = _member("SubSchema", "Schema", declaring_type="Autodesk.Revit.DB.ExtensibleStorage.Field")
+    sub_candidate = classify_member(sub_member, source_type="Autodesk.Revit.DB.ExtensibleStorage.Field", known_type_short_names={"Schema"})
+
+    assert sub_candidate is not None
+    assert sub_candidate.candidate_edge_type is EdgeType.REFERENCES
+    assert sub_candidate.candidate_target_type == "Autodesk.Revit.DB.Schema"
+
+
+def test_list_schemas_utility_method_is_not_matched_by_schema_keyword():
+    """Regression guard: 'ListSchemas' must not match the exact-match
+    Schema/SubSchema keyword rule (it isn't named exactly 'Schema' or
+    'SubSchema') -- it's a static registry lookup, not an instance
+    relationship. In this particular case it's declared on Schema itself
+    and also returns Schema, so it's independently suppressed by the
+    self-returning-method check rather than falling into
+    UNKNOWN_DB_OBJECT_REFERENCE -- either outcome is correct, this test
+    just pins the actual (no-edge) behavior."""
+    member = _method_member("ListSchemas", "Schema", declaring_type="Autodesk.Revit.DB.ExtensibleStorage.Schema")
+    candidate = classify_member(member, source_type="Autodesk.Revit.DB.ExtensibleStorage.Schema", known_type_short_names={"Schema"})
+
+    assert candidate is None
