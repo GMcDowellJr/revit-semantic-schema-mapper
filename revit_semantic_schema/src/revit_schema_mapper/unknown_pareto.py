@@ -48,7 +48,7 @@ _GROUP_BY_MEMBER_NAME_EDGE_TYPES = {
     "RETURNS_ELEMENT_IDS",
 }
 
-_NAME_NORMALIZE_RE = re.compile(r"^(Get|GetAll|Set)")
+_NAME_NORMALIZE_RE = re.compile(r"^(GetAll|Get|Set)")
 _TRAILING_ID_RE = re.compile(r"(Id|Ids)$")
 
 

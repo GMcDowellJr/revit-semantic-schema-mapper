@@ -335,3 +335,52 @@ def test_view_id_property_name_is_classified_as_references():
     assert candidate2 is not None
     assert candidate2.candidate_edge_type is EdgeType.REFERENCES
     assert candidate2.candidate_target_type == "Autodesk.Revit.DB.View"
+
+
+def test_demoted_value_type_does_not_fall_through_to_name_only_candidate():
+    """Regression test (PR review finding): demoting FailureDefinitionId
+    into PRIMITIVE_TYPES stopped it from producing a direct-return edge,
+    but a real BuiltInFailures.* field name like
+    'HighestAssociatedLevelBelowLowestAssociatedLevel' still matches the
+    'Level' keyword -- without a guard, classify_member fell through to
+    the name-only branch and emitted a false ASSIGNED_TO_LEVEL -> Level
+    edge, exactly the noise this demotion was meant to remove, just
+    relabeled as a specific (and more misleading) edge type instead of
+    an honest UNKNOWN_*. A member returning a known value/identifier type
+    must produce no edge at all, regardless of keyword collisions in its
+    name."""
+    member = _member(
+        "HighestAssociatedLevelBelowLowestAssociatedLevel",
+        "FailureDefinitionId",
+        declaring_type="Autodesk.Revit.DB.BuiltInFailures.LevelFailures",
+    )
+    candidate = classify_member(member, source_type="Autodesk.Revit.DB.BuiltInFailures.LevelFailures", known_type_short_names=set())
+
+    assert candidate is None
+
+
+def test_demoted_value_type_collection_does_not_fall_through_to_name_only_candidate():
+    """Same regression as above, for the generic-collection-of-value-type
+    shape: a collection of FailureDefinitionId whose method name matches a
+    keyword must also produce no edge, not a name_only_candidate one."""
+    member = _member(
+        "GetLevelFailures",
+        "IList<FailureDefinitionId>",
+        declaring_type="Autodesk.Revit.DB.Whatever",
+    )
+    candidate = classify_member(member, source_type="Autodesk.Revit.DB.Whatever", known_type_short_names=set())
+
+    assert candidate is None
+
+
+def test_bare_scalar_primitive_still_allows_name_only_candidate():
+    """The name-only-fallthrough guard must only apply to concrete
+    value/identifier types (PRIMITIVE_TYPES minus _TRUE_SCALAR_PRIMITIVES),
+    not genuine C# scalars -- a bare bool/int/string is intentionally still
+    eligible for a weak name_only_candidate guess (rule 5 of
+    docs/edge_taxonomy_v0.md's precedence list); this must keep working."""
+    member = _member("PrimaryDesignOption", "bool", declaring_type="Autodesk.Revit.DB.DesignOption")
+    candidate = classify_member(member, source_type="Autodesk.Revit.DB.DesignOption", known_type_short_names=set())
+
+    assert candidate is not None
+    assert candidate.edge_confidence is ConfidenceLabel.NAME_ONLY_CANDIDATE

@@ -20,6 +20,18 @@ def test_normalize_member_name_clusters_get_and_id_variants():
     assert _normalize_member_name("SetOwnerViewId") == "OwnerView"
 
 
+def test_normalize_member_name_strips_getall_before_get():
+    """Regression test: '^(Get|GetAll|Set)' matched the shorter 'Get'
+    alternative first (regex alternation tries left-to-right, not
+    longest-match), leaving 'AllViewIds' -> 'AllView' after the trailing
+    Id/Ids strip -- fragmenting this cluster away from 'ViewId'/'ViewIds'
+    variants instead of aggregating with them. 'GetAll' must be tried
+    before the shorter 'Get'."""
+    assert _normalize_member_name("GetAllViewIds") == "View"
+    assert _normalize_member_name("GetViewIds") == "View"
+    assert _normalize_member_name("ViewIds") == "View"
+
+
 def test_unknown_edge_share_and_top_level_counts():
     edges = [
         _edge("UNKNOWN_DB_OBJECT_REFERENCE", target="Autodesk.Revit.DB.Category"),

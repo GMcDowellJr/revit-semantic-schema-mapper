@@ -114,6 +114,31 @@ PRIMITIVE_TYPES = {
     "Polyloop",
 }
 
+# The subset of PRIMITIVE_TYPES that are genuine C# scalar primitives, as
+# opposed to concrete, already-known API value/identifier types (XYZ,
+# ForgeTypeId, FailureDefinitionId, Curve, ...). This distinction matters
+# for classify_member's name_match fallback: a bare bool/int/string is
+# intentionally still eligible for a weak name_only_candidate guess (rule 5
+# of docs/edge_taxonomy_v0.md's precedence list) because the member could
+# plausibly be a flag/count that merely hints at a real relationship
+# elsewhere. A member returning e.g. FailureDefinitionId cannot -- it's a
+# real, different, already-known type, so a keyword collision in a long
+# descriptive member name is always a false positive, never weak evidence.
+_TRUE_SCALAR_PRIMITIVES = {
+    "void", "bool", "int", "long", "double", "float", "string", "String",
+    "Boolean", "Int32", "Int64", "Double", "object", "Object", "byte", "short",
+}
+
+# Regression case that motivated this split: BuiltInFailures.* fields like
+# HighestAssociatedLevelBelowLowestAssociatedLevel return FailureDefinitionId
+# (already excluded from the direct-return path above) but their name
+# contains "Level" -- without this guard, classify_member fell through to
+# name_match and emitted a false ASSIGNED_TO_LEVEL -> Level edge, exactly
+# the kind of noise PRIMITIVE_TYPES was extended to remove in the first
+# place, just relabeled as a specific-looking (and therefore more
+# misleading) edge type instead of an honest UNKNOWN_*.
+_STRUCTURALLY_INCOMPATIBLE_VALUE_TYPES = PRIMITIVE_TYPES - _TRUE_SCALAR_PRIMITIVES
+
 _ELEMENTID_COLLECTION_RE = re.compile(
     r"^(?:ICollection|IList|ISet|IEnumerable|List|HashSet)\s*<\s*ElementId\s*>$"
 )
@@ -331,6 +356,15 @@ def classify_member(member: MemberInfo, source_type: str, known_type_short_names
     )
 
     bare_return = return_type.rsplit(".", 1)[-1]
+
+    # Hard stop before name_match is even consulted: a member whose return
+    # type (bare or the element type of an unresolved generic collection)
+    # is a concrete, already-known value/identifier type can never
+    # structurally be the target of a name-matched relationship guess --
+    # see _STRUCTURALLY_INCOMPATIBLE_VALUE_TYPES's docstring.
+    if bare_return in _STRUCTURALLY_INCOMPATIBLE_VALUE_TYPES or generic_inner_bare in _STRUCTURALLY_INCOMPATIBLE_VALUE_TYPES:
+        return None
+
     is_direct_db_object = (
         not is_elementid
         and not is_elementid_collection
