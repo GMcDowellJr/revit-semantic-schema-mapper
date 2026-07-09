@@ -75,6 +75,43 @@ PRIMITIVE_TYPES = {
     "BoundingBoxXYZ",
     "CurveLoop",
     "Outline",
+    # Opaque API identifier/value-wrapper types -- confirmed against a real
+    # 2024 crawl's unknown_pareto.py breakdown: ForgeTypeId (4031 edges, 26
+    # distinct source types, e.g. BaseImportOptions.GetDefaultLengthUnit) and
+    # FailureDefinitionId (2067 edges, 166 distinct source types, almost all
+    # static fields on BuiltInFailures.* nested classes, e.g.
+    # BuiltInFailures.AlignmentFailures.AlignmentCheckStationLabels) together
+    # were 71% of every UNKNOWN_DB_OBJECT_REFERENCE/UNKNOWN_ELEMENTID_REFERENCE
+    # edge in that crawl. Neither represents a relationship to another BIM
+    # object -- a ForgeTypeId identifies a unit/spec/parameter type, a
+    # FailureDefinitionId identifies a warning/failure code -- so they belong
+    # in the same "value type, not reference-bearing" bucket as XYZ/Color
+    # above, not the semantic relationship graph. The rest of this group are
+    # smaller siblings of the same pattern (opaque identifier/descriptor
+    # wrapper types, not persistent BIM elements), each confirmed present in
+    # the same crawl at smaller counts.
+    "ForgeTypeId",
+    "FailureDefinitionId",
+    "ExternalServiceId",
+    "ExternalResourceType",
+    "IFCAnyHandle",
+    "IFCData",
+    "ModelPath",
+    "FormatOptions",
+    "FailureMessage",
+    "FailureResolutionType",
+    # Geometry/value types beyond the CurveLoop/BoundingBoxXYZ/etc. set
+    # above -- same "value type, not reference-bearing" reasoning, also
+    # confirmed present in the same crawl (smaller counts, e.g. Curve: 65
+    # direct-return + 27 needs_runtime_validation edges across 45+ distinct
+    # source types).
+    "Curve",
+    "Solid",
+    "GeometryElement",
+    "GeometryObject",
+    "Face",
+    "CurveArrArray",
+    "Polyloop",
 }
 
 _ELEMENTID_COLLECTION_RE = re.compile(
@@ -110,7 +147,18 @@ _NAME_KEYWORD_RULES: list[tuple[re.Pattern[str], EdgeType, str | None]] = [
     # confidence, zero counterexamples -- see docs/edge_taxonomy_v0.md's
     # REFERENCES entry.
     (re.compile(r"^(Get)?Document$", re.IGNORECASE), EdgeType.REFERENCES, "Document"),
-    (re.compile(r"^(Type|GetTypeId)$", re.IGNORECASE), EdgeType.TYPE_OF, None),
+    # Evidence from a real 2024 crawl's unknown_pareto.py breakdown: 12
+    # UNKNOWN_ELEMENTID_REFERENCE edges across 12 distinct source types, all
+    # named exactly "ViewId"/"GetViewId" (e.g. BIMExportOptions.ViewId,
+    # ElevationMarker.GetViewId), zero counterexamples -- same evidence shape
+    # as the Document/GetDocument rule above.
+    (re.compile(r"^(Get)?ViewId$", re.IGNORECASE), EdgeType.REFERENCES, "View"),
+    # "TypeId" added after the original "Type"/"GetTypeId" pair turned out to
+    # miss the dominant real naming convention entirely: the same crawl's
+    # UNKNOWN_ELEMENTID_REFERENCE "Type" cluster (9 edges, 9 distinct source
+    # types) was 100% literally named "TypeId" (e.g. DirectShape.TypeId,
+    # Subelement.TypeId) -- none matched the pre-existing pattern at all.
+    (re.compile(r"^(Type|TypeId|GetTypeId)$", re.IGNORECASE), EdgeType.TYPE_OF, None),
     (re.compile(r"Category", re.IGNORECASE), EdgeType.HAS_CATEGORY, "Category"),
     (re.compile(r"Parameter", re.IGNORECASE), EdgeType.HAS_PARAMETER, None),
     (re.compile(r"^GetAll", re.IGNORECASE), EdgeType.RETURNS_ELEMENT_IDS, None),
