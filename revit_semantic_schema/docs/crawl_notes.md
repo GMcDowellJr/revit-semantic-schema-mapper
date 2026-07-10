@@ -1791,3 +1791,76 @@ the identical crawl re-classified by only this review's classify.py diff. Not in
 since the underlying candidate_edges.json/page HTML wasn't available to this pass, only the capped
 pareto JSON/CSV -- worth checking what else changed in the regeneration environment before trusting
 future pareto deltas as attributable purely to a given classify.py diff.
+
+## Stage C coverage audit: 2024 confirmed solid, 2025 has two independent confirmed drifts (2026-07-10)
+
+Prompted by the 2026.0.0 breakage already logged above (`DescriptorMap.cs` renamed/moved to
+`DescriptorsMap.cs`, `Resolve()` dropped its `Document` parameter, document-context markers moved
+from `RevitApi.*` to `Context.*`) -- this pass checked whether `revitlookup_reference_2024.json`/
+`revitlookup_reference_2025.json` (the files behind the "2024 and 2025 both show real nonzero
+[RevitLookup] corroboration counts" observation in the Pareto review above) were actually mined
+against tags that still match `revitlookup.py`'s `2024.0.13`-shape assumptions, or whether either
+has its own undiscovered drift. Checked directly against the real `lookup-foundation/RevitLookup`
+GitHub source (shallow `git clone --depth 1 --branch <tag>`, then running this repo's own
+`mine_revitlookup_source`/`parse_descriptor_file` against the real checkout), not guessed.
+
+**2024: confirmed solid, and provably so.** `git log --all --diff-filter=A --name-only` turns up
+`outputs/revit_2024/revitlookup_reference.json` having been committed once (commit `4997bf6`,
+before commit `3f4a323` untracked it as a regenerable output, per the project's own bulk-output
+convention) -- its `"revitlookup_tag"` field reads `"2024.0.13"`, the exact tag
+`tests/fixtures/revitlookup/*.cs` and `revitlookup.py`'s parsing rules were built against. No
+further action needed for 2024.
+
+**2025: no tag was ever recorded anywhere in this repo.** Neither `revitlookup_reference_2025.json`
+nor any prose mention of what tag it was mined at exists in git history -- the "2025 dll
+reflection" commit (`ddabde4`) touched `reflect_revit_api.ps1`/`export.py`/`revitlookup.py` and
+this file's own crawl notes, but never added a 2025 reference JSON or said what tag one might have
+been mined from. The nonzero `rlu=2` "Reference" corroboration the Pareto review saw for 2025 came
+from a `revitlookup_reference_2025.json` this repo has no record of (uploaded ad hoc alongside that
+review's pareto zip, not committed) -- whatever tag it was actually mined at is unverifiable now.
+
+Spot-checked both ends of the real 2025.x tag range instead (`2025.0.0`, the first, and `2025.0.10`,
+the latest per `git ls-remote --tags`) since the pattern held identically at both: the top-level
+shape `revitlookup.py` depends on (`Core/ComponentModel/DescriptorMap.cs` location, per-file `class
+X` detection, the 3-arg `Resolve(Document context, string target, ParameterInfo[] parameters)`
+signature, and the `nameof(Type.Member) => ...` switch-arm shape) is **unchanged** from 2024.0.13 --
+running `mine_revitlookup_source` against a real `2025.0.10` checkout parses cleanly (98
+descriptor-map entries, 99 descriptor files, 211 resolved members, only 2 harmless "no class
+declaration found" notes -- both from an unrelated `tools/source/DependenciesReport/Models/
+*Descriptor.cs` glob false-positive, not a real RevitLookup descriptor, present regardless of tag).
+
+But two independent, silent detection gaps are real and confirmed, present in *every* 2025.x tag
+(not a late-2025 regression -- `2025.0.0` and `2025.0.10` both show the same shape):
+
+1. **`RegisterExtensions` body shape changed, so `synthetic_extensions` silently comes back empty.**
+   At `2024.0.13`, an extension is registered as `manager.Register(obj, extension => { extension.Name
+   = nameof(HostExtensions.GetBottomFaces); ... });` -- matched by `_EXTENSION_NAME_RE`'s `\.Name\s*=`
+   pattern. At `2025.0.0`/`2025.0.10` this is `manager.Register(nameof(HostExtensions.GetBottomFaces),
+   _ => hostObject.GetBottomFaces());` -- no `.Name = ` assignment anywhere. Confirmed end-to-end: 36
+   real `2025.0.10` descriptor files call `RegisterExtensions`/`manager.Register(nameof(...` (0 use
+   the old `.Name = nameof` shape), but `mine_revitlookup_source` against that same checkout reports
+   **`total synthetic extensions: 0`** across all 99 descriptors. This is exactly the failure mode
+   `synthetic_extensions`'s own docstring warns about: every RevitLookup UI-convenience extension
+   would be silently invisible to Stage C, so nothing would flag it as "not a real compiled member"
+   if it were ever compared against a Stage B DLL manifest.
+2. **The document-context static helper was renamed `RevitApi` -> `Context` by `2025.0.0`** (one tag
+   after `2024.0.13`, not a 2026 change as the design doc's `2024.0.13` note might suggest) --
+   `RevitApi.ActiveView` -> `Context.ActiveView`, `RevitApi.Document`/`RevitApi.UiDocument` ->
+   `Context.ActiveDocument`/`Context.ActiveUiDocument`. `_DOCUMENT_CONTEXT_MARKERS` is hardcoded to
+   the old `RevitApi.*` prefixes (plus a bare `.Document` substring, which does *not* match
+   `.ActiveDocument`). Confirmed concretely: parsing the real `2025.0.10`
+   `CategoryDescriptor.cs` gives `AllowsVisibilityControl`/`Visible` (both real members whose bodies
+   read `_category.get_AllowsVisibilityControl(Context.ActiveView)`) as
+   `requires_document_context=False` -- a false negative, same class of miss `docs/crawl_notes.md`'s
+   `needs_runtime_validation` reasoning exists to catch.
+
+**Net:** 2025 is not solid. Both gaps are silent (no exception, no `parser_notes` entry -- the
+parser believes it succeeded), and both would already be present in any `revitlookup_reference_2025.
+json` genuinely mined from a real 2025.x tag, regardless of which patch version. If the file behind
+the Pareto review's `rlu=2` reading really was mined from a 2025.x tag rather than reused from
+2024.0.13 (unverifiable either way now, per above), its `synthetic_extensions` lists were empty and
+its `requires_document_context` signal undercounted for every `Context.*`-based member -- worth
+fixing (`_EXTENSION_NAME_RE` needs a second alternative for `manager.Register(nameof(X)`, and
+`_DOCUMENT_CONTEXT_MARKERS` needs `Context.`-prefixed entries added alongside the `RevitApi.*` ones,
+same "layer ahead, don't replace" approach the 2026 `DescriptorsMap.cs`/2-arg-`Resolve()` fix will
+need) before treating any 2025 Stage C output as trustworthy.
