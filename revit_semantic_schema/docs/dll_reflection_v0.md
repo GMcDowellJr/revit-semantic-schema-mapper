@@ -299,6 +299,15 @@ not Revit 2024's — always mine the tag matching the target Revit version, reco
 `develop` or "whatever's newest." See `crawl_notes.md` for the full real-version-mismatch
 finding.
 
+**Update (2026-07-10): the parser now also handles real drift confirmed at 2025.x/2026.x
+tags**, layered on top of the `2024.0.13` shape described below, never replacing it --
+`revitlookup.py`'s own module docstring has the specifics (renamed/relocated
+`DescriptorsMap.cs`, `Resolve()` dropping its `Document` parameter, bare method-group switch
+arms, the `RevitApi.*` → `Context.*` rename, the `.AppendVariant(...)` → `Variants.Values<T>`/
+`new Variants<T>` builder rename, and the `manager.Register(nameof(X), ...)` extension-naming
+shape) and `crawl_notes.md`'s "Stage C coverage audit" entry has the full confirmed-against-
+real-source analysis. `2024.0.13` remains solid and unaffected.
+
 At `2024.0.13`, `DescriptorMap.cs`'s (singular "Descriptor", confirmed real file name at this
 tag — `source/RevitLookup/Core/ComponentModel/DescriptorMap.cs`) `FindDescriptor` switch is a
 curated list of 60 real cases in total (confirmed by direct count), 45 of them under the

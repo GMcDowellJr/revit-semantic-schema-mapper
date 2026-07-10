@@ -8,6 +8,12 @@ shape. This tag's descriptor shape (``Resolve()``/``RegisterExtensions()``)
 was confirmed to differ from the newer ``Configure(IMemberConfigurator)``
 shape found on RevitLookup's current ``develop`` branch, which now targets a
 later Revit version.
+
+``fixtures/revitlookup/2025/*.cs`` and ``fixtures/revitlookup/2026/*.cs`` are
+likewise real, unmodified files, fetched directly at tags ``2025.0.10`` (the
+latest 2025.x tag) and ``2026.0.1`` (the latest 2026.x tag) respectively --
+see docs/crawl_notes.md's "Stage C coverage audit" entry for the full,
+confirmed-against-real-source drift analysis these fixtures back.
 """
 
 import dataclasses
@@ -276,6 +282,202 @@ def test_parse_descriptor_file_no_extensions_gives_empty_list_not_a_parser_note(
     descriptor = parse_descriptor_file(_read("FamilyManagerDescriptor.cs"))
     assert descriptor.synthetic_extensions == []
     assert descriptor.parser_notes == []
+
+
+# -- parse_descriptor_file: 2025.x/2026.x drift (docs/crawl_notes.md audit) ----
+
+
+def _read_2025(name: str) -> str:
+    return (_FIXTURES / "2025" / name).read_text(encoding="utf-8")
+
+
+def _read_2026(name: str) -> str:
+    return (_FIXTURES / "2026" / name).read_text(encoding="utf-8")
+
+
+def test_parse_descriptor_file_follows_bare_method_group_switch_arm():
+    """Real 2025.0.10 CategoryDescriptor.cs: `"AllowsVisibilityControl" =>
+    ResolveAllowsVisibilityControl,` -- a bare method-group reference, no
+    parens at all, unlike the already-handled `=> ResolveFoo()` bare-call
+    shape. Without following this to the local function's own body, its
+    document-context signal (Context.ActiveView, see next test) would never
+    be inspected -- confirms the member is still found and its case body is
+    still followed.
+    """
+    descriptor = parse_descriptor_file(_read_2025("CategoryDescriptor.cs"))
+    by_name = {m.member_name: m for m in descriptor.resolved_members}
+    assert set(by_name) == {
+        "AllowsVisibilityControl",
+        "Visible",
+        "GetGraphicsStyle",
+        "GetLinePatternId",
+        "GetLineWeight",
+    }
+
+
+def test_parse_descriptor_file_detects_context_dot_marker():
+    """The real 2025.0.10 accessor is `Context.ActiveView`, not the
+    `RevitApi.ActiveView` this parser's original marker list only knew about
+    -- confirmed a real rename already present at the very first 2025.x tag
+    (2025.0.0), not a 2026-only change.
+    """
+    descriptor = parse_descriptor_file(_read_2025("CategoryDescriptor.cs"))
+    by_name = {m.member_name: m for m in descriptor.resolved_members}
+    assert by_name["AllowsVisibilityControl"].requires_document_context is True
+    assert by_name["Visible"].requires_document_context is True
+
+
+def test_parse_descriptor_file_detects_multi_variant_via_plural_variants_builder():
+    """`.AppendVariant(...)` was replaced by a `new Variants<T>(n).Add(...)
+    .Add(...)` builder by 2025.0.0 -- GetGraphicsStyle/GetLinePatternId/
+    GetLineWeight each build two variants this way. AllowsVisibilityControl/
+    Visible use the *singular* `Variants.Single(...)` helper instead and must
+    not be flagged as multi-variant just because they're also resolved via a
+    bare method-group arm.
+    """
+    descriptor = parse_descriptor_file(_read_2025("CategoryDescriptor.cs"))
+    by_name = {m.member_name: m for m in descriptor.resolved_members}
+    assert by_name["GetGraphicsStyle"].has_multiple_variants is True
+    assert by_name["GetLinePatternId"].has_multiple_variants is True
+    assert by_name["GetLineWeight"].has_multiple_variants is True
+    assert by_name["AllowsVisibilityControl"].has_multiple_variants is False
+    assert by_name["Visible"].has_multiple_variants is False
+
+
+def test_parse_descriptor_file_extracts_extensions_from_manager_register_nameof_shape():
+    """Real 2025.0.10 HostObjectDescriptor.cs registers extensions via
+    `manager.Register(nameof(HostExtensions.GetBottomFaces), _ => ...)`
+    directly, not the older `extension.Name = nameof(X)` callback-assignment
+    shape `_EXTENSION_NAME_RE` alone recognizes -- confirmed already present
+    at 2025.0.0, not just 2026. Without also matching this shape,
+    synthetic_extensions would silently come back empty for every 2025.x/
+    2026.x descriptor that registers any extension at all.
+    """
+    descriptor = parse_descriptor_file(_read_2025("HostObjectDescriptor.cs"))
+    assert set(descriptor.synthetic_extensions) == {
+        "GetBottomFaces",
+        "GetTopFaces",
+        "GetSideFaces",
+    }
+
+
+def test_parse_descriptor_file_handles_two_arg_resolve_with_no_document_parameter():
+    """Real 2026.0.1 ElementDescriptor.cs: `Resolve(string target,
+    ParameterInfo[] parameters)` -- Resolve() dropped its Document parameter
+    entirely, confirmed only at 2026.0.0+ (still 3-arg at 2025.0.10). Members
+    must still be found via this fallback signature.
+    """
+    descriptor = parse_descriptor_file(_read_2026("ElementDescriptor.cs"))
+    assert descriptor.parser_notes == []
+    by_name = {m.member_name: m for m in descriptor.resolved_members}
+    assert "CanBeHidden" in by_name
+    assert "GetEntity" in by_name
+
+
+def test_parse_descriptor_file_detects_document_context_with_no_resolve_parameter_at_all():
+    """With no Document parameter on Resolve() at all (2026.0.1), the
+    Context.ActiveView/Context.ActiveUiDocument textual markers are the only
+    remaining signal -- confirms _detect_signals doesn't require a
+    context_param to still work.
+    """
+    descriptor = parse_descriptor_file(_read_2026("ElementDescriptor.cs"))
+    by_name = {m.member_name: m for m in descriptor.resolved_members}
+    assert by_name["CanBeHidden"].requires_document_context is True
+    assert by_name["GetDependentElements"].requires_document_context is False
+
+
+def test_parse_descriptor_file_follows_bare_method_group_arm_next_to_preprocessor_line():
+    """Real 2026.0.1 ElementDescriptor.cs: the `IsPhaseDemolishedValid` case
+    is immediately followed by `#if REVIT2022_OR_GREATER` before the next
+    case starts (`IsDemolishedPhaseOrderValid`) -- confirms the bare
+    method-group match isn't defeated by a preprocessor line sitting between
+    the switch arm and the next case, the same way `#if`/`#endif` blocks are
+    already treated as insignificant plain text elsewhere in this parser.
+    """
+    descriptor = parse_descriptor_file(_read_2026("ElementDescriptor.cs"))
+    by_name = {m.member_name: m for m in descriptor.resolved_members}
+    assert by_name["IsPhaseDemolishedValid"].has_multiple_variants is True
+    assert by_name["IsCreatedPhaseOrderValid"].has_multiple_variants is True
+
+
+def test_parse_descriptor_file_extracts_extensions_from_generic_extension_manager():
+    """Real 2026.0.1 SchemaDescriptor.cs implements
+    `IDescriptorExtension<Document>` / `RegisterExtensions(
+    IExtensionManager<Document> manager)` -- a generic variant of the
+    interface/parameter type this parser's signature regex originally only
+    matched the bare (non-generic) form of. Confirms the generic form is
+    recognized too, rather than silently reporting a parser_notes gap.
+    """
+    descriptor = parse_descriptor_file(_read_2026("SchemaDescriptor.cs"))
+    assert descriptor.parser_notes == []
+    assert descriptor.synthetic_extensions == ["GetElements"]
+
+
+def test_parse_descriptor_map_finds_renamed_and_relocated_map_file(tmp_path):
+    """Real 2026.0.1: DescriptorMap.cs was renamed to DescriptorsMap.cs and
+    moved from Core/ComponentModel to Core/Decomposition. Confirms
+    mine_revitlookup_source falls back to the new name/location when the old
+    one isn't present, without needing the caller to know which shape a
+    given tag uses.
+    """
+    nested = tmp_path / "source" / "RevitLookup" / "Core" / "Decomposition"
+    nested.mkdir(parents=True)
+    (nested / "DescriptorsMap.cs").write_text(_read_2026("DescriptorsMap.cs"), encoding="utf-8")
+
+    reference = mine_revitlookup_source(tmp_path, revitlookup_tag="2026.0.1")
+
+    by_type = {e.target_type_short_name: e for e in reference.descriptor_map}
+    assert by_type["Category"].descriptor_class == "CategoryDescriptor"
+
+
+def test_mine_revitlookup_source_prefers_old_map_filename_when_both_present(tmp_path):
+    """A checkout could in principle carry both an old-shape DescriptorMap.cs
+    and (from some unrelated leftover) a DescriptorsMap.cs -- confirms the
+    pre-2026 name is tried first, matching "layer ahead of the old shape,
+    don't replace it."
+    """
+    old_dir = tmp_path / "source" / "RevitLookup" / "Core" / "ComponentModel"
+    old_dir.mkdir(parents=True)
+    (old_dir / "DescriptorMap.cs").write_text(_read("DescriptorMap.cs"), encoding="utf-8")
+    new_dir = tmp_path / "source" / "RevitLookup" / "Core" / "Decomposition"
+    new_dir.mkdir(parents=True)
+    (new_dir / "DescriptorsMap.cs").write_text(_read_2026("DescriptorsMap.cs"), encoding="utf-8")
+
+    reference = mine_revitlookup_source(tmp_path, revitlookup_tag="mixed")
+
+    by_type = {e.target_type_short_name: e for e in reference.descriptor_map}
+    # The old-shape file's HostObject case is in "IDisposables"; the new-shape file moved
+    # it under "Elements" (see DescriptorsMap.cs's own section comments) -- confirms which
+    # file actually won.
+    assert by_type["HostObject"].section == "IDisposables"
+
+
+def test_mine_revitlookup_source_excludes_playground_mockup_descriptors(tmp_path):
+    """Real 2026.0.1: a `RevitLookup.UI.Playground` demo project ships its
+    own duplicate `Core/Decomposition` tree with fake descriptors
+    (`Vector3Descriptor`, for `System.Numerics.Vector3` -- no real
+    `Autodesk.Revit.DB` counterpart) and even a same-named duplicate of a
+    real descriptor class (`ColorMediaDescriptor`) -- confirms both are
+    excluded from mining, leaving only the real one.
+    """
+    real_dir = tmp_path / "source" / "RevitLookup" / "Core" / "Decomposition" / "Descriptors"
+    real_dir.mkdir(parents=True)
+    (real_dir / "ColorMediaDescriptor.cs").write_text(_read_2026("ColorMediaDescriptor.cs"), encoding="utf-8")
+    (real_dir.parent / "DescriptorsMap.cs").write_text(_read_2026("DescriptorsMap.cs"), encoding="utf-8")
+
+    mockup_dir = tmp_path / "source" / "RevitLookup.UI.Playground" / "Mockups" / "Core" / "Decomposition" / "Descriptors"
+    mockup_dir.mkdir(parents=True)
+    (mockup_dir / "Vector3Descriptor.cs").write_text(_read_2026("playground_mockup_Vector3Descriptor.cs"), encoding="utf-8")
+    (mockup_dir / "ColorMediaDescriptor.cs").write_text(
+        _read_2026("playground_mockup_ColorMediaDescriptor.cs"), encoding="utf-8"
+    )
+    (mockup_dir.parent / "DescriptorsMap.cs").write_text(_read_2026("DescriptorsMap.cs"), encoding="utf-8")
+
+    reference = mine_revitlookup_source(tmp_path, revitlookup_tag="2026.0.1")
+
+    classes = [d.descriptor_class for d in reference.descriptors]
+    assert "Vector3Descriptor" not in classes
+    assert classes.count("ColorMediaDescriptor") == 1
 
 
 # -- mine_revitlookup_source (orchestration) ------------------------------------

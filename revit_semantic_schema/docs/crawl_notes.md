@@ -1864,3 +1864,76 @@ fixing (`_EXTENSION_NAME_RE` needs a second alternative for `manager.Register(na
 `_DOCUMENT_CONTEXT_MARKERS` needs `Context.`-prefixed entries added alongside the `RevitApi.*` ones,
 same "layer ahead, don't replace" approach the 2026 `DescriptorsMap.cs`/2-arg-`Resolve()` fix will
 need) before treating any 2025 Stage C output as trustworthy.
+
+## Stage C parser updated for 2025.x/2026.x drift, layered on top of 2024.0.13 (2026-07-10)
+
+Implemented the fixes the audit above (and the separately-confirmed 2026.0.0 findings earlier in
+this file) called for, all additive to the existing `2024.0.13`-shape rules -- verified end-to-end
+against real `git clone --depth 1 --branch <tag>` checkouts at `2024.0.13`, `2025.0.10`, and
+`2026.0.1` (not just the fixture files), plus new fixtures under `tests/fixtures/revitlookup/2025/`
+and `tests/fixtures/revitlookup/2026/` copied unmodified from those real checkouts.
+
+**Fixes, in the order found:**
+1. **Bare method-group switch arms** (`=> ResolveFoo,` with no parens at all -- confirmed already
+   present at `2025.0.0`, e.g. real `CategoryDescriptor.cs`'s `"AllowsVisibilityControl" =>
+   ResolveAllowsVisibilityControl,`) are now followed to the local function's own body the same
+   way the existing parenthesized bare-call case (`=> ResolveFoo(),`) already was --
+   `_BARE_METHOD_GROUP_RE` tried as a fallback, never replacing `_BARE_CALL_RE`. This was the
+   actual root cause of the 2025 `requires_document_context` miss flagged in the audit above, more
+   fundamental than the `RevitApi`→`Context` rename by itself: without this fix, the parser never
+   even reached the local function body containing the marker at all.
+2. **`RevitApi.*` → `Context.*` rename**: `Context.ActiveView`/`Context.ActiveDocument`/
+   `Context.ActiveUiDocument` added to `_DOCUMENT_CONTEXT_MARKERS` alongside the original
+   `RevitApi.*` entries.
+3. **`.AppendVariant(...)` → plural `Variants` builder rename** (found independently while
+   verifying fix 1 above -- not previously flagged in this file): `.AppendVariant(...)` was
+   replaced by `Variants.Values<T>(n)`/`new Variants<T>(n)` chained with `.Add(...)` calls, by
+   `2025.0.0`. The *singular* `Variants.Single(...)`/`Variants.Value(...)` helpers real
+   single-result cases use must NOT be flagged -- confirmed both directions against real
+   `CategoryDescriptor.cs` (AllowsVisibilityControl/Visible stay single; GetGraphicsStyle/
+   GetLinePatternId/GetLineWeight are correctly multi).
+4. **`RegisterExtensions` naming shape**: `manager.Register(nameof(X), ...)`/`manager.Register(
+   "literal", ...)` (confirmed at `2025.0.0`+) extracted alongside the original `extension.Name =
+   nameof(X)` callback-assignment shape, built from the real `manager` parameter name read off
+   `RegisterExtensions`'s own signature (same reasoning already applied to `Resolve()`'s
+   `context_param`), not hardcoded.
+5. **`Resolve()` dropped its `Document` parameter** (2026.0.0+ only, confirmed still 3-arg at
+   `2025.0.10`): `_RESOLVE_SIG_RE_NO_DOCUMENT` tried only if the original 3-arg signature doesn't
+   match; `context_param` becomes `None` in that case and `_detect_signals` skips the
+   parameter-based check, relying purely on the textual markers.
+6. **`DescriptorMap.cs` → `DescriptorsMap.cs`, `Core/ComponentModel` → `Core/Decomposition`**
+   (2026.0.0+): `_find_descriptor_map_file` tries the old filename first, falls back to the new
+   one.
+7. **Generic `IExtensionManager<Document>`/`IDescriptorExtension<Document>`** (found while
+   verifying fix 6 against the full real `2026.0.1` checkout -- real `SchemaDescriptor.cs`):
+   `_REGISTER_EXTENSIONS_SIG_RE` now accepts an optional `<T>` type argument.
+8. **`RevitLookup.UI.Playground` mockup exclusion** (found while verifying fix 6 -- a real,
+   confirmed-at-`2026.0.1` duplicate `Core/Decomposition` tree of fake/demo descriptors, including
+   a same-named duplicate of the real `ColorMediaDescriptor` and a demo-only `Vector3Descriptor`
+   with no real `Autodesk.Revit.DB` counterpart): any path containing a `Playground` path segment
+   is now excluded from both the map-file search and the `*Descriptor.cs` glob, and both searches
+   sort candidates for a deterministic pick (`Path.rglob` order is not guaranteed) rather than
+   silently keeping whichever the filesystem happened to return first.
+9. **A preprocessor line breaking a bare method-group match** (found while verifying fix 1 against
+   the full real `2026.0.1` `ElementDescriptor.cs`): a case like `IsPhaseDemolishedValid` can be
+   immediately followed by `#if REVIT2022_OR_GREATER` before the next case starts, which defeated
+   `_BARE_METHOD_GROUP_RE`'s whole-string anchor. Preprocessor lines are now stripped before that
+   match is attempted (mirrors how `#if`/`#endif` blocks were already treated as insignificant
+   plain text elsewhere in this parser).
+
+**Verified end-to-end** (`mine_revitlookup_source` against the real checkouts, not just unit
+tests): `2024.0.13` is byte-for-byte unaffected (0 `parser_notes`, same descriptor/member counts as
+before this change). `2025.0.10` goes from 0 synthetic extensions across all 99 descriptors (before
+this fix) to 100, and `requires_document_context`/`has_multiple_variants` true-counts both rise
+substantially (2 harmless `parser_notes` remain, from the pre-existing, unrelated
+`tools/source/DependenciesReport/Models/*Descriptor.cs` glob false-positive noted in the audit
+above). `2026.0.1` goes from completely unparseable (old code couldn't even find `DescriptorsMap.cs`
+or `Resolve()`) to 0 `parser_notes` across all 92 real descriptor files, with the 2 Playground
+mockup files correctly excluded and no duplicate/phantom descriptor classes.
+
+New tests added to `tests/test_revitlookup.py` for every fix above, backed by real, unmodified
+fixture files under `tests/fixtures/revitlookup/2025/` (`CategoryDescriptor.cs`,
+`HostObjectDescriptor.cs`, from `2025.0.10`) and `tests/fixtures/revitlookup/2026/`
+(`DescriptorsMap.cs`, `ElementDescriptor.cs`, `SchemaDescriptor.cs`, `ColorMediaDescriptor.cs`, and
+the two Playground mockup files, from `2026.0.1`). All 278 tests pass (40 in
+`test_revitlookup.py`).
