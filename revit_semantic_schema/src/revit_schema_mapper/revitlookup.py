@@ -496,7 +496,7 @@ def mine_revitlookup_source(source_dir: Path, revitlookup_tag: str) -> RevitLook
     if descriptor_map_path is not None:
         descriptor_map = parse_descriptor_map(descriptor_map_path.read_text(encoding="utf-8"))
 
-    descriptor_files = sorted(p for p in source_dir.rglob("*Descriptor.cs") if not _is_mockup_source_path(p))
+    descriptor_files = sorted(p for p in source_dir.rglob("*Descriptor.cs") if not _is_mockup_source_path(p, source_dir))
     descriptors = [parse_descriptor_file(path.read_text(encoding="utf-8")) for path in descriptor_files]
 
     return RevitLookupReference(
@@ -513,8 +513,18 @@ def mine_revitlookup_source(source_dir: Path, revitlookup_tag: str) -> RevitLook
 # `ColorMediaDescriptor`) purely so the UI can be demoed without a Revit install --
 # excluded everywhere this module walks a checkout, or phantom/duplicate descriptors
 # would leak into the mined reference.
-def _is_mockup_source_path(path: Path) -> bool:
-    return any("Playground" in part for part in path.parts)
+#
+# Checked only against the path *relative to source_dir*, not the full absolute path --
+# source_dir is caller-supplied and can legitimately sit anywhere on disk (e.g. a checkout
+# at `/home/user/Playground/RevitLookup`); matching against the absolute path would treat
+# every real file in such a checkout as mockup content and silently return an empty/
+# near-empty reference instead of the real one.
+def _is_mockup_source_path(path: Path, source_dir: Path) -> bool:
+    try:
+        relative_parts = path.relative_to(source_dir).parts
+    except ValueError:
+        relative_parts = path.parts
+    return any("Playground" in part for part in relative_parts)
 
 
 def _find_descriptor_map_file(source_dir: Path) -> Optional[Path]:
@@ -526,7 +536,7 @@ def _find_descriptor_map_file(source_dir: Path) -> Optional[Path]:
     Playground mockup filter above still leaves ambiguity in principle).
     """
     for filename in ("DescriptorMap.cs", "DescriptorsMap.cs"):
-        candidates = sorted(p for p in source_dir.rglob(filename) if not _is_mockup_source_path(p))
+        candidates = sorted(p for p in source_dir.rglob(filename) if not _is_mockup_source_path(p, source_dir))
         if candidates:
             return candidates[0]
     return None

@@ -480,6 +480,29 @@ def test_mine_revitlookup_source_excludes_playground_mockup_descriptors(tmp_path
     assert classes.count("ColorMediaDescriptor") == 1
 
 
+def test_mine_revitlookup_source_ignores_playground_in_the_checkout_path_itself(tmp_path):
+    """A real bug caught by PR review: the mockup filter must only look at
+    path segments *inside* the checkout (e.g. `RevitLookup.UI.Playground`),
+    not the caller-supplied source_dir's own absolute path -- a checkout at
+    e.g. `/home/user/Playground/RevitLookup` would otherwise have every real
+    file treated as mockup content (since "Playground" appears in an
+    ancestor directory it never controls), leaving mine_revitlookup_source
+    with an empty/near-empty reference instead of the real one.
+    """
+    checkout_root = tmp_path / "Playground" / "RevitLookup"
+    nested = checkout_root / "source" / "RevitLookup" / "Core" / "Decomposition"
+    nested.mkdir(parents=True)
+    (nested / "DescriptorsMap.cs").write_text(_read_2026("DescriptorsMap.cs"), encoding="utf-8")
+    descriptors_dir = nested / "Descriptors"
+    descriptors_dir.mkdir()
+    (descriptors_dir / "ElementDescriptor.cs").write_text(_read_2026("ElementDescriptor.cs"), encoding="utf-8")
+
+    reference = mine_revitlookup_source(checkout_root, revitlookup_tag="2026.0.1")
+
+    assert len(reference.descriptor_map) > 0
+    assert [d.descriptor_class for d in reference.descriptors] == ["ElementDescriptor"]
+
+
 # -- mine_revitlookup_source (orchestration) ------------------------------------
 
 
