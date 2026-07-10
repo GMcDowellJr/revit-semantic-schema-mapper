@@ -25,6 +25,31 @@ refactored to a fluent ``Configure(IMemberConfigurator configuration)`` /
 not assumed. Whichever tag is mined must be recorded (``revitlookup_tag``
 below) and re-synced deliberately, matching the same version each time a
 consumer expects, not silently re-pointed at whatever's newest.
+
+**Layered on top, confirmed against real 2025.x/2026.x tags (2026-07-10, see
+docs/crawl_notes.md for the full audit)**: three drifts already present by
+``2025.0.0`` (not a 2026-only problem) and one more added by ``2026.0.0``,
+all additive to the ``2024.0.13`` rules above, never replacing them --
+1. A switch arm can point directly at a local function's *method group*
+   (``=> ResolveFoo,`` -- no parens at all) instead of an inline expression or
+   a parenthesized bare call (``=> ResolveFoo(),``); the real function's body
+   -- and the signals inside it -- must still be found.
+2. The document-context accessor was renamed ``RevitApi`` -> ``Context``
+   (``RevitApi.ActiveView`` -> ``Context.ActiveView``, etc).
+3. ``RegisterExtensions`` stopped using ``extension.Name = nameof(X)``, in
+   favor of passing the name directly: ``manager.Register(nameof(X), ...)``.
+4. (2026.0.0+ only) ``DescriptorMap.cs`` was renamed to ``DescriptorsMap.cs``
+   and moved from ``Core/ComponentModel`` to ``Core/Decomposition``, and
+   ``Resolve()`` dropped its ``Document`` parameter entirely (3-arg -> 2-arg)
+   -- there is no document-scoped parameter available at all anymore, only
+   the ``Context.*`` textual markers.
+
+Also confirmed at ``2026.0.1``: the repo ships a second, throwaway
+``RevitLookup.UI.Playground`` demo project with its own duplicate
+``Core/Decomposition`` tree (fake descriptors like ``Vector3Descriptor`` for
+``System.Numerics.Vector3``, which has no real ``Autodesk.Revit.DB``
+counterpart) purely so the UI can be demoed without a Revit install --
+excluded from mining, or phantom/duplicate descriptors would leak in.
 """
 
 from __future__ import annotations
@@ -199,7 +224,14 @@ _CLASS_NAME_RE = re.compile(r"\bclass\s+(\w+)")
 _RESOLVE_SIG_RE = re.compile(
     r"\bResolve\s*\(\s*Document\s+(?P<context_param>\w+)\s*,\s*string\s+\w+\s*,\s*ParameterInfo\[\]\s+\w+\s*\)\s*\{"
 )
-_REGISTER_EXTENSIONS_SIG_RE = re.compile(r"\bRegisterExtensions\s*\(\s*IExtensionManager\s+\w+\s*\)\s*\{")
+# Confirmed real shape at 2026.0.1 (and not present at 2025.0.10): Resolve() dropped its
+# Document parameter entirely -- tried only if _RESOLVE_SIG_RE above doesn't match, so
+# 2024.0.13/2025.x checkouts (which still have the Document parameter) keep matching the
+# original signature first, never this fallback.
+_RESOLVE_SIG_RE_NO_DOCUMENT = re.compile(r"\bResolve\s*\(\s*string\s+\w+\s*,\s*ParameterInfo\[\]\s+\w+\s*\)\s*\{")
+_REGISTER_EXTENSIONS_SIG_RE = re.compile(
+    r"\bRegisterExtensions\s*\(\s*IExtensionManager(?:<\w+>)?\s+(?P<manager_param>\w+)\s*\)\s*\{"
+)
 # The optional `when <guard>` clause (e.g. real ParameterDescriptor.cs:
 # `nameof(Parameter.ClearValue) when parameters.Length == 0 => ...`) uses the
 # same non-greedy `.*?` (not `[^=]*?`) as _SWITCH_ARM_RE below, for the same
@@ -211,7 +243,27 @@ _CASE_START_RE = re.compile(
     r"\s*=>"
 )
 _BARE_CALL_RE = re.compile(r"^\s*(\w+)\(\)\s*,?\s*$")
+# Confirmed real shape starting at 2025.0.0 (not just 2026): a switch arm can point
+# directly at a local function's *method group* -- no parens, no invocation at all --
+# e.g. real 2025.0.10 CategoryDescriptor.cs: `"AllowsVisibilityControl" =>
+# ResolveAllowsVisibilityControl,`. Without also trying this (alongside the
+# parenthesized bare-call case above), the local function's body -- and every
+# document-context/cardinality signal inside it -- is silently never inspected at all.
+_BARE_METHOD_GROUP_RE = re.compile(r"^\s*(\w+)\s*,?\s*$")
 _EXTENSION_NAME_RE = re.compile(r'\.Name\s*=\s*(?:nameof\(\s*(?:[\w.]+\.)?(\w+)\s*\)|"([^"]+)")\s*;')
+# Confirmed real shape starting at 2025.0.0 (not just 2026): RegisterExtensions stopped
+# assigning `extension.Name = nameof(X)` inside a callback, in favor of passing the name
+# directly as manager.Register's first argument -- e.g. real 2025.0.10/2026.0.1
+# HostObjectDescriptor.cs: `manager.Register(nameof(HostExtensions.GetBottomFaces), _ =>
+# hostObject.GetBottomFaces());`. Built per-file from the real manager parameter name
+# (via _REGISTER_EXTENSIONS_SIG_RE's own manager_param group) rather than hardcoding
+# "manager", the same reasoning _detect_signals already applies to the Resolve()
+# context parameter.
+def _manager_register_call_re(manager_param: str) -> re.Pattern[str]:
+    return re.compile(
+        rf"\b{re.escape(manager_param)}\.Register\s*\(\s*"
+        r'(?:nameof\(\s*(?:[\w.]+\.)?(?P<nameof_name>\w+)\s*\)|"(?P<literal_name>[^"]+)")'
+    )
 
 # Textual proxies for "this only makes sense with a live document open" --
 # confirmed real accessors at tag 2024.0.13 (RevitApi.ActiveView/.Document are
@@ -229,6 +281,15 @@ _DOCUMENT_CONTEXT_MARKERS = (
     ".Document",
     "FilteredWorksetCollector",
     "Schema.ListSchemas",
+    # Confirmed real rename starting at 2025.0.0 (not just 2026): the RevitApi.* accessor
+    # above was renamed to Context.*, e.g. real 2025.0.10 CategoryDescriptor.cs's
+    # `_category.get_AllowsVisibilityControl(Context.ActiveView)` and 2026.0.1
+    # ElementDescriptor.cs's `Context.ActiveUiDocument`/`Context.ActiveDocument`. Added
+    # alongside the RevitApi.* markers, not in place of them, since a checkout at
+    # 2024.0.13 only ever has the old name.
+    "Context.ActiveView",
+    "Context.ActiveDocument",
+    "Context.ActiveUiDocument",
 )
 
 
@@ -274,13 +335,49 @@ def _find_local_function_body(method_text: str, function_name: str) -> Optional[
     return _extract_balanced_block(method_text, match.end() - 1)
 
 
-def _detect_signals(body: str, context_param: str) -> tuple[bool, bool]:
-    requires_document_context = any(marker in body for marker in _DOCUMENT_CONTEXT_MARKERS) or f"{context_param}." in body
-    has_multiple_variants = ".AppendVariant(" in body
+_MULTI_VARIANT_MARKERS = (
+    ".AppendVariant(",
+    # Confirmed real shape starting at 2025.0.0 (not just 2026): .AppendVariant(...) was
+    # replaced by chained .Add(...) calls off a plural Variants.Values<T>(n)/new
+    # Variants<T>(n) builder -- e.g. real 2025.0.10 CategoryDescriptor.cs's `new
+    # Variants<int?>(2).Add(...).Add(...)` and 2026.0.1 ElementDescriptor.cs's
+    # `Variants.Values<...>(phases.Size)` filled in a loop. Distinct from the *singular*
+    # `Variants.Single(...)`/`Variants.Value(...)` helpers real single-result cases use
+    # (e.g. 2025.0.10 CategoryDescriptor.cs's `Variants.Single(...)` for
+    # AllowsVisibilityControl/Visible), which must NOT be flagged as multi-variant.
+    "Variants.Values<",
+    "new Variants<",
+)
+
+
+def _detect_signals(body: str, context_param: Optional[str]) -> tuple[bool, bool]:
+    requires_document_context = any(marker in body for marker in _DOCUMENT_CONTEXT_MARKERS)
+    # No context_param at all once Resolve() drops its Document parameter (2026.0.0+) --
+    # nothing to check here beyond the textual markers above in that case.
+    if context_param is not None:
+        requires_document_context = requires_document_context or f"{context_param}." in body
+    has_multiple_variants = any(marker in body for marker in _MULTI_VARIANT_MARKERS)
     return requires_document_context, has_multiple_variants
 
 
-def _parse_resolve_method(method_text: str, context_param: str) -> list[ResolvedMember]:
+_PREPROCESSOR_LINE_RE = re.compile(r"^[ \t]*#.*$", re.MULTILINE)
+
+
+def _strip_preprocessor_lines(text: str) -> str:
+    """A real, confirmed case at 2026.0.1: a bare method-group switch arm
+    (``=> ResolveFoo,``) can be immediately followed by an ``#if``/``#endif``
+    preprocessor line before the next case starts (e.g. real
+    ``ElementDescriptor.cs``'s ``IsPhaseDemolishedValid``/
+    ``IsCreatedPhaseOrderValid`` cases straddle an
+    ``#if REVIT2022_OR_GREATER``/``#endif`` pair) -- already treated as plain,
+    insignificant text elsewhere in this parser (guarded switch arms), but
+    ``_BARE_METHOD_GROUP_RE``'s whole-string anchor would otherwise refuse to
+    match with a non-blank, non-whitespace preprocessor line in the way.
+    """
+    return _PREPROCESSOR_LINE_RE.sub("", text)
+
+
+def _parse_resolve_method(method_text: str, context_param: Optional[str]) -> list[ResolvedMember]:
     case_starts = list(_CASE_START_RE.finditer(method_text))
     members: list[ResolvedMember] = []
     for i, case_match in enumerate(case_starts):
@@ -296,9 +393,11 @@ def _parse_resolve_method(method_text: str, context_param: str) -> list[Resolved
             name_source = "string_literal"
 
         search_body = inline_body
-        bare_call = _BARE_CALL_RE.match(inline_body)
-        if bare_call:
-            local_body = _find_local_function_body(method_text, bare_call.group(1))
+        bare_candidate = _strip_preprocessor_lines(inline_body)
+        bare_call = _BARE_CALL_RE.match(bare_candidate)
+        bare_reference = bare_call or _BARE_METHOD_GROUP_RE.match(bare_candidate)
+        if bare_reference:
+            local_body = _find_local_function_body(method_text, bare_reference.group(1))
             if local_body is not None:
                 search_body = inline_body + local_body
 
@@ -332,21 +431,35 @@ def parse_descriptor_file(text: str) -> RevitLookupDescriptor:
     resolved_members: list[ResolvedMember] = []
     resolve_sig_match = _RESOLVE_SIG_RE.search(text)
     resolve_body = _find_method_body(text, _RESOLVE_SIG_RE)
+    context_param: Optional[str] = None
     if resolve_body is not None:
         context_param = resolve_sig_match.group("context_param") if resolve_sig_match else "context"
+    else:
+        # 2026.0.0+ shape: Resolve() dropped its Document parameter entirely, so there's
+        # no context_param to check at all -- only tried if the 3-arg signature above
+        # didn't match, so 2024.0.13/2025.x checkouts never reach this branch.
+        resolve_body = _find_method_body(text, _RESOLVE_SIG_RE_NO_DOCUMENT)
+    if resolve_body is not None:
         resolved_members = _parse_resolve_method(resolve_body, context_param)
     elif "IDescriptorResolver" in text:
         parser_notes.append(
-            "file references IDescriptorResolver but Resolve(Document, string, ParameterInfo[]) "
-            "method body was not found in the expected shape"
+            "file references IDescriptorResolver but neither Resolve(Document, string, "
+            "ParameterInfo[]) nor Resolve(string, ParameterInfo[]) method body was found "
+            "in the expected shape"
         )
 
     synthetic_extensions: list[str] = []
+    register_sig_match = _REGISTER_EXTENSIONS_SIG_RE.search(text)
     extensions_body = _find_method_body(text, _REGISTER_EXTENSIONS_SIG_RE)
     if extensions_body is not None:
+        extension_matches: list[tuple[int, str]] = []
         for match in _EXTENSION_NAME_RE.finditer(extensions_body):
-            name = match.group(1) or match.group(2)
-            synthetic_extensions.append(name)
+            extension_matches.append((match.start(), match.group(1) or match.group(2)))
+        manager_param = register_sig_match.group("manager_param") if register_sig_match else "manager"
+        for match in _manager_register_call_re(manager_param).finditer(extensions_body):
+            extension_matches.append((match.start(), match.group("nameof_name") or match.group("literal_name")))
+        extension_matches.sort(key=lambda pair: pair[0])
+        synthetic_extensions = [name for _, name in extension_matches]
     elif "IDescriptorExtension" in text:
         parser_notes.append(
             "file references IDescriptorExtension but RegisterExtensions(IExtensionManager) "
@@ -371,16 +484,19 @@ def mine_revitlookup_source(source_dir: Path, revitlookup_tag: str) -> RevitLook
     shape for Stage A) into a ``RevitLookupReference``.
 
     ``source_dir`` is expected to be the repository root (or any ancestor of
-    ``source/RevitLookup/Core/ComponentModel``) -- confirmed real layout at
-    tag 2024.0.13; a differently-laid-out tag would need this adjusted, not
+    ``source/RevitLookup/Core/ComponentModel``, the real layout confirmed at
+    tag 2024.0.13, still true through 2025.x) or of
+    ``source/RevitLookup/Core/Decomposition`` (the real, renamed/moved
+    layout confirmed at tag 2026.0.1 -- see this module's own docstring);
+    a further-differently-laid-out tag would need this adjusted, not
     silently assumed to still match.
     """
-    descriptor_map_path = _find_first(source_dir, "DescriptorMap.cs")
+    descriptor_map_path = _find_descriptor_map_file(source_dir)
     descriptor_map: list[DescriptorMapEntry] = []
     if descriptor_map_path is not None:
         descriptor_map = parse_descriptor_map(descriptor_map_path.read_text(encoding="utf-8"))
 
-    descriptor_files = sorted(source_dir.rglob("*Descriptor.cs"))
+    descriptor_files = sorted(p for p in source_dir.rglob("*Descriptor.cs") if not _is_mockup_source_path(p, source_dir))
     descriptors = [parse_descriptor_file(path.read_text(encoding="utf-8")) for path in descriptor_files]
 
     return RevitLookupReference(
@@ -390,8 +506,40 @@ def mine_revitlookup_source(source_dir: Path, revitlookup_tag: str) -> RevitLook
     )
 
 
-def _find_first(root: Path, filename: str) -> Optional[Path]:
-    return next(root.rglob(filename), None)
+# Confirmed real at tag 2026.0.1: a `RevitLookup.UI.Playground` demo project ships its
+# own duplicate `Core/Decomposition` tree (fake descriptors like `Vector3Descriptor` for
+# `System.Numerics.Vector3`, with no real `Autodesk.Revit.DB` counterpart, plus a
+# duplicate `DescriptorsMap.cs`/real-descriptor-class-name collisions like
+# `ColorMediaDescriptor`) purely so the UI can be demoed without a Revit install --
+# excluded everywhere this module walks a checkout, or phantom/duplicate descriptors
+# would leak into the mined reference.
+#
+# Checked only against the path *relative to source_dir*, not the full absolute path --
+# source_dir is caller-supplied and can legitimately sit anywhere on disk (e.g. a checkout
+# at `/home/user/Playground/RevitLookup`); matching against the absolute path would treat
+# every real file in such a checkout as mockup content and silently return an empty/
+# near-empty reference instead of the real one.
+def _is_mockup_source_path(path: Path, source_dir: Path) -> bool:
+    try:
+        relative_parts = path.relative_to(source_dir).parts
+    except ValueError:
+        relative_parts = path.parts
+    return any("Playground" in part for part in relative_parts)
+
+
+def _find_descriptor_map_file(source_dir: Path) -> Optional[Path]:
+    """Old name/location first (``DescriptorMap.cs``, still real through
+    2025.x), then the 2026.0.0+ renamed/moved one (``DescriptorsMap.cs``) --
+    layered, not a replacement, since a 2024.0.13/2025.x checkout only ever
+    has the old name. ``sorted()`` makes the pick deterministic across
+    filesystems/checkouts when a name matches more than once (e.g. the
+    Playground mockup filter above still leaves ambiguity in principle).
+    """
+    for filename in ("DescriptorMap.cs", "DescriptorsMap.cs"):
+        candidates = sorted(p for p in source_dir.rglob(filename) if not _is_mockup_source_path(p, source_dir))
+        if candidates:
+            return candidates[0]
+    return None
 
 
 def load_revitlookup_reference(path: Path) -> RevitLookupReference:

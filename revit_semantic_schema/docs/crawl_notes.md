@@ -1791,3 +1791,149 @@ the identical crawl re-classified by only this review's classify.py diff. Not in
 since the underlying candidate_edges.json/page HTML wasn't available to this pass, only the capped
 pareto JSON/CSV -- worth checking what else changed in the regeneration environment before trusting
 future pareto deltas as attributable purely to a given classify.py diff.
+
+## Stage C coverage audit: 2024 confirmed solid, 2025 has two independent confirmed drifts (2026-07-10)
+
+Prompted by the 2026.0.0 breakage already logged above (`DescriptorMap.cs` renamed/moved to
+`DescriptorsMap.cs`, `Resolve()` dropped its `Document` parameter, document-context markers moved
+from `RevitApi.*` to `Context.*`) -- this pass checked whether `revitlookup_reference_2024.json`/
+`revitlookup_reference_2025.json` (the files behind the "2024 and 2025 both show real nonzero
+[RevitLookup] corroboration counts" observation in the Pareto review above) were actually mined
+against tags that still match `revitlookup.py`'s `2024.0.13`-shape assumptions, or whether either
+has its own undiscovered drift. Checked directly against the real `lookup-foundation/RevitLookup`
+GitHub source (shallow `git clone --depth 1 --branch <tag>`, then running this repo's own
+`mine_revitlookup_source`/`parse_descriptor_file` against the real checkout), not guessed.
+
+**2024: confirmed solid, and provably so.** `git log --all --diff-filter=A --name-only` turns up
+`outputs/revit_2024/revitlookup_reference.json` having been committed once (commit `4997bf6`,
+before commit `3f4a323` untracked it as a regenerable output, per the project's own bulk-output
+convention) -- its `"revitlookup_tag"` field reads `"2024.0.13"`, the exact tag
+`tests/fixtures/revitlookup/*.cs` and `revitlookup.py`'s parsing rules were built against. No
+further action needed for 2024.
+
+**2025: no tag was ever recorded anywhere in this repo.** Neither `revitlookup_reference_2025.json`
+nor any prose mention of what tag it was mined at exists in git history -- the "2025 dll
+reflection" commit (`ddabde4`) touched `reflect_revit_api.ps1`/`export.py`/`revitlookup.py` and
+this file's own crawl notes, but never added a 2025 reference JSON or said what tag one might have
+been mined from. The nonzero `rlu=2` "Reference" corroboration the Pareto review saw for 2025 came
+from a `revitlookup_reference_2025.json` this repo has no record of (uploaded ad hoc alongside that
+review's pareto zip, not committed) -- whatever tag it was actually mined at is unverifiable now.
+
+Spot-checked both ends of the real 2025.x tag range instead (`2025.0.0`, the first, and `2025.0.10`,
+the latest per `git ls-remote --tags`) since the pattern held identically at both: the top-level
+shape `revitlookup.py` depends on (`Core/ComponentModel/DescriptorMap.cs` location, per-file `class
+X` detection, the 3-arg `Resolve(Document context, string target, ParameterInfo[] parameters)`
+signature, and the `nameof(Type.Member) => ...` switch-arm shape) is **unchanged** from 2024.0.13 --
+running `mine_revitlookup_source` against a real `2025.0.10` checkout parses cleanly (98
+descriptor-map entries, 99 descriptor files, 211 resolved members, only 2 harmless "no class
+declaration found" notes -- both from an unrelated `tools/source/DependenciesReport/Models/
+*Descriptor.cs` glob false-positive, not a real RevitLookup descriptor, present regardless of tag).
+
+But two independent, silent detection gaps are real and confirmed, present in *every* 2025.x tag
+(not a late-2025 regression -- `2025.0.0` and `2025.0.10` both show the same shape):
+
+1. **`RegisterExtensions` body shape changed, so `synthetic_extensions` silently comes back empty.**
+   At `2024.0.13`, an extension is registered as `manager.Register(obj, extension => { extension.Name
+   = nameof(HostExtensions.GetBottomFaces); ... });` -- matched by `_EXTENSION_NAME_RE`'s `\.Name\s*=`
+   pattern. At `2025.0.0`/`2025.0.10` this is `manager.Register(nameof(HostExtensions.GetBottomFaces),
+   _ => hostObject.GetBottomFaces());` -- no `.Name = ` assignment anywhere. Confirmed end-to-end: 36
+   real `2025.0.10` descriptor files call `RegisterExtensions`/`manager.Register(nameof(...` (0 use
+   the old `.Name = nameof` shape), but `mine_revitlookup_source` against that same checkout reports
+   **`total synthetic extensions: 0`** across all 99 descriptors. This is exactly the failure mode
+   `synthetic_extensions`'s own docstring warns about: every RevitLookup UI-convenience extension
+   would be silently invisible to Stage C, so nothing would flag it as "not a real compiled member"
+   if it were ever compared against a Stage B DLL manifest.
+2. **The document-context static helper was renamed `RevitApi` -> `Context` by `2025.0.0`** (one tag
+   after `2024.0.13`, not a 2026 change as the design doc's `2024.0.13` note might suggest) --
+   `RevitApi.ActiveView` -> `Context.ActiveView`, `RevitApi.Document`/`RevitApi.UiDocument` ->
+   `Context.ActiveDocument`/`Context.ActiveUiDocument`. `_DOCUMENT_CONTEXT_MARKERS` is hardcoded to
+   the old `RevitApi.*` prefixes (plus a bare `.Document` substring, which does *not* match
+   `.ActiveDocument`). Confirmed concretely: parsing the real `2025.0.10`
+   `CategoryDescriptor.cs` gives `AllowsVisibilityControl`/`Visible` (both real members whose bodies
+   read `_category.get_AllowsVisibilityControl(Context.ActiveView)`) as
+   `requires_document_context=False` -- a false negative, same class of miss `docs/crawl_notes.md`'s
+   `needs_runtime_validation` reasoning exists to catch.
+
+**Net:** 2025 is not solid. Both gaps are silent (no exception, no `parser_notes` entry -- the
+parser believes it succeeded), and both would already be present in any `revitlookup_reference_2025.
+json` genuinely mined from a real 2025.x tag, regardless of which patch version. If the file behind
+the Pareto review's `rlu=2` reading really was mined from a 2025.x tag rather than reused from
+2024.0.13 (unverifiable either way now, per above), its `synthetic_extensions` lists were empty and
+its `requires_document_context` signal undercounted for every `Context.*`-based member -- worth
+fixing (`_EXTENSION_NAME_RE` needs a second alternative for `manager.Register(nameof(X)`, and
+`_DOCUMENT_CONTEXT_MARKERS` needs `Context.`-prefixed entries added alongside the `RevitApi.*` ones,
+same "layer ahead, don't replace" approach the 2026 `DescriptorsMap.cs`/2-arg-`Resolve()` fix will
+need) before treating any 2025 Stage C output as trustworthy.
+
+## Stage C parser updated for 2025.x/2026.x drift, layered on top of 2024.0.13 (2026-07-10)
+
+Implemented the fixes the audit above (and the separately-confirmed 2026.0.0 findings earlier in
+this file) called for, all additive to the existing `2024.0.13`-shape rules -- verified end-to-end
+against real `git clone --depth 1 --branch <tag>` checkouts at `2024.0.13`, `2025.0.10`, and
+`2026.0.1` (not just the fixture files), plus new fixtures under `tests/fixtures/revitlookup/2025/`
+and `tests/fixtures/revitlookup/2026/` copied unmodified from those real checkouts.
+
+**Fixes, in the order found:**
+1. **Bare method-group switch arms** (`=> ResolveFoo,` with no parens at all -- confirmed already
+   present at `2025.0.0`, e.g. real `CategoryDescriptor.cs`'s `"AllowsVisibilityControl" =>
+   ResolveAllowsVisibilityControl,`) are now followed to the local function's own body the same
+   way the existing parenthesized bare-call case (`=> ResolveFoo(),`) already was --
+   `_BARE_METHOD_GROUP_RE` tried as a fallback, never replacing `_BARE_CALL_RE`. This was the
+   actual root cause of the 2025 `requires_document_context` miss flagged in the audit above, more
+   fundamental than the `RevitApi`→`Context` rename by itself: without this fix, the parser never
+   even reached the local function body containing the marker at all.
+2. **`RevitApi.*` → `Context.*` rename**: `Context.ActiveView`/`Context.ActiveDocument`/
+   `Context.ActiveUiDocument` added to `_DOCUMENT_CONTEXT_MARKERS` alongside the original
+   `RevitApi.*` entries.
+3. **`.AppendVariant(...)` → plural `Variants` builder rename** (found independently while
+   verifying fix 1 above -- not previously flagged in this file): `.AppendVariant(...)` was
+   replaced by `Variants.Values<T>(n)`/`new Variants<T>(n)` chained with `.Add(...)` calls, by
+   `2025.0.0`. The *singular* `Variants.Single(...)`/`Variants.Value(...)` helpers real
+   single-result cases use must NOT be flagged -- confirmed both directions against real
+   `CategoryDescriptor.cs` (AllowsVisibilityControl/Visible stay single; GetGraphicsStyle/
+   GetLinePatternId/GetLineWeight are correctly multi).
+4. **`RegisterExtensions` naming shape**: `manager.Register(nameof(X), ...)`/`manager.Register(
+   "literal", ...)` (confirmed at `2025.0.0`+) extracted alongside the original `extension.Name =
+   nameof(X)` callback-assignment shape, built from the real `manager` parameter name read off
+   `RegisterExtensions`'s own signature (same reasoning already applied to `Resolve()`'s
+   `context_param`), not hardcoded.
+5. **`Resolve()` dropped its `Document` parameter** (2026.0.0+ only, confirmed still 3-arg at
+   `2025.0.10`): `_RESOLVE_SIG_RE_NO_DOCUMENT` tried only if the original 3-arg signature doesn't
+   match; `context_param` becomes `None` in that case and `_detect_signals` skips the
+   parameter-based check, relying purely on the textual markers.
+6. **`DescriptorMap.cs` → `DescriptorsMap.cs`, `Core/ComponentModel` → `Core/Decomposition`**
+   (2026.0.0+): `_find_descriptor_map_file` tries the old filename first, falls back to the new
+   one.
+7. **Generic `IExtensionManager<Document>`/`IDescriptorExtension<Document>`** (found while
+   verifying fix 6 against the full real `2026.0.1` checkout -- real `SchemaDescriptor.cs`):
+   `_REGISTER_EXTENSIONS_SIG_RE` now accepts an optional `<T>` type argument.
+8. **`RevitLookup.UI.Playground` mockup exclusion** (found while verifying fix 6 -- a real,
+   confirmed-at-`2026.0.1` duplicate `Core/Decomposition` tree of fake/demo descriptors, including
+   a same-named duplicate of the real `ColorMediaDescriptor` and a demo-only `Vector3Descriptor`
+   with no real `Autodesk.Revit.DB` counterpart): any path containing a `Playground` path segment
+   is now excluded from both the map-file search and the `*Descriptor.cs` glob, and both searches
+   sort candidates for a deterministic pick (`Path.rglob` order is not guaranteed) rather than
+   silently keeping whichever the filesystem happened to return first.
+9. **A preprocessor line breaking a bare method-group match** (found while verifying fix 1 against
+   the full real `2026.0.1` `ElementDescriptor.cs`): a case like `IsPhaseDemolishedValid` can be
+   immediately followed by `#if REVIT2022_OR_GREATER` before the next case starts, which defeated
+   `_BARE_METHOD_GROUP_RE`'s whole-string anchor. Preprocessor lines are now stripped before that
+   match is attempted (mirrors how `#if`/`#endif` blocks were already treated as insignificant
+   plain text elsewhere in this parser).
+
+**Verified end-to-end** (`mine_revitlookup_source` against the real checkouts, not just unit
+tests): `2024.0.13` is byte-for-byte unaffected (0 `parser_notes`, same descriptor/member counts as
+before this change). `2025.0.10` goes from 0 synthetic extensions across all 99 descriptors (before
+this fix) to 100, and `requires_document_context`/`has_multiple_variants` true-counts both rise
+substantially (2 harmless `parser_notes` remain, from the pre-existing, unrelated
+`tools/source/DependenciesReport/Models/*Descriptor.cs` glob false-positive noted in the audit
+above). `2026.0.1` goes from completely unparseable (old code couldn't even find `DescriptorsMap.cs`
+or `Resolve()`) to 0 `parser_notes` across all 92 real descriptor files, with the 2 Playground
+mockup files correctly excluded and no duplicate/phantom descriptor classes.
+
+New tests added to `tests/test_revitlookup.py` for every fix above, backed by real, unmodified
+fixture files under `tests/fixtures/revitlookup/2025/` (`CategoryDescriptor.cs`,
+`HostObjectDescriptor.cs`, from `2025.0.10`) and `tests/fixtures/revitlookup/2026/`
+(`DescriptorsMap.cs`, `ElementDescriptor.cs`, `SchemaDescriptor.cs`, `ColorMediaDescriptor.cs`, and
+the two Playground mockup files, from `2026.0.1`). All 278 tests pass (40 in
+`test_revitlookup.py`).
